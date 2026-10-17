@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "npu-model"
-version = "0.1.0"
-description = "Plugin-based model converter producing accelerator-targeted ORT GenAI bundles."
+version = "0.2.0.dev0"
+description = "Convert Hugging Face models into NPU-ready bundles for the Ollama NPU fork."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -13,56 +13,20 @@ authors = [{ name = "dsmith111" }]
 dependencies = [
   "typer>=0.12.3",
   "rich>=13.7.1",
-  "huggingface_hub>=0.23.0",
-  "tqdm>=4.66.0",
+  "huggingface_hub>=0.30",
+  # Structural bundle inspection parses ONNX graphs (metadata only).
+  "onnx>=1.17",
 ]
 
 [project.optional-dependencies]
-prebuilt = [
-  "onnx>=1.17",
-]
 dev = [
   "pytest>=8.0.0",
   "ruff>=0.6.0",
   "mypy>=1.10.0",
-  "types-tqdm",
-]
-export = [
-  "onnxruntime-genai",
-  "torch",
-  "transformers",
-  "onnx",
-  "onnx-ir",
-]
-qnn = [
-  "onnxruntime-qnn",
-  "olive-ai[auto-opt]",
-]
-validate = [
-  "onnxruntime-genai",
 ]
 
 [project.scripts]
 npu-model = "npu_model.cli.main:app"
-
-# Plugin entry points (built-ins in this repo)
-[project.entry-points."npu_model.backends"]
-qnn = "npu_model.backends.qnn:QnnBackend"
-
-[project.entry-points."npu_model.adapters"]
-phi3 = "npu_model.adapters.phi3:Phi3Adapter"
-llama = "npu_model.adapters.llama:LlamaAdapter"
-
-[project.entry-points."npu_model.runtime_formats"]
-ort-genai-folder = "npu_model.runtime_formats.ort_genai_folder:OrtGenaiFolderFormat"
-
-[project.entry-points."npu_model.quantizers"]
-passthrough = "npu_model.quant.passthrough:PassthroughQuantizer"
-qnn-qdq = "npu_model.quant.qnn_qdq:QnnQdqQuantizer"
-olive-qnn-llm = "npu_model.quant.olive_qnn_llm:OliveQnnLlmQuantizer"
-
-[project.entry-points."npu_model.exporters"]
-ort-genai-builder = "npu_model.exporters.ort_genai_builder:OrtGenaiBuilderExporter"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -70,13 +34,10 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.setuptools.package-data]
-"npu_model.olive" = ["templates/*.j2"]
-"npu_model.packagers" = ["profile_data/*.txt"]
-
 [tool.ruff]
 line-length = 110
 target-version = "py310"
+extend-exclude = ["spike"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -88,8 +49,8 @@ warn_unused_ignores = true
 disallow_untyped_defs = true
 no_implicit_optional = true
 
-# Optional native/export packages are not required for the lightweight core check.
-# This only affects static imports; runtime dependency checks still fail closed.
+# Heavy toolchain packages live in separate role environments, not in the CLI's own
+# environment; scripts that run inside those environments import them dynamically.
 [[tool.mypy.overrides]]
 module = [
   "numpy", "numpy.*",
@@ -98,7 +59,8 @@ module = [
   "onnxruntime_genai", "onnxruntime_genai.*",
   "olive", "olive.*",
   "transformers", "transformers.*",
-  "tokenizers", "tokenizers.*",
+  "torch", "torch.*",
   "google.protobuf", "google.protobuf.*",
 ]
 ignore_missing_imports = true
+follow_imports = "skip"

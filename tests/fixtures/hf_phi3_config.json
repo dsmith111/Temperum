@@ -1,7 +1,0 @@
-{
-    "model_type": "phi3",
-    "architectures": ["Phi3ForCausalLM"],
-    "hidden_size": 3072,
-    "num_hidden_layers": 32,
-    "vocab_size": 32064
-}
