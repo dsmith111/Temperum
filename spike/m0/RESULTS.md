@@ -1,4 +1,4 @@
-# M0 results (in progress)
+# M0 results
 
 Host: Snapdragon X Elite X1E78100, 16 GB RAM, Windows 11 ARM64 26100, **no NVIDIA GPU**.
 Model: `Qwen/Qwen2.5-0.5B-Instruct` @ `7ae557604adf67be50417f59c2c2f167def9a775` (Apache-2.0).
@@ -16,8 +16,10 @@ No CUDA, QNN SDK, manual DLLs or JSON edits; one hand-written Modelfile (templat
 fp32 reference, correct answers, needle retrieval up to 3,445 tokens, 57–82 tokens/s, on the
 fork's own runtime, in a 14.6-minute CPU-only conversion. 4-bit RTN is too lossy (×2.4).
 
-Open problems: CPU GPTQ timing (only needed for smaller int4 bundles); two runtime
-`max_length` rules must be enforced (below).
+Also: CPU GPTQ is impractical on a loaded 16 GB laptop (memory pressure), so int4 GPTQ
+belongs to the CUDA path; five runtime/config rules must be enforced (below); and the
+GGUF/Hexagon route via GenieX's Microsoft-signed HTP catalog was faster on this small model
+(see the comparison near the end).
 
 ## Weight precision comparison (Qwen2.5-0.5B, fork runtime GenAI 0.12.2 / ORT 1.24.1 / QNN 2.42)
 
@@ -166,8 +168,46 @@ commit. Unmodified converter `inspect_prebuilt` reports structural **passed**, d
 - Undeclared dependencies: Olive 0.13 needs `requests` (telemetry import) in every env that
   imports Olive; loading an Olive-quantized checkpoint through transformers needs `accelerate`.
 
-## Pending
+## CPU GPTQ verdict
 
-- GPTQ int4 run with reduced calibration; timing and quality vs RTN int8.
+A clean rerun (16×1024 calibration tokens) took **394 s for the first layer** (~2.6 h
+projected for 0.5B) with only ~2.0 GB of RAM available on this 16 GB laptop (normal
+desktop load: VS Code, browser, Defender; 24 GB committed, pagefile active, 1.8 GB
+non-paged pool). The 2-layer profile, which fits in memory, scales linearly (~55 s/layer
+projected at 16K tokens), so the slowdown is memory pressure, not the algorithm.
+**Conclusion:** RTN int8 is the CPU default; GPTQ int4 belongs to the CUDA path (or CPU
+hosts with ample free RAM). The product must check available memory before converting.
+
+## GGUF / Hexagon comparison (GenieX v0.9.1, measurement only)
+
+GenieX's portable bench archive (hash-verified against the release sidecars) ran a GGUF
+on the NPU **without installing anything**: device `HTP0` via `ggml-hexagon.dll` +
+`libggml-htp-v73.so`, whose catalog `libggml-htp.cat` is signed by *Microsoft Windows
+Hardware Compatibility Publisher* (verified). Host-side DLLs/exe are not Authenticode
+signed. llama.cpp `e467e5b`, QAIRT 2.50 bundled.
+
+Same model (Qwen2.5-0.5B-Instruct, official `Q4_0` GGUF @ `9217f5db`), pp512 + tg128,
+greedy, warmup 1 + 3 runs:
+
+| Route | TTFT | Prefill | Decode |
+|---|---|---|---|
+| GenieX llama.cpp, `--device npu` | **170 ms** | **3,024 tok/s** | 65 tok/s |
+| GenieX llama.cpp, `--device hybrid` | 237 ms | 2,171 tok/s | 70 tok/s |
+| GenieX llama.cpp, `--device cpu` | 263 ms | 1,951 tok/s | **110 tok/s** |
+| Our QNN bundle, RTN int8 (fork runtime) | 473 ms (212–580) | 1,083 tok/s | 41 tok/s |
+| Our QNN bundle, RTN int4 (fork runtime) | 287 ms | 1,790 tok/s | 47 tok/s |
+
+GenieX accuracy spot check (NPU): "Paris", "42", "William Shakespeare", a sensible
+primary-colors list. Caveats: one 0.5B model on a memory-pressured machine; our Olive QNN
+graphs run attention on the CPU between 25 NPU partitions per token, which penalizes small
+models; larger models (1.5–8B) may change the picture and must be measured before choosing.
+
+## Status
+
+M0 core questions are answered: CPU-only conversion works (RTN int8, ~15 min for
+0.4–0.6B, near-lossless), outputs run on the fork's current runtime and the newest stack,
+three architecture families convert (one via a family template), and five runtime/config
+rules plus several toolchain traps are documented above. Open: performance at 1.5–4B
+(needs CUDA or more RAM for conversion), and the GGUF/Hexagon route decision.
 - Second architecture (Qwen3-0.6B or Llama-3.2-1B, gated).
 - GenieX (signed llama.cpp Hexagon) comparison.
