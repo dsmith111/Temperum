@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from npu_model.runtime_formats.ort_genai_folder import validate_genai_config
 
 
@@ -68,3 +70,16 @@ class TestValidateGenaiConfig:
         p.write_text(json.dumps(cfg), encoding="utf-8")
         result = validate_genai_config(p)
         assert result.errors == []
+
+
+@pytest.mark.parametrize("config", [
+    [], None, {"model": None}, {"model": {"decoder": []}}, {"search": []},
+    {"model": {"decoder": {"session_options": []}}},
+    {"model": {"decoder": {"context_length": "512"}}},
+    {"model": {"decoder": {"context_length": True}}},
+    {"search": {"max_length": 2.5}},
+])
+def test_malformed_structure_or_numeric_fields_fail_cleanly(tmp_path: Path, config: object) -> None:
+    (tmp_path / "genai_config.json").write_text(json.dumps(config), encoding="utf-8")
+    result = validate_genai_config(tmp_path)
+    assert result.errors

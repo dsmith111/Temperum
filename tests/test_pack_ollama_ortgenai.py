@@ -192,6 +192,7 @@ class TestPackForOllama:
             model_name="test/m:t",
             out_dir=out,
         )
+        assert result.pack_dir == out.resolve()
         names = {p.name for p in out.iterdir()}
         assert "bad.gguf" not in names
 

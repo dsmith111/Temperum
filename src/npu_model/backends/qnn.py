@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import json
 import logging
 import os
 import shutil
-import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -527,7 +525,7 @@ class QnnBackend(Backend):
         system_ram_gb = None
         try:
             import ctypes
-            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+            kernel32 = getattr(ctypes, "windll").kernel32
 
             class _MEMSTATEX(ctypes.Structure):
                 _fields_ = [
@@ -549,7 +547,8 @@ class QnnBackend(Backend):
         except Exception:
             try:
                 import os as _os2
-                system_ram_gb = (_os2.sysconf("SC_PAGE_SIZE") * _os2.sysconf("SC_PHYS_PAGES")) / (1024**3)
+                sysconf = getattr(_os2, "sysconf")
+                system_ram_gb = (sysconf("SC_PAGE_SIZE") * sysconf("SC_PHYS_PAGES")) / (1024**3)
             except Exception:
                 pass
 

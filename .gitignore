@@ -29,3 +29,5 @@ out/
 cache_dir/
 *.log
 compiled*/
+# Scratch
+sandbox_tmp/

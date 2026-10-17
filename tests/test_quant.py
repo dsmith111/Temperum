@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, call
+import sys
+from enum import Enum
+from types import ModuleType
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -32,7 +35,17 @@ def test_qnn_qdq_has_id() -> None:
 
 
 class TestQnnQdqPreprocessBranching:
-    """Regression tests: _quantize_qnn_flow must respect model_changed."""
+    """Control-flow regressions with mocked ORT, not QNN supplier qualification."""
+
+    @pytest.fixture(autouse=True)
+    def mock_quant_types(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        class QuantType(Enum):
+            QUInt16 = 1
+            QUInt8 = 2
+
+        module = ModuleType("onnxruntime.quantization")
+        module.QuantType = QuantType
+        monkeypatch.setitem(sys.modules, "onnxruntime.quantization", module)
 
     def _make_graph(self, tmp_path: Path) -> tuple[Path, Path]:
         graph = tmp_path / "model.onnx"
@@ -74,6 +87,8 @@ class TestQnnQdqPreprocessBranching:
 
         mock_quantize.assert_called_once()
         assert mock_quantize.call_args[1]["model_input"] == str(graph_path)
+        assert result == qdq_path
+        assert result.is_file()
 
         # The preprocessed file should NOT have been created
         pp_path = out_dir / "model_preprocessed.onnx"
@@ -139,3 +154,30 @@ class TestQnnQdqPreprocessBranching:
                 quant_config={},
             )
         assert exc_info.value.reason_code == "QNN_PREPROCESS_OUTPUT_MISSING"
+
+
+def test_missing_qnn_helpers_cannot_select_generic_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from npu_model.core.errors import NpuModelError
+    from npu_model.quant.qnn_qdq import QnnQdqQuantizer
+
+    monkeypatch.setitem(sys.modules, "onnxruntime", ModuleType("onnxruntime"))
+    monkeypatch.setitem(sys.modules, "onnxruntime.quantization", None)
+    graphs = GraphBundle({"model": tmp_path / "model.onnx"}, tmp_path, [], {})
+    q = QnnQdqQuantizer()
+    with pytest.raises(NpuModelError) as exc:
+        q.apply(graphs, quant_config={"calibration_data_reader": object()})
+    assert exc.value.reason_code == "MISSING_QNN_QUANT_HELPERS"
+
+
+def test_missing_ort_reports_quant_dependency_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from npu_model.core.errors import NpuModelError
+    from npu_model.quant.qnn_qdq import QnnQdqQuantizer
+
+    monkeypatch.setitem(sys.modules, "onnxruntime", None)
+    with pytest.raises(NpuModelError) as exc:
+        QnnQdqQuantizer().apply(GraphBundle({}, tmp_path, [], {}), quant_config={})
+    assert exc.value.reason_code == "MISSING_QUANT_DEPS"

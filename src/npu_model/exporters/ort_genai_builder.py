@@ -19,6 +19,26 @@ _SUPPORTED_MODEL_TYPES: set[str] = {
 }
 
 
+def resolve_export_precision(requested: str | None, quantizer_id: str = "passthrough") -> str:
+    """Choose a default, but never replace an explicitly requested precision."""
+    precision = requested if requested is not None else (
+        "int4" if quantizer_id == "passthrough" else "fp16"
+    )
+    if precision not in {"int4", "fp16", "fp32"}:
+        raise NpuModelError(
+            stage="export", reason_code="UNSUPPORTED_EXPORT_PRECISION",
+            message=f"Unsupported export precision: {precision!r}",
+            hint="The ORT GenAI builder path supports int4, fp16, fp32; bf16 is not supported here.",
+        )
+    if precision == "int4" and quantizer_id != "passthrough":
+        raise NpuModelError(
+            stage="export", reason_code="INCOMPATIBLE_EXPORT_PRECISION",
+            message=f"Explicit int4 export is incompatible with quantizer '{quantizer_id}'.",
+            hint="Use --precision fp16 or fp32 before QDQ quantization, or omit --precision for fp16.",
+        )
+    return precision
+
+
 @dataclass
 class OrtGenaiBuilderExporter(Exporter):
     """Export HF models to ORT GenAI format using onnxruntime-genai model builder.
@@ -55,6 +75,7 @@ class OrtGenaiBuilderExporter(Exporter):
         *,
         export_config: dict[str, Any],
     ) -> GraphBundle:
+        precision = resolve_export_precision(export_config.get("precision"))
         missing = self.check_dependencies()
         if missing:
             raise NpuModelError(
@@ -66,14 +87,8 @@ class OrtGenaiBuilderExporter(Exporter):
 
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        precision = export_config.get("precision", "int4")
         execution_provider = export_config.get("execution_provider", "cpu")
         extra_args = export_config.get("extra_args", [])
-
-        # Determine whether to use -m (HF model name, lets builder use
-        # transformers' built-in model classes) or -i (local directory).
-        hf_source = model.source.get("type") == "hf"
-        hf_repo_id = model.source.get("repo_id") if hf_source else None
 
         # If the model's config.json has "auto_map", it will force transformers
         # to load custom modeling code from the HF repo.  That custom code is
@@ -109,7 +124,7 @@ class OrtGenaiBuilderExporter(Exporter):
         cmd.extend(str(a) for a in extra_args)
 
         try:
-            result = subprocess.run(
+            subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,

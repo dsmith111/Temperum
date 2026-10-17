@@ -28,6 +28,8 @@ def compute_cache_key(
     quantizer_id: str,
     runtime_format_id: str,
     tool_version: str,
+    export_options: dict[str, Any] | None = None,
+    shape_options: dict[str, Any] | None = None,
 ) -> str:
     """Compute a deterministic SHA-256 cache key from conversion parameters."""
     key_data = _stable_json({
@@ -43,6 +45,8 @@ def compute_cache_key(
         "quantizer_id": quantizer_id,
         "runtime_format_id": runtime_format_id,
         "tool_version": tool_version,
+        "export_options": export_options or {},
+        "shape_options": shape_options or {},
     })
     return hashlib.sha256(key_data.encode("utf-8")).hexdigest()[:24]
 

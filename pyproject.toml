@@ -18,6 +18,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+prebuilt = [
+  "onnx>=1.17",
+]
 dev = [
   "pytest>=8.0.0",
   "ruff>=0.6.0",
@@ -69,10 +72,14 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "npu_model.olive" = ["templates/*.j2"]
+"npu_model.packagers" = ["profile_data/*.txt"]
 
 [tool.ruff]
 line-length = 110
 target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.mypy]
 python_version = "3.10"
@@ -80,3 +87,18 @@ warn_return_any = true
 warn_unused_ignores = true
 disallow_untyped_defs = true
 no_implicit_optional = true
+
+# Optional native/export packages are not required for the lightweight core check.
+# This only affects static imports; runtime dependency checks still fail closed.
+[[tool.mypy.overrides]]
+module = [
+  "numpy", "numpy.*",
+  "onnx", "onnx.*",
+  "onnxruntime", "onnxruntime.*",
+  "onnxruntime_genai", "onnxruntime_genai.*",
+  "olive", "olive.*",
+  "transformers", "transformers.*",
+  "tokenizers", "tokenizers.*",
+  "google.protobuf", "google.protobuf.*",
+]
+ignore_missing_imports = true

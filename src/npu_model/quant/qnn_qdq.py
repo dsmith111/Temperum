@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import shutil
 from dataclasses import dataclass
+from importlib import import_module
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +32,7 @@ class QnnQdqQuantizer:
 
     def apply(self, graphs: GraphBundle, *, quant_config: dict[str, Any]) -> GraphBundle:
         try:
-            import onnxruntime
+            import_module("onnxruntime")
         except ImportError:
             raise NpuModelError(
                 stage="quant",
@@ -47,14 +48,18 @@ class QnnQdqQuantizer:
                 get_qnn_qdq_config,
                 qnn_preprocess_model,
             )
-            has_qnn_helpers = True
-        except ImportError:
-            has_qnn_helpers = False
+        except ImportError as e:
+            raise NpuModelError(
+                stage="quant", reason_code="MISSING_QNN_QUANT_HELPERS",
+                message=f"ORT QNN quantization helpers are unavailable: {e}",
+                hint="Install an ORT build with QNN quantization helpers; generic QDQ is not a substitute.",
+                cause=e,
+            ) from e
 
         calib_data_reader = quant_config.get("calibration_data_reader")
 
         # HARD REQUIREMENT: calibration data is required for QNN HTP
-        if calib_data_reader is None and has_qnn_helpers:
+        if calib_data_reader is None:
             raise NpuModelError(
                 stage="quant",
                 reason_code="NO_CALIBRATION_DATA",
@@ -85,30 +90,17 @@ class QnnQdqQuantizer:
             has_external_data = any(out_dir.glob("*.data"))
             qdq_path = out_dir / f"{name}.qdq.onnx"
 
-            if has_qnn_helpers and calib_data_reader is not None:
-                # ---- Correct QNN QDQ flow (per ORT docs) ----
-                qdq_path = self._quantize_qnn_flow(
-                    name=name,
-                    graph_path=graph_path,
-                    out_dir=out_dir,
-                    calib_data_reader=calib_data_reader,
-                    has_external_data=has_external_data,
-                    qnn_preprocess_model=qnn_preprocess_model,
-                    get_qnn_qdq_config=get_qnn_qdq_config,
-                    quantize_fn=quantize,
-                    quant_config=quant_config,
-                )
-            else:
-                # Fallback for environments without QNN helpers
-                # (still uses static quantization if calibration data available)
-                qdq_path = self._quantize_fallback(
-                    name=name,
-                    graph_path=graph_path,
-                    qdq_path=qdq_path,
-                    calib_data_reader=calib_data_reader,
-                    has_external_data=has_external_data,
-                    quant_config=quant_config,
-                )
+            qdq_path = self._quantize_qnn_flow(
+                name=name,
+                graph_path=graph_path,
+                out_dir=out_dir,
+                calib_data_reader=calib_data_reader,
+                has_external_data=has_external_data,
+                qnn_preprocess_model=qnn_preprocess_model,
+                get_qnn_qdq_config=get_qnn_qdq_config,
+                quantize_fn=quantize,
+                quant_config=quant_config,
+            )
 
             if not qdq_path.exists():
                 raise NpuModelError(
@@ -224,7 +216,7 @@ class QnnQdqQuantizer:
         has_external_data: bool,
         quant_config: dict[str, Any],
     ) -> Path:
-        """Fallback quantization when QNN helpers are not available."""
+        """Legacy generic QDQ helper; never a substitute selected by qnn-qdq."""
         from onnxruntime.quantization import QuantType, quantize_static
 
         if calib_data_reader is None:

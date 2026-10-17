@@ -1,18 +1,44 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
 
 class TestHasDynamicShapes:
 
-    def test_returns_empty_without_onnx(self) -> None:
-        """If onnx is not importable or file invalid, returns empty."""
+    def test_missing_onnx_does_not_claim_static(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from npu_model.core.shapes import has_dynamic_shapes
 
-        result = has_dynamic_shapes(Path("nonexistent.onnx"))
-        assert result == []
+        monkeypatch.setitem(sys.modules, "onnx", None)
+        with pytest.raises(ImportError):
+            has_dynamic_shapes(Path("nonexistent.onnx"))
+
+    def test_invalid_graph_does_not_claim_static(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from npu_model.core.errors import NpuModelError
+        from npu_model.core.shapes import has_dynamic_shapes
+
+        onnx = SimpleNamespace(load=MagicMock(side_effect=ValueError("invalid graph")))
+        monkeypatch.setitem(sys.modules, "onnx", onnx)
+        monkeypatch.setitem(sys.modules, "google.protobuf.message", SimpleNamespace(DecodeError=ValueError))
+        with pytest.raises(NpuModelError) as exc:
+            has_dynamic_shapes(Path("invalid.onnx"))
+        assert exc.value.reason_code == "ONNX_INSPECTION_FAILED"
+
+    def test_unknown_input_dimension_is_not_static(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from npu_model.core.shapes import has_dynamic_shapes
+
+        tensor = MagicMock()
+        tensor.HasField.return_value = True
+        tensor.tensor_type.HasField.return_value = True
+        tensor.tensor_type.shape.dim = [SimpleNamespace(dim_param="", dim_value=0)]
+        model = SimpleNamespace(graph=SimpleNamespace(input=[SimpleNamespace(name="ids", type=tensor)]))
+        monkeypatch.setitem(sys.modules, "onnx", SimpleNamespace(load=lambda *a, **kw: model))
+        monkeypatch.setitem(sys.modules, "google.protobuf.message", SimpleNamespace(DecodeError=ValueError))
+        assert has_dynamic_shapes(Path("mock.onnx")) == ["ids: unknown/nonpositive dimension"]
 
 
 class TestFixDynamicShapes:

@@ -129,6 +129,12 @@ def convert_model(
     quantizer_was_auto: bool = False,
 ) -> ConvertResult:
     convert_mode = _resolve_mode(mode)
+    if stop_after not in (None, "export", "quantize"):
+        raise NpuModelError(
+            stage="pipeline", reason_code="UNKNOWN_STOP_STAGE",
+            message=f"Unknown stop-after stage: {stop_after}",
+            hint="Use export or quantize.",
+        )
     out_dir = out_dir.expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -184,6 +190,17 @@ def convert_model(
 
     # Resolve backend target early (needed for cache key)
     ts = backend.resolve_target(target, env=dict(os.environ))
+    is_npu_target = (
+        backend_id == "qnn"
+        and ts.params.get("backend_type", "").lower() in ("htp", "")
+    )
+    effective_export_options = dict(export_options or {})
+    if convert_mode == ConvertMode.EXPORT:
+        from npu_model.exporters.ort_genai_builder import resolve_export_precision
+
+        effective_export_options["precision"] = resolve_export_precision(
+            effective_export_options.get("precision"), effective_quantizer_id,
+        )
 
     # ---- 2b. Check cache ----
     import npu_model
@@ -201,12 +218,17 @@ def convert_model(
         quantizer_id=effective_quantizer_id,
         runtime_format_id=runtime_format_id,
         tool_version=npu_model.__version__,
+        export_options=effective_export_options,
+        shape_options={"num_ctx": (pack_ollama_opts or {}).get("num_ctx", 512)},
     )
 
-    if use_cache:
+    if use_cache and stop_after is None:
         cached = cache.get(cache_key)
         if cached is not None:
             bundle_dir, manifest_path = cache.restore(cached, out_dir)
+            runtime.validate_layout(bundle_dir)
+            if pack_ollama_name and is_npu_target and strategy == "context-cache":
+                _validate_npu_bundle(bundle_dir)
             pack_dir = _maybe_pack_ollama(
                 bundle_dir, pack_ollama_name, pack_ollama_opts, out_dir,
             )
@@ -222,20 +244,7 @@ def convert_model(
 
     adapter_out = work / f"adapter_{adapter.id}"
     export_config: dict[str, Any] = {"mode": convert_mode.value, "model_info": mi}
-    if export_options:
-        export_config.update(export_options)
-
-    # Auto-fix: when using a real quantizer (e.g. qnn-qdq), export in fp32 or fp16
-    # so the quantizer handles quantization — don't let the builder try int4.
-    if effective_quantizer_id != "passthrough":
-        current_precision = export_config.get("precision", "int4")
-        if current_precision == "int4":
-            export_config["precision"] = "fp16"
-            import logging
-            logging.getLogger("npu_model").info(
-                "Auto-adjusted export precision from int4 to fp16 "
-                "(quantizer '%s' will handle quantization)", effective_quantizer_id,
-            )
+    export_config.update(effective_export_options)
 
     try:
         graphs = adapter.export(model_dir, adapter_out, export_config=export_config)
@@ -324,10 +333,6 @@ def convert_model(
         )
 
     # ---- 4e. Policy: QNN/HTP + context-cache requires proper quantization ----
-    is_npu_target = (
-        backend_id == "qnn"
-        and ts.params.get("backend_type", "").lower() in ("htp", "")
-    )
     if is_npu_target and strategy == "context-cache" and effective_quantizer_id == "passthrough":
         if pack_ollama_name:
             raise NpuModelError(
@@ -377,7 +382,15 @@ def convert_model(
         shape_fix_dir.mkdir(exist_ok=True)
         new_graphs: dict[str, Path] = {}
         for gname, gpath in graphs.graphs.items():
-            dynamic = has_dynamic_shapes(gpath)
+            try:
+                dynamic = has_dynamic_shapes(gpath)
+            except (ImportError, OSError) as e:
+                raise NpuModelError(
+                    stage="shapes", reason_code="MISSING_SHAPE_DEPS",
+                    message=f"Cannot check mandatory QNN input shapes: {e}",
+                    hint="Install a compatible onnx build before context-cache compilation.",
+                    cause=e,
+                ) from e
             if dynamic:
                 _log.info("Fixing dynamic shapes in %s: %s", gpath.name, dynamic)
                 result = fix_dynamic_shapes(
@@ -389,9 +402,18 @@ def convert_model(
                     for w in result.warnings:
                         _log.warning("Shape fix: %s", w)
                 else:
-                    for e in result.errors:
-                        _log.error("Shape fix error: %s", e)
-                    new_graphs[gname] = gpath  # keep original
+                    raise NpuModelError(
+                        stage="shapes", reason_code="SHAPE_FIX_FAILED",
+                        message=f"Could not fix shapes for {gpath.name}.",
+                        hint="\n".join(result.errors),
+                    )
+                remaining = has_dynamic_shapes(new_graphs[gname])
+                if remaining:
+                    raise NpuModelError(
+                        stage="shapes", reason_code="DYNAMIC_SHAPES_REMAIN",
+                        message=f"Unfixed input dimensions in {gpath.name}: {remaining}",
+                        hint="Provide an already-shaped graph; no static-shape claim can be made.",
+                    )
             else:
                 new_graphs[gname] = gpath
         graphs = GraphBundle(
@@ -428,13 +450,14 @@ def convert_model(
 
         import os as _os
         try:
-            mem_info = _os.sysconf("SC_PAGE_SIZE") * _os.sysconf("SC_PHYS_PAGES")
+            sysconf = getattr(_os, "sysconf")
+            mem_info = sysconf("SC_PAGE_SIZE") * sysconf("SC_PHYS_PAGES")
         except (AttributeError, ValueError):
             # Windows — use ctypes to get total physical memory
             mem_info = None
             try:
                 import ctypes
-                kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+                kernel32 = getattr(ctypes, "windll").kernel32
 
                 class MEMORYSTATUSEX(ctypes.Structure):
                     _fields_ = [
@@ -627,6 +650,10 @@ def convert_model(
     manifest_path = out_dir / "manifest.json"
     write_manifest(manifest_path, manifest)
 
+    # Cached results must not bypass required device preflight.
+    if pack_ollama_name and is_npu_target and strategy == "context-cache":
+        _validate_npu_bundle(bundle_dir)
+
     # ---- 7b. Store in cache ----
     if use_cache:
         cache.put(cache_key, bundle_dir, manifest_path, meta={
@@ -637,29 +664,6 @@ def convert_model(
             "strategy": strategy,
         })
 
-    # ---- 8. Strict NPU validation (when packing for NPU target) ----
-    if pack_ollama_name and is_npu_target and strategy == "context-cache":
-        from npu_model.validate.npu_strict import validate_npu_strict
-
-        npu_result = validate_npu_strict(bundle_dir)
-        for check in npu_result.checks:
-            if check.status == "FAIL":
-                _log.error("NPU validation: %s — %s", check.name, check.detail)
-            elif check.status == "WARN":
-                _log.warning("NPU validation: %s — %s", check.name, check.detail)
-
-        if not npu_result.passed:
-            raise NpuModelError(
-                stage="validate",
-                reason_code="NPU_VALIDATION_FAILED",
-                message="Strict NPU validation failed. Bundle would not run on HTP.",
-                hint="\n".join(
-                    f"  [{c.status}] {c.name}: {c.detail}"
-                    for c in npu_result.checks if c.status == "FAIL"
-                ),
-            )
-        _log.info("STRICT NPU VALIDATION PASSED")
-
     # ---- 9. Optional: pack for Ollama ----
     pack_dir = _maybe_pack_ollama(bundle_dir, pack_ollama_name, pack_ollama_opts, out_dir)
 
@@ -668,6 +672,21 @@ def convert_model(
         shutil.rmtree(work)
 
     return ConvertResult(bundle_dir=bundle_dir, manifest_path=manifest_path, pack_dir=pack_dir)
+
+
+def _validate_npu_bundle(bundle_dir: Path) -> None:
+    from npu_model.validate.npu_strict import validate_npu_strict
+
+    result = validate_npu_strict(bundle_dir)
+    if not result.passed:
+        raise NpuModelError(
+            stage="validate", reason_code="NPU_VALIDATION_FAILED",
+            message="Strict QNN preflight failed or incomplete; NPU execution is not established.",
+            hint="\n".join(
+                f"  [{c.status}] {c.name}: {c.detail}"
+                for c in result.checks if c.status in ("FAIL", "SKIP")
+            ),
+        )
 
 
 def _maybe_pack_ollama(

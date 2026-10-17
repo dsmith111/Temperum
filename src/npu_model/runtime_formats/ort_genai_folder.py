@@ -184,24 +184,47 @@ def validate_genai_config(path: Path) -> OllamaOrtGenaiValidation:
 
     try:
         cfg = json.loads(config_path.read_text(encoding="utf-8"))
-    except Exception as e:
+    except (OSError, ValueError) as e:
         errors.append(f"Failed to parse genai_config.json: {e}")
+        return OllamaOrtGenaiValidation(errors=errors, warnings=warnings)
+
+    if not isinstance(cfg, dict):
+        errors.append("genai_config.json must contain a JSON object")
         return OllamaOrtGenaiValidation(errors=errors, warnings=warnings)
 
     # Check for model section
     model_cfg = cfg.get("model", {})
+    if not isinstance(model_cfg, dict):
+        errors.append("model must be a JSON object")
+        return OllamaOrtGenaiValidation(errors=errors, warnings=warnings)
     if not model_cfg:
         warnings.append("genai_config.json has no 'model' section")
 
     # Check decoder section
     decoder = model_cfg.get("decoder", {})
+    if not isinstance(decoder, dict):
+        errors.append("model.decoder must be a JSON object")
+        return OllamaOrtGenaiValidation(errors=errors, warnings=warnings)
 
     # Check search section (generation params)
     search = cfg.get("search", {})
+    if not isinstance(search, dict):
+        errors.append("search must be a JSON object")
+        return OllamaOrtGenaiValidation(errors=errors, warnings=warnings)
 
     # Validate context_length / max_length relationship
     context_length = decoder.get("context_length")
     max_length = search.get("max_length")
+    num_layers = decoder.get("num_hidden_layers")
+    for name, value in (
+        ("decoder.context_length", context_length),
+        ("search.max_length", max_length),
+        ("decoder.num_hidden_layers", num_layers),
+    ):
+        if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value <= 0):
+            errors.append(f"{name} must be a positive integer, got {value!r}")
+    if errors:
+        return OllamaOrtGenaiValidation(errors=errors, warnings=warnings)
 
     if context_length is not None and max_length is not None:
         if max_length > context_length:
@@ -210,24 +233,16 @@ def validate_genai_config(path: Path) -> OllamaOrtGenaiValidation:
                 "This may cause KV cache overflow at runtime."
             )
 
-    if context_length is not None and context_length <= 0:
-        errors.append(f"decoder.context_length must be positive, got {context_length}")
-
-    if max_length is not None and max_length <= 0:
-        errors.append(f"search.max_length must be positive, got {max_length}")
-
     # Check for session options (EP config)
-    session = model_cfg.get("decoder", {}).get("session_options", {})
+    session = decoder.get("session_options", {})
+    if not isinstance(session, dict):
+        errors.append("decoder.session_options must be a JSON object")
+        return OllamaOrtGenaiValidation(errors=errors, warnings=warnings)
     if not session:
         warnings.append(
             "No session_options in decoder config. "
             "Runtime may use default execution provider."
         )
-
-    # Check num_hidden_layers (useful for debugging)
-    num_layers = decoder.get("num_hidden_layers")
-    if num_layers is not None and num_layers <= 0:
-        errors.append(f"decoder.num_hidden_layers must be positive, got {num_layers}")
 
     return OllamaOrtGenaiValidation(errors=errors, warnings=warnings)
 
@@ -293,13 +308,13 @@ class OrtGenaiFolderFormat(RuntimeFormat):
         return bundle_dir
 
     def validate_layout(self, bundle_dir: Path) -> None:
-        if not (bundle_dir / "onnx").exists():
+        if not (bundle_dir / "onnx").is_dir():
             raise NpuModelError(
                 stage="runtime",
                 reason_code="MISSING_ONNX_DIR",
                 message=f"Missing: {bundle_dir / 'onnx'}",
             )
-        any_onnx = any((bundle_dir / "onnx").glob("*.onnx"))
+        any_onnx = any(p.is_file() for p in (bundle_dir / "onnx").glob("*.onnx"))
         if not any_onnx:
             raise NpuModelError(
                 stage="runtime",

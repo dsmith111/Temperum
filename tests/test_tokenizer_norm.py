@@ -3,10 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 
 from npu_model.core.tokenizer_bridge import bridge_tokenizer_files
-from npu_model.core.tokenizer_norm import normalize_tokenizer_config, TokenizerNormResult
+from npu_model.core.tokenizer_norm import normalize_tokenizer_config
 from npu_model.runtime_formats.ort_genai_folder import validate_ollama_ortgenai_dir
 
 

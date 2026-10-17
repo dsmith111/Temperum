@@ -62,6 +62,17 @@ class OliveQnnLlmQuantizer:
                 report.machine,
             )
 
+        # Log input model routing decision
+        model_info = quant_config.get("model_info") or {}
+        source = (model_info.get("source") or {})
+        if source.get("type") == "hf" and quant_config.get("model_dir"):
+            _log.info(
+                "Olive will use HfModel input (HF source: %s, local: %s). "
+                "Adapter-exported ONNX will be bypassed in favor of Olive's LLM-aware export.",
+                source.get("repo_id", "unknown"),
+                quant_config["model_dir"],
+            )
+
         first_graph = next(iter(graphs.graphs.values()))
         work_dir = Path(first_graph).parent / "_olive_qnn_llm"
 

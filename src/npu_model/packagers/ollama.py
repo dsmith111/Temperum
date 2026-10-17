@@ -30,7 +30,7 @@ def pack_for_ollama(
     num_ctx: int = 512,
     num_predict: int = 128,
 ) -> PackResult:
-    """Build an Ollama-publishable directory from an ORT GenAI bundle.
+    """Assemble an Ollama input directory; does not install, execute, or upload.
 
     Uses atomic staging: builds into a temp directory, validates, then
     replaces the destination to avoid leaving an empty output on failure.

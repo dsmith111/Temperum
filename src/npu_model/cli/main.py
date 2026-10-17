@@ -5,6 +5,7 @@ from typing import Optional
 
 import typer
 from rich import print as rprint
+from rich.markup import escape
 
 from npu_model.core.registry import Registry
 from npu_model.core.pipeline import explain_plan, convert_model
@@ -19,11 +20,22 @@ registry = Registry.load()
 
 def _handle_err(e: Exception) -> None:
     if isinstance(e, NpuModelError):
-        rprint(f"[bold red]Error[/bold red] [{e.stage}/{e.reason_code}]: {e}")
+        code = escape(f"[{e.stage}/{e.reason_code}]")
+        rprint(f"[bold red]Error[/bold red] {code}: {escape(str(e))}")
         if e.hint:
-            rprint(f"[yellow]Hint:[/yellow] {e.hint}")
+            rprint(f"[yellow]Hint:[/yellow] {escape(e.hint)}")
         raise typer.Exit(code=2)
     raise e
+
+
+def _print_assembly_next_steps(pack_dir: Path, name: str) -> None:
+    rprint(f"[green]OK[/green] assembled Ollama folder: {pack_dir}")
+    rprint("Assembled folder only; no Ollama install or remote upload was performed.")
+    rprint("[bold]Optional local install (requires a compatible Ollama fork):[/bold]")
+    rprint(f'  cd "{pack_dir}"')
+    rprint(f"  ollama create {name} -f Modelfile")
+    rprint("Then verify local generation and native execution separately.")
+    rprint("Remote publication is a separate, explicit operation after validation.")
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +176,10 @@ def convert(
     runtime: str = typer.Option("ort-genai-folder", "--runtime", help="Runtime format id"),
     quant: Optional[str] = typer.Option(None, "--quant", help="Quantization strategy (auto-selected for NPU)"),
     mode: str = typer.Option("export", "--mode", help="Convert mode: export or prebuilt-ort-genai"),
-    precision: str = typer.Option("int4", "--precision", help="Export precision: int4, fp16, fp32, bf16"),
+    precision: Optional[str] = typer.Option(
+        None, "--precision",
+        help="Export precision: int4, fp16, fp32. Default: int4 for passthrough, fp16 before quantization.",
+    ),
     execution_provider: str = typer.Option("cpu", "--execution-provider", help="Export EP: cpu, cuda, dml"),
     compile_strategy: Optional[str] = typer.Option(
         None, "--compile-strategy",
@@ -265,12 +280,7 @@ def convert(
             if ollama_name:
                 rprint(f"  npu-model pack-ollama --input .\\compiled --name {ollama_name} --out .\\publish")
         elif result.pack_dir:
-            rprint(f"[green]OK[/green] ollama publish: {result.pack_dir}")
-            rprint()
-            rprint("[bold]Ready to publish:[/bold]")
-            rprint(f"  cd {result.pack_dir}")
-            rprint(f"  ollama create {ollama_name} -f Modelfile")
-            rprint(f"  ollama push {ollama_name}")
+            _print_assembly_next_steps(result.pack_dir, ollama_name or "<name>")
     except Exception as e:
         _handle_err(e)
 
@@ -279,30 +289,140 @@ def convert(
 # validate
 # ---------------------------------------------------------------------------
 
+@app.command("acquire-prebuilt")
+def acquire_prebuilt(
+    repo: str = typer.Option(..., "--repo", help="Public ungated HF namespace/repository; never ambient auth"),
+    out: Path = typer.Option(..., "--out", help="New independent local folder; never overwrite"),
+    work_dir: Path = typer.Option(..., "--work-dir", help="Existing owned receipt/staging parent on destination volume"),
+    revision: str = typer.Option("main", "--revision", help="Branch/tag/commit; pinned to an immutable commit in plan"),
+    subfolder: Optional[str] = typer.Option(None, "--subfolder", help="Whole prebuilt subfolder, not file globs"),
+    processor_name: Optional[str] = typer.Option(None, "--processor-name", help="Compare an exact declared target"),
+    execute: bool = typer.Option(False, "--execute", help="Download the reviewed plan; default metadata-only"),
+    expect_fingerprint: Optional[str] = typer.Option(None, "--expect-fingerprint", help="Exact reviewed plan hash"),
+    accept_license: bool = typer.Option(False, "--accept-license", help="Confirm reviewed licenses and download/use rights"),
+    resume: Optional[Path] = typer.Option(None, "--resume", help="Original receipt; verified whole-file reuse only"),
+    timeout: float = typer.Option(300, "--timeout", min=1, max=3600, help="Cooperative acquisition budget in seconds"),
+) -> None:
+    """Plan public HF prebuilt acquisition; never execute remote code/models or install/upload."""
+    import json
+    from npu_model.sources.prebuilt_hf import execute_acquisition, plan_acquisition
+
+    try:
+        if resume is not None and (not execute or not expect_fingerprint):
+            raise NpuModelError("acquire", "RESUME_REQUIRES_EXECUTE",
+                                "--resume requires --execute --expect-fingerprint and the original options.")
+        plan = plan_acquisition(repo, out, work_dir=work_dir, revision=revision, subfolder=subfolder,
+                                processor_name=processor_name, resume=resume, timeout=timeout)
+        result = (execute_acquisition(plan, expected_fingerprint=expect_fingerprint, accept_license=accept_license,
+                                      resume=resume, timeout=timeout) if execute else plan.to_dict())
+        typer.echo(json.dumps(result, indent=2))
+    except NpuModelError as exc:
+        _handle_err(exc)
+
+
+@app.command("prepare-prebuilt")
+def prepare_prebuilt(
+    input: Path = typer.Option(..., "--input", help="Unmodified pinned source acquired with acquire-prebuilt"),
+    out: Path = typer.Option(..., "--out", help="New derived folder outside source; no overwrite"),
+    profile: str = typer.Option(..., "--profile", help="Explicit engineering profile: phi3-mini-4k-qnn"),
+    execute: bool = typer.Option(False, "--execute", help="Prepare the reviewed local profile; default read-only"),
+    expect_fingerprint: Optional[str] = typer.Option(None, "--expect-fingerprint", help="Reviewed profile plan hash"),
+    accept_license: bool = typer.Option(False, "--accept-license", help="Confirm reviewed licenses/notices and use rights"),
+) -> None:
+    """Prepare one content-pinned derivative with notices/template; no downloads, native execution or uploads."""
+    import json
+    from npu_model.packagers.prebuilt_profile import execute_profile, plan_profile
+
+    try:
+        plan = plan_profile(input, out, profile=profile)
+        result = (execute_profile(plan, expected_fingerprint=expect_fingerprint, accept_license=accept_license)
+                  if execute else plan.to_dict())
+        typer.echo(json.dumps(result, indent=2))
+    except NpuModelError as exc:
+        _handle_err(exc)
+
+
+@app.command("inspect-prebuilt")
+def inspect_prebuilt_command(
+    input: Path = typer.Option(..., "--input", help="Existing local ORT GenAI folder (read-only)"),
+    processor_name: Optional[str] = typer.Option(None, "--processor-name", help="Compare an exact declared target"),
+) -> None:
+    """Emit JSON hashes and structural/declaration/target/native evidence levels; never execute."""
+    import json
+    from npu_model.inspect.prebuilt import inspect_prebuilt
+
+    report = inspect_prebuilt(input, processor_name=processor_name)
+    typer.echo(json.dumps(report.to_dict(), indent=2))
+    if not report.importable:
+        raise typer.Exit(code=2)
+
+
+@app.command("import-ollama")
+def import_ollama(
+    input: Path = typer.Option(..., "--input", help="Existing local consumer-ready ORT GenAI folder"),
+    name: str = typer.Option(..., "--name", help="Local Ollama tag, optionally namespace/name:tag"),
+    ollama_exe: Optional[Path] = typer.Option(None, "--ollama-exe", help="Standalone compatible fork executable"),
+    host: Optional[str] = typer.Option(None, "--host", help="Explicit numeric loopback HTTP endpoint; or OLLAMA_HOST"),
+    modelfile: Optional[Path] = typer.Option(None, "--modelfile", help="Known-correct local FROM + Go TEMPLATE"),
+    processor_name: Optional[str] = typer.Option(None, "--processor-name", help="Compare an exact declared target"),
+    overwrite: bool = typer.Option(False, "--overwrite", help="Explicit consent to replace an existing local tag"),
+    execute: bool = typer.Option(False, "--execute", help="Execute reviewed local create plan (otherwise no I/O)"),
+    expect_fingerprint: Optional[str] = typer.Option(None, "--expect-fingerprint", help="Reviewed import plan fingerprint"),
+    work_dir: Path = typer.Option(Path("."), "--work-dir", help="Existing scratch parent outside input; staging cleaned"),
+    timeout: float = typer.Option(300, "--timeout", min=1, max=3600, help="Bounded execution time budget in seconds"),
+) -> None:
+    """Plan by default; local Ollama create only, never download/start a server/remotely upload."""
+    import json
+    from npu_model.packagers.local_import import execute_import, plan_import
+
+    try:
+        plan = plan_import(input, name, executable=ollama_exe, host=host, modelfile=modelfile,
+                           overwrite=overwrite, processor_name=processor_name)
+        result = (execute_import(plan, expected_fingerprint=expect_fingerprint, work_dir=work_dir,
+                                 timeout=timeout) if execute else plan.to_dict())
+        typer.echo(json.dumps(result, indent=2))
+    except NpuModelError as exc:
+        _handle_err(exc)
+
+
 @app.command("validate")
 def validate(
-    input: Path = typer.Option(
-        ..., "--input", help="Path to bundle or publish directory to validate",
+    input: Optional[Path] = typer.Option(
+        None, "--input", help="Path to bundle or assembled directory to validate",
     ),
     as_mode: Optional[str] = typer.Option(
         None, "--as",
-        help="Validation mode: ollama-ortgenai, genai-config, runtime-load, or omit for basic layout",
+        help="Mode: ollama-ortgenai, genai-config, runtime-load, strict-npu (alias npu-ready), or basic layout",
     ),
     bundle: Optional[Path] = typer.Option(
         None, "--bundle", help="(deprecated, use --input) Path to runtime bundle directory",
     ),
-    backend: str = typer.Option("qnn", "--backend", help="Backend id"),
-    target: str = typer.Option("auto", "--target", help="Target selection"),
+    backend: str = typer.Option("qnn", "--backend", help="Legacy option (not used by validation modes)"),
+    target: str = typer.Option("auto", "--target", help="Legacy option (not used by validation modes)"),
     prompt: str = typer.Option("Hello", "--prompt", help="Test prompt"),
-    max_tokens: int = typer.Option(8, "--max-tokens", help="Max tokens to generate"),
+    max_tokens: int = typer.Option(8, "--max-tokens", min=1, help="Max new tokens to generate"),
 ) -> None:
-    """Validate a runtime bundle or publish directory."""
+    """Check layout, configuration, runtime generation, or strict QNN preflight."""
     check_dir = input or bundle
     if check_dir is None:
         rprint("[bold red]Error[/bold red]: --input is required.")
         raise typer.Exit(code=2)
 
     try:
+        if input is not None and bundle is not None and input.resolve() != bundle.resolve():
+            raise NpuModelError(
+                stage="validate", reason_code="CONFLICTING_INPUT",
+                message="--input and deprecated --bundle refer to different directories.",
+                hint="Use --input only.",
+            )
+        if bundle is not None:
+            rprint("[yellow]WARN[/yellow]: --bundle is deprecated; use --input.")
+        if as_mode not in (None, "ollama-ortgenai", "genai-config", "runtime-load", "strict-npu", "npu-ready"):
+            raise NpuModelError(
+                stage="validate", reason_code="UNKNOWN_VALIDATION_MODE",
+                message=f"Unknown validation mode: {as_mode}",
+                hint="Use ollama-ortgenai, genai-config, runtime-load, strict-npu, or omit --as for layout.",
+            )
         if as_mode == "ollama-ortgenai":
             from npu_model.runtime_formats.ort_genai_folder import validate_ollama_ortgenai_dir
 
@@ -315,7 +435,7 @@ def validate(
                 raise typer.Exit(code=2)
             for w in result.warnings:
                 rprint(f"[yellow]WARN[/yellow]: {w}")
-            rprint("[green]OK[/green] ollama-ortgenai validation passed.")
+            rprint("[green]OK[/green] ollama-ortgenai packaging checks passed (not runtime/NPU validation).")
 
         elif as_mode == "genai-config":
             from npu_model.runtime_formats.ort_genai_folder import validate_genai_config
@@ -329,7 +449,7 @@ def validate(
                 raise typer.Exit(code=2)
             for w in result.warnings:
                 rprint(f"[yellow]WARN[/yellow]: {w}")
-            rprint("[green]OK[/green] genai-config validation passed.")
+            rprint("[green]OK[/green] genai-config sanity checks passed (not runtime/NPU validation).")
 
         elif as_mode == "runtime-load":
             _validate_runtime_load(check_dir, prompt, max_tokens)
@@ -348,8 +468,10 @@ def validate(
                 else:
                     rprint(f"[green]OK[/green]: {check.name} — {check.detail}")
             if not npu_result.passed:
+                rprint("[bold red]Strict QNN preflight failed or incomplete; no NPU certification.[/bold red]")
                 raise typer.Exit(code=2)
-            rprint("[green]STRICT NPU VALIDATION PASSED[/green]")
+            rprint("[green]STRICT QNN PREFLIGHT PASSED[/green]")
+            rprint("Session loads only; generation and native supplier support remain unverified.")
 
         else:
             rt = registry.runtime_formats.get("ort-genai-folder")
@@ -357,7 +479,11 @@ def validate(
                 rt.validate_layout(check_dir)
                 rprint("[green]OK[/green] layout validation passed.")
             else:
-                rprint("[yellow]Warning:[/yellow] No runtime format plugin to validate against.")
+                raise NpuModelError(
+                    stage="validate", reason_code="MISSING_RUNTIME_PLUGIN",
+                    message="No ort-genai-folder runtime plugin available for layout validation.",
+                    hint="Reinstall npu-model to restore its built-in entry points.",
+                )
     except typer.Exit:
         raise
     except Exception as e:
@@ -365,32 +491,51 @@ def validate(
 
 
 def _validate_runtime_load(check_dir: Path, prompt: str, max_tokens: int) -> None:
-    """Optional runtime load validation — requires onnxruntime-genai."""
+    """Load and generate with ORT GenAI; this does not certify NPU execution."""
     try:
         import onnxruntime_genai as og
-    except ImportError:
-        rprint(
-            "[yellow]WARN[/yellow]: onnxruntime-genai not installed. "
-            "Skipping runtime load validation.\n"
-            "  Install with: pip install onnxruntime-genai"
-        )
-        return
+    except (ImportError, OSError) as e:
+        raise NpuModelError(
+            stage="validate", reason_code="MISSING_VALIDATE_DEPS",
+            message=f"Runtime validation unavailable: onnxruntime-genai could not be imported: {e}",
+            hint="Install a compatible npu-model[validate] build; no runtime check was performed.",
+            cause=e,
+        ) from e
 
     try:
         model = og.Model(str(check_dir))
         tokenizer = og.Tokenizer(model)
         tokens = tokenizer.encode(prompt)
+        if not len(tokens):
+            raise NpuModelError(
+                stage="validate", reason_code="EMPTY_PROMPT",
+                message="The prompt did not encode to any tokens.",
+            )
         params = og.GeneratorParams(model)
-        params.set_search_options(max_length=max_tokens)
-        params.input_ids = tokens
-        output = model.generate(params)
-        decoded = tokenizer.decode(output[0])
-        rprint(f"[green]OK[/green] runtime load + generate succeeded")
-        rprint(f"  prompt: {prompt!r}")
-        rprint(f"  output: {decoded!r}")
-    except Exception as e:
-        rprint(f"[bold red]ERROR[/bold red]: Runtime load failed: {e}")
-        raise typer.Exit(code=2)
+        params.set_search_options(max_length=len(tokens) + max_tokens)
+        generator = og.Generator(model, params)
+        generator.append_tokens(tokens)
+        for _ in range(max_tokens):
+            if generator.is_done():
+                break
+            generator.generate_next_token()
+        output = generator.get_sequence(0)
+        if len(output) <= len(tokens):
+            raise NpuModelError(
+                stage="validate", reason_code="NO_GENERATION",
+                message="Runtime loaded but generated no new tokens.",
+            )
+        decoded = tokenizer.decode(output)
+    except (OSError, RuntimeError, ValueError, TypeError, AttributeError, IndexError) as e:
+        raise NpuModelError(
+            stage="validate", reason_code="RUNTIME_LOAD_FAILED",
+            message=f"Runtime load or generation failed: {e}",
+            hint="Check bundle compatibility and the installed ORT GenAI API/version.",
+            cause=e,
+        ) from e
+    rprint("[green]OK[/green] runtime load + generate succeeded (not NPU certification)")
+    rprint(f"  prompt: {prompt!r}")
+    rprint(f"  output: {decoded!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -492,9 +637,9 @@ def compile_context(
             fail_details = [
                 f"  - {c.name}: {c.detail}"
                 for c in npu_result.checks
-                if c.status == "FAIL"
+                if c.status in ("FAIL", "SKIP")
             ]
-            rprint("[bold red]Error[/bold red]: Strict NPU validation failed after compile.")
+            rprint("[bold red]Error[/bold red]: Strict QNN preflight failed or incomplete after compile.")
             for d in fail_details:
                 rprint(d)
             raise typer.Exit(code=2)
@@ -522,12 +667,12 @@ def pack_ollama(
         ..., "--name", help="Ollama model name, e.g. dsmith111/phi3:mini-qnn",
     ),
     out: Path = typer.Option(
-        ..., "--out", help="Output directory for Ollama publish",
+        ..., "--out", help="Output directory for assembled Ollama files (no install/upload)",
     ),
     num_ctx: int = typer.Option(512, "--num-ctx", help="num_ctx parameter for Modelfile"),
     num_predict: int = typer.Option(128, "--num-predict", help="num_predict parameter for Modelfile"),
 ) -> None:
-    """Create an Ollama-publishable directory (Modelfile + allowlisted files)."""
+    """Assemble an Ollama folder (Modelfile + files); no install or upload."""
     try:
         from npu_model.packagers.ollama import pack_for_ollama
 
@@ -540,10 +685,7 @@ def pack_ollama(
         )
         rprint(f"[green]OK[/green] {result.file_count} files -> {result.pack_dir}")
         rprint()
-        rprint("[bold]Ready to publish:[/bold]")
-        rprint(f"  cd {result.pack_dir}")
-        rprint(f"  ollama create {name} -f Modelfile")
-        rprint(f"  ollama push {name}")
+        _print_assembly_next_steps(result.pack_dir, name)
     except Exception as e:
         _handle_err(e)
 
@@ -569,12 +711,13 @@ def publish(
         help="External Python interpreter used for Olive runs (fallback: NPU_MODEL_OLIVE_PYTHON).",
     ),
 ) -> None:
-    """One-command HF -> NPU -> Ollama publish.
+    """Compatibility alias: convert + assemble Ollama files; no install/upload.
 
     Equivalent to: convert --pack-ollama <name> with NPU defaults auto-applied.
     """
     try:
         rprint("[bold]npu-model publish[/bold]")
+        rprint("Compatibility name: 'publish' only converts and assembles local files.")
         rprint(f"  input: {input}")
         rprint(f"  name:  {name}")
         rprint(f"  mode:  {mode}")
@@ -605,11 +748,6 @@ def publish(
         rprint(f"[green]OK[/green] bundle: {result.bundle_dir}")
         rprint(f"[green]OK[/green] manifest: {result.manifest_path}")
         if result.pack_dir:
-            rprint(f"[green]OK[/green] ollama publish: {result.pack_dir}")
-            rprint()
-            rprint("[bold]Next steps:[/bold]")
-            rprint(f"  cd {result.pack_dir}")
-            rprint(f"  ollama create {name} -f Modelfile")
-            rprint(f"  ollama push {name}")
+            _print_assembly_next_steps(result.pack_dir, name)
     except Exception as e:
         _handle_err(e)

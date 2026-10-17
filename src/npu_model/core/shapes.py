@@ -12,7 +12,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+
+from npu_model.core.errors import NpuModelError
 
 
 @dataclass
@@ -42,7 +43,6 @@ def fix_dynamic_shapes(
 
     try:
         import onnx
-        from onnx import TensorProto
     except ImportError:
         return ShapeFixResult(
             fixed=False, output_path=None,
@@ -80,7 +80,6 @@ def fix_dynamic_shapes(
         dim_map.update(extra_dims)
 
     fixed_dims: dict[str, int] = {}
-    any_dynamic = False
 
     # Fix inputs
     for inp in model.graph.input:
@@ -95,7 +94,6 @@ def fix_dynamic_shapes(
                             dim.ClearField("dim_param")
                             fixed_dims[name] = dim_map[name]
                         else:
-                            any_dynamic = True
                             warnings.append(
                                 f"Input '{inp.name}': unfixed dynamic dim '{name}'. "
                                 f"Pass --shape-dim {name}=<value> to fix it."
@@ -144,23 +142,32 @@ def fix_dynamic_shapes(
 
 
 def has_dynamic_shapes(onnx_path: Path) -> list[str]:
-    """Return list of dynamic dimension names found in the model, or empty if all static."""
-    try:
-        import onnx
-    except ImportError:
-        return []
+    """Inspect input dimensions; missing dependencies or unreadable graphs are not static."""
+    import onnx
+    from google.protobuf.message import DecodeError
 
     try:
         model = onnx.load(str(onnx_path), load_external_data=False)
-    except Exception:
-        return []
+    except (OSError, ValueError, RuntimeError, DecodeError) as e:
+        raise NpuModelError(
+            stage="shapes", reason_code="ONNX_INSPECTION_FAILED",
+            message=f"Could not inspect input shapes in {onnx_path.name}: {e}",
+            cause=e,
+        ) from e
 
     dynamic_dims: list[str] = []
     for inp in model.graph.input:
         if inp.type.HasField("tensor_type"):
+            if not inp.type.tensor_type.HasField("shape"):
+                dynamic_dims.append(f"{inp.name}: unknown rank")
+                continue
             shape = inp.type.tensor_type.shape
             if shape is not None:
                 for dim in shape.dim:
                     if dim.dim_param and dim.dim_param not in dynamic_dims:
                         dynamic_dims.append(dim.dim_param)
+                    elif not dim.dim_param and dim.dim_value <= 0:
+                        dynamic_dims.append(f"{inp.name}: unknown/nonpositive dimension")
+        else:
+            dynamic_dims.append(f"{inp.name}: non-tensor input")
     return dynamic_dims

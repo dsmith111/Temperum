@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
+
+import pytest
 
 from npu_model.core.cache import ConversionCache, compute_cache_key
 
@@ -50,6 +51,22 @@ def test_compute_cache_key_changes_with_input() -> None:
 def test_cache_miss_returns_none(tmp_path: Path) -> None:
     cache = ConversionCache(tmp_path)
     assert cache.get("nonexistent") is None
+
+
+@pytest.mark.parametrize("option", ["precision", "execution_provider", "calib_samples"])
+def test_cache_key_includes_export_and_calibration_settings(option: str) -> None:
+    base = dict(
+        input_spec="local-model", input_revision=None, adapter_id="phi3", mode="export",
+        backend_id="qnn", target_name="auto", target_params={}, compile_strategy="passthrough",
+        compile_config={}, quantizer_id="passthrough", runtime_format_id="ort-genai-folder",
+        tool_version="0.1.0",
+    )
+    assert compute_cache_key(**base, export_options={option: "a"}) != compute_cache_key(
+        **base, export_options={option: "b"},
+    )
+    assert compute_cache_key(**base, shape_options={"num_ctx": 512}) != compute_cache_key(
+        **base, shape_options={"num_ctx": 1024},
+    )
 
 
 def test_cache_put_and_get(tmp_path: Path) -> None:

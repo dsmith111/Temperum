@@ -32,7 +32,6 @@ def materialize_hf(spec: HfSpec, cache_dir: Optional[Path]) -> Path:
             repo_id=spec.repo_id,
             revision=spec.revision,
             cache_dir=str(cache_dir) if cache_dir else None,
-            local_dir_use_symlinks=False,
         )
         return Path(local_dir).resolve()
     except Exception as e:

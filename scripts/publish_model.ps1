@@ -107,5 +107,10 @@ if (-not $NoPush) {
 }
 
 Write-Host "`n=== Done ===" -ForegroundColor Green
-Write-Host "Model published as: $Name"
+if ($NoPush) {
+    Write-Host "Model installed locally as: $Name (no remote upload)"
+} else {
+    Write-Host "Model installed locally and pushed remotely as: $Name"
+}
+Write-Host "Generation and native execution have not been validated by this script."
 Write-Host "Run with: ollama run $Name"
