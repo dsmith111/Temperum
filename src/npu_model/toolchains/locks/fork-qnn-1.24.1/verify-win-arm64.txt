@@ -1,0 +1,12 @@
+# npu-model toolchain lock: role=verify runtime=fork-qnn-1.24.1 platform=win-arm64
+# mode: exact
+# python: 3.12
+# tested: 2026-10-17 Snapdragon X1E78100: M0 NPU verification
+flatbuffers==25.12.19
+mpmath==1.3.0
+numpy==2.5.3
+onnxruntime-genai==0.12.2
+onnxruntime-qnn==1.24.1
+packaging==26.3
+protobuf==7.36.2
+sympy==1.14.0

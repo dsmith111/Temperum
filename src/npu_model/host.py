@@ -1,7 +1,7 @@
 """Facts about the machine the converter runs on: architecture, CPU/NPU identity, memory, CUDA.
 
 The default Python on Windows-on-Arm laptops is often the x64 build under emulation, so the
-native architecture comes from IsWow64Process2, not from the interpreter.
+native architecture comes from the system-wide PROCESSOR_ARCHITECTURE, not the interpreter.
 """
 
 from __future__ import annotations
@@ -144,6 +144,19 @@ def memory_gb() -> tuple[float | None, float | None]:
         return info["MemTotal"] / 2**30, info.get("MemAvailable", info["MemFree"]) / 2**30
     except (OSError, KeyError, ValueError):
         return None, None
+
+
+def long_paths_enabled() -> bool:
+    """Whether Windows allows paths beyond 260 characters (always true elsewhere)."""
+    if sys.platform != "win32":
+        return True
+    try:
+        import winreg
+
+        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\FileSystem")
+        return int(winreg.QueryValueEx(key, "LongPathsEnabled")[0]) == 1
+    except (OSError, ValueError):
+        return False
 
 
 def detect_host(run: Runner = subprocess.run) -> HostInfo:

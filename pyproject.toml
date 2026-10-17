@@ -14,6 +14,8 @@ dependencies = [
   "typer>=0.12.3",
   "rich>=13.7.1",
   "huggingface_hub>=0.30",
+  # Installs native-architecture Python builds for the toolchain environments.
+  "uv>=0.8",
   # Structural bundle inspection parses ONNX graphs (metadata only).
   "onnx>=1.17",
 ]
@@ -36,6 +38,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "npu_model.recipes" = ["upstream/*.json"]
+"npu_model.toolchains" = ["locks/*/*.txt"]
 
 [tool.ruff]
 line-length = 110
@@ -65,6 +68,7 @@ module = [
   "torch", "torch.*",
   "google.protobuf", "google.protobuf.*",
   "huggingface_hub", "huggingface_hub.*",
+  "psutil", "psutil.*",
 ]
 ignore_missing_imports = true
 follow_imports = "skip"

@@ -1,0 +1,15 @@
+# npu-model toolchain lock: role=quantize runtime=fork-qnn-1.24.1 platform=win-amd64 device=cuda
+# mode: resolve
+# python: 3.12
+# torch-index: https://download.pytorch.org/whl/cu126
+# no-deps: onnxruntime-genai
+# tested: no (no x64 + NVIDIA machine available yet; decision D8)
+accelerate==1.15.0
+olive-ai==0.13.0
+onnxruntime-genai==0.12.2
+onnxruntime-gpu==1.24.4
+optimum==2.3.0
+psutil==7.2.2
+requests==2.34.2
+torch==2.14.1
+transformers==4.57.3
