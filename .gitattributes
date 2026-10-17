@@ -1,0 +1,3 @@
+# Vendored recipes are hashed byte-for-byte against upstream (LF); never convert line endings.
+src/npu_model/recipes/upstream/*.json -text
+tests/fixtures/m0_configs/*.json eol=lf
