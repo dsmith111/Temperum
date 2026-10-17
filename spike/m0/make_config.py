@@ -48,7 +48,11 @@ def render(args: argparse.Namespace) -> dict:
     cfg = json.loads(Path(args.recipe).read_text(encoding="utf-8"))
     out = copy.deepcopy(cfg)
     out["input_model"] = {"type": "HfModel", "model_path": args.model}
-    out["systems"]["qnn_system"]["python_environment_path"] = args.compile_env
+    # Point whichever system runs the QNN EP (qnn_system / target_system) at the compile env.
+    for system in out.get("systems", {}).values():
+        eps = [ep for acc in system.get("accelerators", []) for ep in acc.get("execution_providers", [])]
+        if "QNNExecutionProvider" in eps:
+            system["python_environment_path"] = args.compile_env
     out["data_configs"] = [
         _calib_config("calib_joined", args.model, args.corpus, "join",
                       args.gptq_samples, args.gptq_seq_len, False),
@@ -60,7 +64,7 @@ def render(args: argparse.Namespace) -> dict:
     for key, p in cfg["passes"].items():
         p = copy.deepcopy(p)
         kind = p["type"]
-        if kind in ("GptqModel", "Gptq"):
+        if kind in ("GptqModel", "Gptq", "GptqQuantizer"):
             overrides = {}
             for pattern, spec in (p.get("dynamic") or {}).items():
                 if "lm_head" in pattern:
@@ -77,7 +81,8 @@ def render(args: argparse.Namespace) -> dict:
             if args.quality == "fast":
                 passes[key] = {"type": "Rtn", **common}
             else:
-                passes[key] = {"type": "Gptq", **common, "data_config": "calib_joined"}
+                extra = {"desc_act": p["desc_act"]} if "desc_act" in p else {}
+                passes[key] = {"type": "Gptq", **common, **extra, "data_config": "calib_joined"}
             continue
         if kind == "QuaRot":
             passes["q"] = p
@@ -89,6 +94,8 @@ def render(args: argparse.Namespace) -> dict:
             p["calibration_providers"] = ["CPUExecutionProvider"]
         if kind == "EPContextBinaryGenerator":
             p.setdefault("provider_options", {})["soc_model"] = args.soc_model
+        if kind == "CaptureSplitInfo" and args.num_splits:
+            p["num_splits"] = args.num_splits
         passes[key] = p
 
     # QuaRot must run first (before CaptureSplitInfo), matching the Qwen3 recipes.
@@ -112,6 +119,7 @@ def main() -> None:
     ap.add_argument("--quality", choices=["fast", "balanced"], default="balanced")
     ap.add_argument("--soc-model", default="60")
     ap.add_argument("--bits", type=int, default=0, help="override weight bits (e.g. 8)")
+    ap.add_argument("--num-splits", type=int, default=0, help="override CaptureSplitInfo num_splits")
     ap.add_argument("--gptq-samples", type=int, default=32)
     ap.add_argument("--gptq-seq-len", type=int, default=1024)
     ap.add_argument("--act-samples", type=int, default=64)

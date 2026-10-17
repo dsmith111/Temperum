@@ -12,8 +12,28 @@ imported into the Ollama fork and served through `/api/chat` on the NPU**
 (`provider=qnn state=qnn-compiled-with-cpu-stages`), answering "Paris." at ~79 tokens/s.
 No CUDA, QNN SDK, manual DLLs or JSON edits; one hand-written Modelfile (template).
 
-Open problems: quality with the fast (RTN int4) mode is poor; CPU GPTQ timing is unresolved;
-two runtime `max_length` rules must be enforced (below).
+**8-bit weights with plain RTN are near-lossless and need no GPTQ**: perplexity ×1.04 vs the
+fp32 reference, correct answers, needle retrieval up to 3,445 tokens, 57–82 tokens/s, on the
+fork's own runtime, in a 14.6-minute CPU-only conversion. 4-bit RTN is too lossy (×2.4).
+
+Open problems: CPU GPTQ timing (only needed for smaller int4 bundles); two runtime
+`max_length` rules must be enforced (below).
+
+## Weight precision comparison (Qwen2.5-0.5B, fork runtime GenAI 0.12.2 / ORT 1.24.1 / QNN 2.42)
+
+| | RTN int4 (per-channel) | RTN int8 (per-channel) |
+|---|---|---|
+| Conversion (CPU) | ~14 min, 4.0 GB peak | 14.6 min, 4.9 GB peak |
+| Bundle / context binary | 612 MB / 370 MB | 954 MB / 728 MB |
+| Perplexity vs reference (18.4) | 44.6 (**×2.42**) | 19.1 (**×1.04**) |
+| Greedy exact / mean matching prefix | 0/12 / 7% | 2/12 / 34% |
+| Sample answers | "92" for 17+25; "red, orange, and blue" | "42"; "red, blue, and yellow"; correct Spanish/code |
+| Needles 379 / 875 / 1,763 / 3,445 tokens | all ✓ | all ✓ |
+| Median TTFT / decode (Python harness) | 0.10 s / 48 tok/s | 0.05 s / 57 tok/s |
+| Via fork `/api/chat` | 79 tok/s | 65–82 tok/s, 0.06–0.08 s prompt eval |
+
+(Greedy exact-match is a strict metric: any quantization changes some token choices; the
+perplexity ratio and answer correctness are the meaningful signals.)
 
 ## Conversion timings (`fast` = QuaRot + RTN int4 per-channel, LM head int8 g32)
 
@@ -92,9 +112,28 @@ arithmetic (NPU answered "92" where the CPU QDQ simulation said "42").
 - torch 2.14.1 win_arm64 uses Arm Performance Libraries BLAS, ~60–90 GFLOP/s fp32 matmul,
   `CPU capability: DEFAULT`, no oneDNN.
 
+## Declared import
+
+`declare.py` derives a schema-1 `ollama_npu.json` from the bundle's actual config (stages and
+providers), this machine's `ProcessorNameString`, the runtime pins and the pinned HF source
+commit. Unmodified converter `inspect_prebuilt` reports structural **passed**, declaration
+**consistent**, target **pass**. The fork imports it with `npu.compatibility_status: declared`
+(precision `w8a16-rtn`), no compatibility warning, and serves chat at ~72 tokens/s.
+
+## Other findings
+
+- Gated models: `meta-llama/Llama-3.2-1B-Instruct` returns `GatedRepoError 403 … not in the
+  authorized list` for this HF account. Standard HF auth works as designed; access must be
+  requested by the account owner. The converter should surface the URL and stop.
+- Upstream recipes are heterogeneous: three GPTQ pass types (`GptqModel`, `GptqQuantizer`,
+  `Gptq`), old vs new ModelBuilder option names (`block_size` vs `int4_block_size`),
+  `qnn_system` vs `target_system`, quantize-before-split vs split-before-quantize ordering.
+  The overlay must normalize all of them.
+- Undeclared dependencies: Olive 0.13 needs `requests` (telemetry import) in every env that
+  imports Olive; loading an Olive-quantized checkpoint through transformers needs `accelerate`.
+
 ## Pending
 
-- 8-bit RTN weights (in progress) — Qwen3 recipes use 8-bit linear weights.
-- GPTQ balanced run with reduced calibration; quality vs RTN.
+- GPTQ int4 run with reduced calibration; timing and quality vs RTN int8.
 - Second architecture (Qwen3-0.6B or Llama-3.2-1B, gated).
 - GenieX (signed llama.cpp Hexagon) comparison.

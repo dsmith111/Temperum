@@ -33,7 +33,8 @@ def _generator(model, max_length: int):
 
 
 def _greedy(model, ids: list[int], new: int, eos: set[int]) -> tuple[list[int], float, float]:
-    gen = _generator(model, len(ids) + new)
+    window = 64  # static prefill window; padded prompt + new tokens must fit in max_length
+    gen = _generator(model, -(-len(ids) // window) * window + new + window)
     t0 = time.perf_counter()
     gen.append_tokens(ids)
     out: list[int] = []
@@ -121,7 +122,7 @@ def main() -> None:
     needles = []
     for n in ref["needle"]:
         _progress(f"needle {n['input_len']}")
-        if max_len and n["input_len"] + 16 > max_len:
+        if max_len and -(-n["input_len"] // 64) * 64 + 16 + 64 > max_len:
             needles.append({"input_len": n["input_len"], "skipped": f"exceeds max_length {max_len}"})
             continue
         try:
