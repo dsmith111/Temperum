@@ -1,0 +1,97 @@
+{
+  "repository": "https://github.com/microsoft/olive-recipes",
+  "commit": "04040dcff0fa59ef5be2dff92dc5b1fca0b7f1bd",
+  "license": "MIT",
+  "recipes": {
+    "Qwen/Qwen2.5-0.5B-Instruct": {
+      "file": "Qwen--Qwen2.5-0.5B-Instruct.json",
+      "upstream_path": "Qwen-Qwen2.5-0.5B-Instruct/QNN/config.json",
+      "sha256": "8d2f7c0c222c36c120e354ff9af0b24e9cfee377636754c3eea446899111ff54"
+    },
+    "Qwen/Qwen2.5-1.5B-Instruct": {
+      "file": "Qwen--Qwen2.5-1.5B-Instruct.json",
+      "upstream_path": "Qwen-Qwen2.5-1.5B-Instruct/QNN/config.json",
+      "sha256": "b85be20c473fa90af51b7dd07e4ec98d4239f3a65ab8a4166cb3e38452f5ce67"
+    },
+    "Qwen/Qwen2.5-7B-Instruct": {
+      "file": "Qwen--Qwen2.5-7B-Instruct.json",
+      "upstream_path": "Qwen-Qwen2.5-7B-Instruct/QNN/config.json",
+      "sha256": "3fca7af8349b5975547ddf2133c82999a32d13e6e90c0c77d64572b14cd96776"
+    },
+    "Qwen/Qwen2.5-Coder-0.5B-Instruct": {
+      "file": "Qwen--Qwen2.5-Coder-0.5B-Instruct.json",
+      "upstream_path": "Qwen-Qwen2.5-Coder-0.5B-Instruct/QNN/config.json",
+      "sha256": "cb2a289124acbd2dd69076271eabdb085ef8e0b62f8757c6ac590f5a45664548"
+    },
+    "Qwen/Qwen2.5-Coder-1.5B-Instruct": {
+      "file": "Qwen--Qwen2.5-Coder-1.5B-Instruct.json",
+      "upstream_path": "Qwen-Qwen2.5-Coder-1.5B-Instruct/QNN/config.json",
+      "sha256": "6502292284b88e8ee914846c029a57174a5fe3d9286ac23ef5201220f181f472"
+    },
+    "Qwen/Qwen2.5-Coder-7B-Instruct": {
+      "file": "Qwen--Qwen2.5-Coder-7B-Instruct.json",
+      "upstream_path": "Qwen-Qwen2.5-Coder-7B-Instruct/QNN/config.json",
+      "sha256": "271433946ab9271a9912514fb39edcbe79809e2aae63e717629eb630e9c40d2d"
+    },
+    "Qwen/Qwen3-0.6B": {
+      "file": "Qwen--Qwen3-0.6B.json",
+      "upstream_path": "Qwen-Qwen3-0.6B/QNN/config.json",
+      "sha256": "a72a01381a5f6afbbd6422079f107917a03ad5042899e174d06da013acf5ca3d"
+    },
+    "Qwen/Qwen3-1.7B": {
+      "file": "Qwen--Qwen3-1.7B.json",
+      "upstream_path": "Qwen-Qwen3-1.7B/QNN/x_elite_config.json",
+      "sha256": "ba17f4080027b666109b06b039563a205f96fd4295ff1a8a520d864be700e05d"
+    },
+    "Qwen/Qwen3-8B": {
+      "file": "Qwen--Qwen3-8B.json",
+      "upstream_path": "Qwen-Qwen3-8B/QNN/x_elite_config.json",
+      "sha256": "b5fb2f28485988b588e4b4f0dc4669453d00b67ce32586b622b09f6cbf3d9a73"
+    },
+    "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B": {
+      "file": "deepseek-ai--DeepSeek-R1-Distill-Qwen-1.5B.json",
+      "upstream_path": "deepseek-ai-DeepSeek-R1-Distill-Qwen-1.5B/aitk/deepseek_qnn_config.json",
+      "sha256": "70cd20bfe7b2f55980efece2508874a097faba094ff921834f5defac7ba74c1d"
+    },
+    "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B": {
+      "file": "deepseek-ai--DeepSeek-R1-Distill-Qwen-7B.json",
+      "upstream_path": "deepseek-ai-DeepSeek-R1-Distill-Qwen-7B/QNN/x_elite_config.json",
+      "sha256": "008990466d227668b4a1054fe7797ed2556d5201fcc28f2017c49e9041894ea3"
+    },
+    "meta-llama/Llama-3.1-8B-Instruct": {
+      "file": "meta-llama--Llama-3.1-8B-Instruct.json",
+      "upstream_path": "meta-llama-Llama-3.1-8B-Instruct/QNN/x_elite_config.json",
+      "sha256": "d6c2f47f8b8a6a43046800744bf088bfb37e2b669ab872e26a467feac4de15e6"
+    },
+    "meta-llama/Llama-3.2-1B-Instruct": {
+      "file": "meta-llama--Llama-3.2-1B-Instruct.json",
+      "upstream_path": "meta-llama-Llama-3.2-1B-Instruct/aitk/llama3_2_qnn_config.json",
+      "sha256": "89655f86c43c022b8e21a8a6cad9aa53326efe4b51243acfa97001dca13710c3"
+    },
+    "microsoft/Phi-3-mini-128k-instruct": {
+      "file": "microsoft--Phi-3-mini-128k-instruct.json",
+      "upstream_path": "microsoft-Phi-3-mini-128k-instruct/QNN/config.json",
+      "sha256": "b4a51e3a97797e689cb7b0ef3c580ee81c869c5b5d6e69c0e6185e4a3a1945d2"
+    },
+    "microsoft/Phi-3-mini-4k-instruct": {
+      "file": "microsoft--Phi-3-mini-4k-instruct.json",
+      "upstream_path": "microsoft-Phi-3-mini-4k-instruct/QNN/config.json",
+      "sha256": "7989c6b6479a31f24ce3fbc9a7d71ede66430355b0a642bb86ee462804598717"
+    },
+    "microsoft/Phi-3.5-mini-instruct": {
+      "file": "microsoft--Phi-3.5-mini-instruct.json",
+      "upstream_path": "microsoft-Phi-3.5-mini-instruct/QNN/x_elite_config.json",
+      "sha256": "9fc6faa1fc87eb19a5ea5db99997b7113a60cd25ff07d3cfa58d363b84ac928b"
+    },
+    "microsoft/Phi-4-mini-instruct": {
+      "file": "microsoft--Phi-4-mini-instruct.json",
+      "upstream_path": "microsoft-Phi-4-mini-instruct/aitk/phi4_qnn.json",
+      "sha256": "f41fd6db6869d2910b275430243b141ce0ed5021339b3fb166ac39716327e2ee"
+    },
+    "microsoft/Phi-4-reasoning": {
+      "file": "microsoft--Phi-4-reasoning.json",
+      "upstream_path": "microsoft-Phi-4-reasoning/QNN/x_elite_config.json",
+      "sha256": "6fe74f511f79da0af229b1e28af4036fa94519030e75e66e1239a3838bb03de9"
+    }
+  }
+}
