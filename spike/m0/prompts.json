@@ -1,0 +1,22 @@
+{
+  "max_new_tokens": 48,
+  "prompts": [
+    "What is the capital of France? Answer in one word.",
+    "What is 17 + 25? Reply with just the number.",
+    "Name the three primary colors.",
+    "Translate to Spanish: 'Good morning, how are you?'",
+    "Write a Python function that returns the square of a number.",
+    "Explain in one sentence why the sky looks blue.",
+    "List three planets in our solar system.",
+    "What is the opposite of 'cold'?",
+    "Summarize in one sentence: The meeting was moved from Tuesday to Thursday because the manager was travelling.",
+    "Who wrote 'Romeo and Juliet'?",
+    "Give me a synonym for 'happy'.",
+    "If a train travels 60 km in one hour, how far does it travel in three hours?"
+  ],
+  "needle": {
+    "fact": "The secret code for the vault is 4721.",
+    "question": "What is the secret code for the vault? Reply with just the number.",
+    "answer": "4721"
+  }
+}
