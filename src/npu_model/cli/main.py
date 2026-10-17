@@ -78,7 +78,7 @@ def convert_command(
     yes: bool = typer.Option(False, "--yes", "-y", help="Run without asking (accepts the plan and licence notice)"),
     as_json: bool = typer.Option(False, "--json", help="Print the plan/result as JSON on stdout"),
     install: bool = typer.Option(False, "--install", help="Also install into a running Ollama fork"),
-    name: Optional[str] = typer.Option(None, "--name", help="Ollama tag for --install (default: model name)"),
+    name: Optional[str] = typer.Option(None, "--name", help="Ollama tag for --install (default: <model>:npu)"),
     ollama_exe: Optional[Path] = typer.Option(None, "--ollama-exe", help="Fork executable for --install"),
     host: Optional[str] = typer.Option(None, "--host", help="Fork endpoint for --install (or OLLAMA_HOST)"),
 ) -> None:
@@ -109,7 +109,7 @@ def convert_command(
             summary["perplexity_ratio"] = quality_report["perplexity"].get("ratio")
         summary["speed"] = report.get("speed", {})
         if install:
-            summary["install"] = _install(result.bundle, name or plan.model.name, ollama_exe, host,
+            summary["install"] = _install(result.bundle, name or f"{plan.model.name}:npu", ollama_exe, host,
                                           result.job_dir, plan.host.processor_name)
         if as_json:
             typer.echo(json.dumps(summary, indent=2, default=str))
@@ -130,7 +130,7 @@ def convert_command(
                           f"ollama run {escape(str(summary['install'].get('name')))}")
             else:
                 err.print(f"  install: npu-model install --input {escape(str(result.bundle))} "
-                          f"--name {escape(plan.model.name)} --execute ...")
+                          f"--name {escape(plan.model.name)}:npu --ollama-exe <fork> (then --execute)")
         if summary["verdict"] == "failed":
             raise typer.Exit(code=3)
     except NpuModelError as exc:

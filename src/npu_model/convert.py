@@ -8,9 +8,12 @@ so the user can review what will happen. `run()` executes it as a resumable job 
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
+import os
 import shutil
+import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -168,17 +171,65 @@ def plan(options: ConvertOptions, host: HostInfo | None = None, *, resolver: Cal
                        statuses, est, warnings, level)
 
 
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":  # os.kill(pid, 0) would terminate the process on Windows
+        kernel32 = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return bool(getattr(ctypes, "get_last_error")() == 5)  # access denied: it exists
+        try:
+            code = ctypes.c_ulong()
+            return bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 class Job:
-    """Receipt for one conversion: stage status and timing in job.json (no credentials)."""
+    """Receipt for one conversion: stage status and timing in job.json (no credentials).
+
+    A lock file holding the owner's process id keeps two runs of the same conversion apart;
+    a lock left by a killed run is taken over.
+    """
 
     def __init__(self, directory: Path, plan_data: dict[str, Any]) -> None:
         self.dir = directory
         self.path = directory / "job.json"
+        self.lock = directory / "job.lock"
         directory.mkdir(parents=True, exist_ok=True)
+        self._acquire()
         previous = json.loads(self.path.read_text(encoding="utf-8")) if self.path.is_file() else {}
         self.data: dict[str, Any] = {"plan": plan_data, "stages": previous.get("stages", {}),
                                      "created": previous.get("created") or _now(), "result": None}
         self.save()
+
+    def _acquire(self) -> None:
+        try:
+            fd = os.open(self.lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                owner = int(self.lock.read_text(encoding="utf-8").strip() or 0)
+            except (OSError, ValueError):
+                owner = 0
+            if owner != os.getpid() and _pid_alive(owner):
+                raise NpuModelError("convert", "JOB_RUNNING",
+                                    f"Another npu-model process (pid {owner}) is running this conversion.",
+                                    hint="Wait for it to finish; rerunning afterwards resumes.") from None
+            self.lock.unlink(missing_ok=True)  # left by a killed run
+            fd = os.open(self.lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(str(os.getpid()))
+
+    def release(self) -> None:
+        self.lock.unlink(missing_ok=True)
 
     def done(self, stage: str) -> bool:
         return bool(self.data["stages"].get(stage, {}).get("status") == "done")
@@ -212,9 +263,15 @@ class ConvertResult:
 
 def run(conversion: ConvertPlan, progress: Progress | None = None, *,
         chains_factory: Callable[..., Toolchains] = Toolchains) -> ConvertResult:
-    say = progress or (lambda _msg: None)
-    options = conversion.options
     job = Job(conversion.job_dir, conversion.to_dict())
+    try:
+        return _run(conversion, job, progress or (lambda _msg: None), chains_factory)
+    finally:
+        job.release()
+
+
+def _run(conversion: ConvertPlan, job: Job, say: Progress, chains_factory: Callable[..., Toolchains]) -> ConvertResult:
+    options = conversion.options
     chains = chains_factory(conversion.host, conversion.runtime, conversion.device, python=options.python,
                             progress=say)
 
