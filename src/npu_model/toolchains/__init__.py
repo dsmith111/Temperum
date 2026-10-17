@@ -100,7 +100,8 @@ class Lock:
 
     @property
     def sha256(self) -> str:
-        return hashlib.sha256(self.path.read_bytes()).hexdigest()
+        text = self.path.read_bytes().replace(b"\r\n", b"\n")  # stable across checkout line endings
+        return hashlib.sha256(text).hexdigest()
 
     @property
     def torch_pin(self) -> str | None:
