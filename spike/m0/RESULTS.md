@@ -112,6 +112,40 @@ arithmetic (NPU answered "92" where the CPU QDQ simulation said "42").
 - torch 2.14.1 win_arm64 uses Arm Performance Libraries BLAS, ~60–90 GFLOP/s fp32 matmul,
   `CPU capability: DEFAULT`, no oneDNN.
 
+## More architectures (CPU-only, RTN int8 linear weights, fork runtime)
+
+| Model (arch) | Recipe used | Conversion | PPL ratio | Exact / prefix | Needles | TTFT / decode |
+|---|---|---|---|---|---|---|
+| Qwen2.5-0.5B-Instruct (qwen2) | its own QNN recipe | 14.6 min | 1.04 | 2/12 / 34% | 4/4 | 0.05 s / 57 tok/s |
+| Qwen3-0.6B (qwen3) | its own QNN recipe (8-bit, 4-bit g32 LM head) | 22 min* | 1.06 | 0/12 / 41% | n/a† | 0.16 s / 27 tok/s* |
+| SmolLM2-360M-Instruct (llama) | **Llama-3.2-1B recipe as family template** | 14.6 min | 1.15 | 5/12 / 53% | 4/4 | 0.035 s / 72 tok/s |
+
+\* measured while other jobs shared the CPU/NPU. † Qwen3 thinks (`<think>…`) before
+answering; the 16-token needle budget is too short for the fp32 reference too, so the test
+needs `enable_thinking=False` or a larger budget for thinking models.
+
+`meta-llama/Llama-3.2-1B-Instruct` itself is gated and this account lacks access (see below).
+
+### Two more rules found on SmolLM2
+
+4. **`genai_config.model.pad_token_id` must not be a token that occurs in prompts.** SmolLM2
+   ships `pad_token_id = 2 = <|im_end|>`, which appears in every chat prompt. GenAI (0.12.2
+   and 0.18, CPU and QNN) treats those in-prompt tokens as padding, corrupting the sequence:
+   the first token is right ("Paris") and decoding then drifts ("… You can answer questions
+   about the latest news"). Changing only `pad_token_id` to 0 (`<|endoftext|>`) fixes it.
+   Proven by driving the same static graphs manually with raw ORT (`static_greedy.py`),
+   which decodes correctly. The converter must validate/rewrite this field.
+5. **QNN context generation crashes intermittently** (access violation, exit `0xC0000005`)
+   after all partitions compile; an identical standalone compile and an Olive rerun both
+   succeed. The upstream recipe READMEs warn about this ("rerun the command"). The job
+   engine must retry the compile stage automatically (Olive resumes from cache).
+
+Static prefill convention (for anyone driving these graphs directly): one 64-token window,
+right-padded; GQA `past_seq_len` (seqlens_k) = window − 1 for prefill, = position for each
+decode step; `total_seq_len` = KV buffer length (`max_length`). On SmolLM2, the
+"weight-shared" context + iterator binary (641 MB) was exactly twice the single-graph binary
+(320 MB), so weights were not deduplicated on QNN 2.42; worth re-checking on newer QNN.
+
 ## Declared import
 
 `declare.py` derives a schema-1 `ollama_npu.json` from the bundle's actual config (stages and
