@@ -79,6 +79,32 @@ def test_load_jinja_prefers_the_standalone_file(tmp_path: Path) -> None:
     assert load_jinja(tmp_path / "missing") is None
 
 
+CONVERSATION = [{"role": "system", "content": "You are terse."}, {"role": "user", "content": "Hi"},
+                {"role": "assistant", "content": "Hello."}, {"role": "user", "content": "What is 2+2?"}]
+
+
+def test_render_matches_what_the_hf_templates_produce() -> None:
+    qwen = from_jinja(_jinja("qwen2.5-instruct.jinja"))
+    assert qwen.render(CONVERSATION) == (
+        "<|im_start|>system\nYou are terse.<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n"
+        "<|im_start|>assistant\nHello.<|im_end|>\n<|im_start|>user\nWhat is 2+2?<|im_end|>\n<|im_start|>assistant\n")
+    smol = from_jinja(_jinja("smollm2-instruct.jinja"))
+    assert smol.render([{"role": "user", "content": "Hello!"}]) == (
+        "<|im_start|>system\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|im_end|>\n"
+        "<|im_start|>user\nHello!<|im_end|>\n<|im_start|>assistant\n")
+    qwen3 = from_jinja(_jinja("qwen3.jinja"))
+    assert qwen3.render([{"role": "user", "content": "Hello!"}]) == (
+        "<|im_start|>user\nHello!<|im_end|>\n<|im_start|>assistant\n")
+
+
+def test_render_follows_ollama_collation() -> None:
+    chat = from_jinja(_jinja("qwen3.jinja"))
+    merged = chat.render([{"role": "system", "content": "A"}, {"role": "system", "content": "B"},
+                          {"role": "user", "content": "x"}, {"role": "user", "content": "y"}])
+    assert merged == "<|im_start|>system\nA\n\nB<|im_end|>\n<|im_start|>user\nx\n\ny<|im_end|>\n<|im_start|>assistant\n"
+    assert custom("{{ .Prompt }}", []).render([{"role": "user", "content": "x"}]) is None
+
+
 def test_generated_modelfile_passes_the_install_contract(tmp_path: Path) -> None:
     bundle = tmp_path / "bundle"
     bundle.mkdir()

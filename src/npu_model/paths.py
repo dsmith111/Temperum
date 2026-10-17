@@ -2,6 +2,13 @@
 
 Roots stay short on purpose: Windows long paths are often disabled, and Olive caches and
 Python environments nest deeply. Override with NPU_MODEL_HOME.
+
+  <home>/envs/<runtime>/<role>   toolchain environments
+  <home>/python                  uv-managed interpreters
+  <home>/sources/<org>--<name>/<commit>   pinned source snapshots
+  <home>/data                    calibration and held-out text
+  <home>/jobs/<id>               conversion jobs (config, logs, Olive cache, receipt)
+  <home>/models/<name>-<target>  converted bundles
 """
 
 from __future__ import annotations
@@ -21,12 +28,14 @@ def home() -> Path:
     return Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "npu-model"
 
 
-def envs_dir() -> Path:
-    return home() / "envs"
-
-
 def models_dir() -> Path:
+    """Converted bundles."""
     return home() / "models"
+
+
+def sources_dir() -> Path:
+    """Pinned source-model snapshots."""
+    return home() / "sources"
 
 
 def data_dir() -> Path:
@@ -35,7 +44,3 @@ def data_dir() -> Path:
 
 def jobs_dir() -> Path:
     return home() / "jobs"
-
-
-def bundles_dir() -> Path:
-    return home() / "bundles"

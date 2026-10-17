@@ -4,6 +4,9 @@ Ollama does not execute Hugging Face Jinja templates (it matches them against a 
 known ones, which modern templates rarely match). The prompt format is recognized from the
 Jinja source and a curated Go template reproducing it is emitted, including the model's
 default system prompt. Unrecognized formats need an explicit template from the user.
+
+`ChatTemplate.render` mirrors each Go template in Python, so verification can format prompts
+exactly as Ollama will and compare them with the model's own template.
 """
 
 from __future__ import annotations
@@ -23,12 +26,58 @@ class ChatTemplate:
     stops: tuple[str, ...]
     default_system: str | None
     verified: bool  # served through the fork and checked end to end
+    variant: str = ""  # family detail: phi3 "newline"/"compact", deepseek "think"
 
     def modelfile(self) -> str:
         """Modelfile for a bundle folder (FROM is the folder itself)."""
         lines = ["FROM .", f'TEMPLATE """{self.template}"""']
         lines += [f'PARAMETER stop "{stop}"' for stop in self.stops]
         return "\n".join(lines) + "\n"
+
+    def render(self, messages: list[dict[str, str]]) -> str | None:
+        """The prompt Ollama builds from `messages` with this template (None if unknown)."""
+        system, turns = _collate(messages)
+        if self.family in ("chatml", "chatml-imsep"):
+            sep, end = ("\n", "\n") if self.family == "chatml" else ("<|im_sep|>", "")
+            text = ""
+            if system or self.default_system:
+                text += f"<|im_start|>system{sep}{system or self.default_system}<|im_end|>{end}"
+            text += "".join(f"<|im_start|>{m['role']}{sep}{m['content']}<|im_end|>{end}" for m in turns)
+            return text + f"<|im_start|>assistant{sep}"
+        if self.family == "llama3":
+            text = f"<|start_header_id|>system<|end_header_id|>\n\n{system}<|eot_id|>" if system else ""
+            text += "".join(f"<|start_header_id|>{m['role']}<|end_header_id|>\n\n{m['content']}<|eot_id|>"
+                            for m in turns)
+            return text + "<|start_header_id|>assistant<|end_header_id|>\n\n"
+        if self.family == "phi3":
+            nl = "\n" if self.variant == "newline" else ""
+            text = f"<|system|>{nl}{system}<|end|>{nl}" if system else ""
+            text += "".join(f"<|{m['role']}|>{nl}{m['content']}<|end|>{nl}" for m in turns)
+            return text + f"<|assistant|>{nl}"
+        if self.family == "deepseek":
+            text = system or ""
+            for m in turns:
+                if m["role"] == "user":
+                    text += f"<｜User｜>{m['content']}"
+                elif m["role"] == "assistant":
+                    text += f"<｜Assistant｜>{m['content']}<｜end▁of▁sentence｜>"
+            return text + "<｜Assistant｜>" + ("<think>\n" if self.variant == "think" else "")
+        if self.family == "raw":
+            prompt = turns[-1]["content"] if turns else ""
+            return (f"{system}\n\n" if system else "") + prompt
+        return None
+
+
+def _collate(messages: list[dict[str, str]]) -> tuple[str | None, list[dict[str, str]]]:
+    """Ollama's message collation: system texts joined; consecutive same-role turns merged."""
+    systems = [m["content"] for m in messages if m["role"] == "system"]
+    merged: list[dict[str, str]] = []
+    for message in messages:
+        if merged and merged[-1]["role"] == message["role"]:
+            merged[-1] = {**merged[-1], "content": merged[-1]["content"] + "\n\n" + message["content"]}
+        else:
+            merged.append(dict(message))
+    return ("\n\n".join(systems) or None), [m for m in merged if m["role"] != "system"]
 
 
 def _chatml(default_system: str | None, separator: str = "\n", after_end: str = "\n") -> str:
@@ -83,9 +132,10 @@ def from_jinja(jinja: str | None) -> ChatTemplate:
     if jinja is None:
         return ChatTemplate("raw", _RAW, (), None, verified=False)
     if "<｜User｜>" in jinja and "<｜Assistant｜>" in jinja:
-        template = _DEEPSEEK + ("<think>\n" if _DEEPSEEK_THINK.search(jinja) else "")
-        return ChatTemplate("deepseek", template, ("<｜User｜>", "<｜Assistant｜>", "<｜end▁of▁sentence｜>"),
-                            None, verified=False)
+        think = bool(_DEEPSEEK_THINK.search(jinja))
+        return ChatTemplate("deepseek", _DEEPSEEK + ("<think>\n" if think else ""),
+                            ("<｜User｜>", "<｜Assistant｜>", "<｜end▁of▁sentence｜>"), None, verified=False,
+                            variant="think" if think else "")
     if "<|start_header_id|>" in jinja and "<|eot_id|>" in jinja:
         return ChatTemplate("llama3", _LLAMA3, ("<|start_header_id|>", "<|end_header_id|>", "<|eot_id|>"),
                             None, verified=False)
@@ -99,7 +149,7 @@ def from_jinja(jinja: str | None) -> ChatTemplate:
     if "<|user|>" in jinja and "<|end|>" in jinja and "<|assistant|>" in jinja:
         newline = bool(re.search(r"\|>'\s*\+\s*'\\n'|\|>\\n|\|>\n", jinja))
         return ChatTemplate("phi3", _phi3(newline), ("<|end|>", "<|user|>", "<|assistant|>", "<|endoftext|>"),
-                            None, verified=False)
+                            None, verified=False, variant="newline" if newline else "compact")
     raise NpuModelError("template", "TEMPLATE_UNKNOWN",
                         "The model's chat template is not a recognized prompt format.",
                         hint="Pass --template FILE with an Ollama Go template (and --stop for its end markers).")

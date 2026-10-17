@@ -37,7 +37,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-"npu_model.recipes" = ["upstream/*.json"]
+"npu_model.recipes" = ["upstream/*.json", "verified.json"]
 "npu_model.toolchains" = ["locks/*/*.txt"]
 
 [tool.ruff]
@@ -72,3 +72,4 @@ module = [
 ]
 ignore_missing_imports = true
 follow_imports = "skip"
+follow_imports_for_stubs = true

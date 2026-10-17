@@ -272,6 +272,12 @@ def render(recipe: Recipe, opts: RenderOptions) -> dict[str, Any]:
     return cfg
 
 
+def verified_conversions() -> list[dict[str, Any]]:
+    """Conversions that were checked end to end on hardware (see verified.json)."""
+    data = json.loads((Path(__file__).resolve().parent / "verified.json").read_text(encoding="utf-8"))
+    return list(data["entries"])
+
+
 def precision_label(config: dict[str, Any]) -> str:
     """Weight/activation precision of a rendered config, e.g. w8a16-rtn or w4a16-gptq."""
     for p in config.get("passes", {}).values():
