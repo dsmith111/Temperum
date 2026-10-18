@@ -37,6 +37,22 @@ def test_qwen3_has_no_default_system_prompt() -> None:
     assert chat.family == "chatml" and chat.default_system is None and "{{ else }}" not in chat.template
 
 
+def test_qwen3_gets_a_thinking_aware_template() -> None:
+    chat = from_jinja(_jinja("qwen3.jinja"))
+    assert chat.variant == "think" and not chat.verified
+    # The server infers the thinking capability from .Thinking between tags inside the message loop.
+    assert "{{ if and $last .Thinking }}<think>\n{{ .Thinking }}\n</think>" in chat.template
+    hello = [{"role": "user", "content": "Hello!"}]
+    # enable_thinking=False in the HF template appends an empty think block after the prompt.
+    assert chat.render(hello, think=False) == (
+        "<|im_start|>user\nHello!<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n")
+    assert chat.render(hello, think=True) == chat.render(hello) == (
+        "<|im_start|>user\nHello!<|im_end|>\n<|im_start|>assistant\n")
+    prefill = hello + [{"role": "assistant", "content": "Hi", "thinking": "greet back"}]
+    assert chat.render(prefill).endswith("<|im_start|>assistant\n<think>\ngreet back\n</think>\n\nHi<|im_end|>\n"
+                                         "<|im_start|>assistant\n")
+
+
 @pytest.mark.parametrize("jinja,family,needle", [
     ("{{ bos_token }}<|start_header_id|>{{ role }}<|end_header_id|>\n\n{{ content }}<|eot_id|>", "llama3",
      "<|start_header_id|>assistant<|end_header_id|>\n\n"),

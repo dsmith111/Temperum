@@ -1,0 +1,65 @@
+// Executes Go chat templates with the Ollama fork's template engine (scratch check).
+package main
+
+import (
+	"encoding/json"
+	"os"
+	"strings"
+
+	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/template"
+	"github.com/ollama/ollama/thinking"
+)
+
+type caseSpec struct {
+	Template string        `json:"template"`
+	Messages []api.Message `json:"messages"`
+	Think    *bool         `json:"think"`
+}
+
+type result struct {
+	Rendered string   `json:"rendered"`
+	Open     string   `json:"open"`
+	Close    string   `json:"close"`
+	Vars     []string `json:"vars"`
+	Error    string   `json:"error,omitempty"`
+}
+
+func main() {
+	data, err := os.ReadFile(os.Args[1])
+	if err != nil {
+		panic(err)
+	}
+	var cases []caseSpec
+	if err := json.Unmarshal(data, &cases); err != nil {
+		panic(err)
+	}
+	out := make([]result, 0, len(cases))
+	for _, c := range cases {
+		var r result
+		t, err := template.Parse(c.Template)
+		if err != nil {
+			r.Error = err.Error()
+			out = append(out, r)
+			continue
+		}
+		r.Open, r.Close = thinking.InferTags(t.Template)
+		r.Vars, _ = t.Vars()
+		v := template.Values{Messages: c.Messages}
+		if c.Think != nil {
+			v.Think = *c.Think
+			v.IsThinkSet = true
+		}
+		var sb strings.Builder
+		if err := t.Execute(&sb, v); err != nil {
+			r.Error = err.Error()
+		}
+		r.Rendered = sb.String()
+		out = append(out, r)
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(out); err != nil {
+		panic(err)
+	}
+}

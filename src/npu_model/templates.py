@@ -26,7 +26,7 @@ class ChatTemplate:
     stops: tuple[str, ...]
     default_system: str | None
     verified: bool  # served through the fork and checked end to end
-    variant: str = ""  # family detail: phi3 "newline"/"compact", deepseek "think"
+    variant: str = ""  # family detail: chatml/deepseek "think", phi3 "newline"/"compact"
 
     def modelfile(self) -> str:
         """Modelfile for a bundle folder (FROM is the folder itself)."""
@@ -34,9 +34,19 @@ class ChatTemplate:
         lines += [f'PARAMETER stop "{stop}"' for stop in self.stops]
         return "\n".join(lines) + "\n"
 
-    def render(self, messages: list[dict[str, str]]) -> str | None:
-        """The prompt Ollama builds from `messages` with this template (None if unknown)."""
+    def render(self, messages: list[dict[str, str]], think: bool | None = None) -> str | None:
+        """The prompt Ollama builds from `messages` with this template (None if unknown).
+
+        `think` mirrors the request's think flag (None: not set).
+        """
         system, turns = _collate(messages)
+        if self.family == "chatml" and self.variant == "think":
+            text = f"<|im_start|>system\n{system}<|im_end|>\n" if system else ""
+            for index, m in enumerate(turns):
+                reasoning = m.get("thinking") if index == len(turns) - 1 else None
+                block = f"<think>\n{reasoning}\n</think>\n\n" if reasoning else ""
+                text += f"<|im_start|>{m['role']}\n{block}{m['content']}<|im_end|>\n"
+            return text + "<|im_start|>assistant\n" + ("<think>\n\n</think>\n\n" if think is False else "")
         if self.family in ("chatml", "chatml-imsep"):
             sep, end = ("\n", "\n") if self.family == "chatml" else ("<|im_sep|>", "")
             text = ""
@@ -88,6 +98,18 @@ def _chatml(default_system: str | None, separator: str = "\n", after_end: str = 
             "{{- range .Messages }}{{- if ne .Role \"system\" }}<|im_start|>{{ .Role }}" + separator
             + "{{ .Content }}<|im_end|>" + after_end + "{{ end }}{{- end }}<|im_start|>assistant" + separator)
 
+
+# Qwen3-style ChatML with reasoning. Rendering `.Thinking` inside the message loop between
+# <think> tags is what lets the server infer the thinking capability (thinking.InferTags);
+# `think: false` adds the empty think block that `enable_thinking=False` produces.
+_CHATML_THINK = (
+    "{{- if .System }}<|im_start|>system\n{{ .System }}<|im_end|>\n{{ end }}"
+    "{{- range $i, $_ := .Messages }}"
+    "{{- $last := eq (len (slice $.Messages $i)) 1 -}}"
+    "{{- if ne .Role \"system\" }}<|im_start|>{{ .Role }}\n"
+    "{{ if and $last .Thinking }}<think>\n{{ .Thinking }}\n</think>\n\n{{ end }}"
+    "{{ .Content }}<|im_end|>\n{{ end }}{{- end }}<|im_start|>assistant\n"
+    "{{ if and .IsThinkSet (not .Think) }}<think>\n\n</think>\n\n{{ end }}")
 
 _LLAMA3 = ("{{- if .System }}<|start_header_id|>system<|end_header_id|>\n\n{{ .System }}<|eot_id|>{{ end }}"
            "{{- range .Messages }}{{- if ne .Role \"system\" }}<|start_header_id|>{{ .Role }}<|end_header_id|>\n\n"
@@ -143,6 +165,9 @@ def from_jinja(jinja: str | None) -> ChatTemplate:
         if "<|im_sep|>" in jinja:  # Phi-4 style: role<|im_sep|>content<|im_end|>, no newlines
             return ChatTemplate("chatml-imsep", _chatml(None, "<|im_sep|>", ""), ("<|im_start|>", "<|im_end|>"),
                                 None, verified=False)
+        if "enable_thinking" in jinja and "<think>" in jinja:  # Qwen3-style reasoning switch
+            return ChatTemplate("chatml", _CHATML_THINK, ("<|im_start|>", "<|im_end|>"), None, verified=False,
+                                variant="think")
         match = _CHATML_SYSTEM.search(jinja)
         default = match.group(1).strip() if match else None
         return ChatTemplate("chatml", _chatml(default), ("<|im_start|>", "<|im_end|>"), default, verified=True)
