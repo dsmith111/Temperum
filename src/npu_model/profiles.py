@@ -72,18 +72,20 @@ TARGETS: dict[str, TargetProfile] = {
     ),
     "gguf-hexagon": TargetProfile(
         id="gguf-hexagon",
-        description="GGUF (Q4_0) for llama.cpp's Hexagon NPU backend, Snapdragon X (HTP v73-v81)",
+        description="GGUF for llama.cpp's Hexagon NPU backend (experimental), Snapdragon X (HTP v73-v81)",
         vendor="qualcomm",
         provider="hexagon",
         soc_model="",
         htp_arch="v73-v81",
         processor_patterns=(r"\bX1E[-\d]", r"\bX1P[-\d]", r"\bX2E[-\d]", r"\bX2P[-\d]"),
-        verified=False,
+        verified=True,  # X1E78100 (HTP v73) only; the other Snapdragon X SKUs are expected but unverified
         format="gguf",
     ),
 }
-# `--target auto` picks the first matching target of this format.
+# `--target auto` picks the first matching target of this format, or of HEXAGON_FORMAT when the
+# fork's experimental Hexagon backend is switched on (OLLAMA_HEXAGON, see host.auto_format).
 DEFAULT_FORMAT = "qnn"
+HEXAGON_FORMAT = "gguf"
 
 RUNTIMES: dict[str, RuntimeProfile] = {
     "fork-qnn-1.24.1": RuntimeProfile(

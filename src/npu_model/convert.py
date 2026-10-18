@@ -143,7 +143,7 @@ def estimates(model: ResolvedModel) -> dict[str, float]:
 def plan(options: ConvertOptions, host: HostInfo | None = None, *, resolver: Callable[..., ResolvedModel] = resolve,
          chains_factory: Callable[..., Toolchains] = Toolchains) -> ConvertPlan:
     host = host or detect_host()
-    target = resolve_target(host, options.target)
+    target = resolve_target(host, options.target, fmt="qnn")
     if target.format != "qnn":
         raise NpuModelError("plan", "WRONG_TARGET_FORMAT", f"{target.id} is a {target.format} target",
                             hint="GGUF targets are converted by npu_model.gguf (the CLI routes them there).")

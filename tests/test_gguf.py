@@ -52,10 +52,11 @@ def _version(stdout: str) -> Any:
     return run
 
 
-def test_auto_target_stays_qnn_and_gguf_is_opt_in() -> None:
+def test_auto_target_follows_the_forks_hexagon_switch(monkeypatch: pytest.MonkeyPatch) -> None:
     assert resolve_target(X_ELITE).id == "qnn-x-elite"
-    target = get_target("gguf-hexagon")
-    assert target.format == "gguf" and target.matches(X_ELITE.processor_name)
+    monkeypatch.setenv("OLLAMA_HEXAGON", "1")
+    assert resolve_target(X_ELITE).id == "gguf-hexagon"
+    assert resolve_target(X_ELITE, fmt="qnn").id == "qnn-x-elite"  # the QNN pipeline resolves its own auto
 
 
 def test_plan_needs_a_complete_runtime(tmp_path: Path) -> None:
@@ -69,15 +70,19 @@ def test_plan_needs_a_complete_runtime(tmp_path: Path) -> None:
     assert exc.value.reason_code == "RUNTIME_INCOMPLETE" and "libggml-htp-v79.so" in str(exc.value)
 
 
-def test_plan_checks_the_runtime_commit_and_defaults(tmp_path: Path) -> None:
+def test_plan_checks_the_runtime_commit_and_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     exe = _payload(tmp_path / "fork")
     target = get_target("gguf-hexagon")
     plan = gguf.plan(_model(), X_ELITE, target, ollama_exe=exe,
                      run=_version("version: 0.6.0-dev (build 1, commit e467e5b)\nbuilt with Clang"))
     assert (plan.quant, plan.context, plan.verify_level) == ("Q4_0", 4096, "standard")
     assert any("first use: sets up the quantize toolchain" in w for w in plan.warnings)  # fresh home
+    assert any("OLLAMA_HEXAGON=1" in w for w in plan.warnings)  # the fork keeps its Hexagon backend off
     assert plan.destination.name == "qwen2.5-1.5b-instruct-gguf-hexagon"
-    assert not any("pins" in w for w in plan.warnings)
+    assert not any("pins" in w or "not been verified" in w for w in plan.warnings)
+    monkeypatch.setenv("OLLAMA_HEXAGON", "true")
+    assert not any("OLLAMA_HEXAGON" in w for w in gguf.plan(_model(), X_ELITE, target, ollama_exe=exe,
+                                                             run=_version("commit e467e5b")).warnings)
     other = gguf.plan(_model(), X_ELITE, target, ollama_exe=exe, run=_version("version: 11521 (b42b7e6)"))
     assert any("b42b7e6" in w and "pins e467e5b5e" in w for w in other.warnings)
     assert other.job_id == plan.job_id and gguf.plan(_model(), X_ELITE, target, ollama_exe=exe, quant="Q8_0",

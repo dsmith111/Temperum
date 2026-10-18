@@ -5,7 +5,7 @@ import os
 import shutil
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import typer
 from rich.console import Console
@@ -13,6 +13,9 @@ from rich.markup import escape
 from rich.table import Table
 
 from npu_model.core.errors import NpuModelError
+
+if TYPE_CHECKING:
+    from npu_model.host import HostInfo
 
 # The hub's cache works without symlinks on Windows; its warning about that is just noise here.
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
@@ -93,16 +96,21 @@ def convert_command(
 ) -> None:
     """Convert a model into an NPU bundle for this machine (resolve, quantize, compile, verify)."""
     from npu_model import convert
-    from npu_model.profiles import get_target
+    from npu_model.host import auto_format, detect_host, resolve_target
+    from npu_model.profiles import DEFAULT_FORMAT, get_target
 
     start = time.time()
     try:
         if install:  # fail now, not after a long conversion
             _check_install_options(ollama_exe, host)
+        machine = None
+        if target == "auto" and auto_format() != DEFAULT_FORMAT:  # the fork's Hexagon backend is switched on
+            machine = detect_host()
+            target = resolve_target(machine).id
         if target != "auto" and get_target(target).format == "gguf":
             _convert_gguf(model, target, quant=quant, context=context, out_dir=out_dir, verify_level=verify_level,
                           overwrite=overwrite, python=python, plan_only=plan_only, yes=yes, as_json=as_json,
-                          install=install, name=name, ollama_exe=ollama_exe, host=host, start=start)
+                          install=install, name=name, ollama_exe=ollama_exe, host=host, start=start, machine=machine)
             return
         options = convert.ConvertOptions(model=model, target=target, quality=quality, device=device,
                                          context=context, out=out_dir, verify=verify_level, overwrite=overwrite,
@@ -165,18 +173,19 @@ def convert_command(
 def _convert_gguf(model: str, target_id: str, *, quant: str, context: Optional[int], out_dir: Optional[Path],
                   verify_level: str, overwrite: bool, python: Optional[Path], plan_only: bool, yes: bool,
                   as_json: bool, install: bool, name: Optional[str], ollama_exe: Optional[Path],
-                  host: Optional[str], start: float) -> None:
+                  host: Optional[str], start: float, machine: Optional[HostInfo] = None) -> None:
     """The GGUF target: llama.cpp's converter, the fork's llama-quantize, verified on the NPU."""
     from npu_model import gguf
     from npu_model.gguf_verify import verify_gguf
-    from npu_model.host import detect_host
+    from npu_model.host import HEXAGON_OPT_IN, detect_host, hexagon_opted_in
     from npu_model.install.ollama_import import install_gguf
     from npu_model.profiles import get_target
     from npu_model.sources import parse_ref, resolve
 
     exe = ollama_exe or (Path(os.environ["NPU_MODEL_OLLAMA_EXE"]) if os.environ.get("NPU_MODEL_OLLAMA_EXE") else None)
-    plan = gguf.plan(resolve(parse_ref(model)), detect_host(), get_target(target_id), ollama_exe=exe, quant=quant,
-                     context=context, out=out_dir, verify=verify_level, overwrite=overwrite, python=python)
+    plan = gguf.plan(resolve(parse_ref(model)), machine or detect_host(), get_target(target_id), ollama_exe=exe,
+                     quant=quant, context=context, out=out_dir, verify=verify_level, overwrite=overwrite,
+                     python=python)
     if as_json:
         typer.echo(json.dumps({"event": "plan", "plan": plan.to_dict()}, default=str), err=True)
     else:
@@ -234,6 +243,8 @@ def _convert_gguf(model: str, target_id: str, *, quant: str, context: Optional[i
                       f"{speed.get('median_prompt_tokens_per_s') or 0:.0f} tokens/s")
         if "install" in summary:
             err.print(f"  installed as {escape(str(summary['install']['name']))}")
+            if not hexagon_opted_in():
+                err.print(f"  the fork runs it on the NPU when its server starts with {HEXAGON_OPT_IN}=1")
     if summary["verdict"] == "failed":
         raise typer.Exit(code=3)
 
@@ -291,13 +302,13 @@ def setup_command(
 def doctor_command(as_json: bool = typer.Option(False, "--json", help="Print JSON")) -> None:
     """Report this machine's NPU target, quantization device, toolchains, paths and resources."""
     from npu_model import paths
-    from npu_model.host import detect_host, long_paths_enabled, resolve_target
+    from npu_model.host import detect_host, hexagon_opted_in, long_paths_enabled, resolve_target
     from npu_model.profiles import DEFAULT_RUNTIME, get_runtime
     from npu_model.toolchains import Toolchains
 
     host = detect_host()
     report: dict[str, Any] = {"host": host.to_dict(), "home": str(paths.home()),
-                              "long_paths_enabled": long_paths_enabled()}
+                              "long_paths_enabled": long_paths_enabled(), "hexagon_opt_in": hexagon_opted_in()}
     try:
         report["target"] = resolve_target(host).id
     except NpuModelError as exc:
@@ -321,6 +332,8 @@ def doctor_command(as_json: bool = typer.Option(False, "--json", help="Print JSO
     table.add_row("Architecture", f"{host.native_arch} (this Python: {host.python_platform})")
     table.add_row("NPU", escape(", ".join(host.npu_devices) or "none found"))
     table.add_row("Target", escape(report["target"] or report.get("target_error", "")))
+    table.add_row("Hexagon backend", "on (OLLAMA_HEXAGON): auto builds GGUF for it" if report["hexagon_opt_in"] else
+                  "off (OLLAMA_HEXAGON=1 opts in to the fork's experimental backend; auto then builds GGUF)")
     table.add_row("Quantization", f"{device}" + (f" ({escape(', '.join(host.cuda_gpus))})" if host.cuda_gpus else ""))
     table.add_row("Memory", f"{host.total_ram_gb} GB total, {host.available_ram_gb} GB free"
                   + (f", {host.available_commit_gb} GB more can be committed"
@@ -453,7 +466,8 @@ def install_command(
             result = install_gguf(input, name, executable=exe, host=host or os.environ.get("OLLAMA_HOST"),
                                   work_dir=work_dir / "npu-model-install", overwrite=overwrite, timeout=timeout)
             typer.echo(json.dumps({"action": "local-create", "format": "gguf", "executed": True, "installed": True,
-                                   **result}, indent=2))
+                                   **result, "npu": "the fork runs GGUF models on the NPU when its server "
+                                                    "starts with OLLAMA_HEXAGON=1"}, indent=2))
             return
         plan = plan_import(input, name, executable=ollama_exe, host=host, modelfile=modelfile,
                            overwrite=overwrite, processor_name=processor_name)

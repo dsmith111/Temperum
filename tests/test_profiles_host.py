@@ -5,7 +5,7 @@ import subprocess
 import pytest
 
 from npu_model.core.errors import NpuModelError
-from npu_model.host import HostInfo, detect_host, resolve_target
+from npu_model.host import HostInfo, auto_format, detect_host, hexagon_opted_in, resolve_target
 from npu_model.profiles import DEFAULT_RUNTIME, RUNTIMES, TARGETS, get_runtime, get_target
 
 X1E = "Snapdragon(R) X Elite - X1E78100 - Qualcomm(R) Oryon(TM) CPU"
@@ -40,6 +40,14 @@ def test_unmatched_machine_requires_explicit_target(name: str | None) -> None:
 
 def test_explicit_target_overrides_detection() -> None:
     assert resolve_target(_host("Intel(R) Core(TM) Ultra 7 155H"), "qnn-x2-elite").id == "qnn-x2-elite"
+
+
+@pytest.mark.parametrize("value, on", [("", False), ("0", False), ("false", False), ("F", False), (" 'false' ", False),
+                                       ("1", True), ("true", True), ('"1"', True), ("yes", True)])
+def test_hexagon_switch_reads_like_the_forks_envconfig(value: str, on: bool) -> None:
+    # Go's strconv.ParseBool after trimming spaces and quotes; values it cannot parse count as on.
+    assert hexagon_opted_in({"OLLAMA_HEXAGON": value}) is on
+    assert auto_format({"OLLAMA_HEXAGON": value}) == ("gguf" if on else "qnn")
 
 
 def test_unknown_profile_ids_fail_with_known_list() -> None:

@@ -44,6 +44,28 @@ def test_install_options_are_checked_before_converting(monkeypatch: pytest.Monke
     assert planned == []
 
 
+def test_auto_target_takes_the_gguf_route_when_the_forks_hexagon_switch_is_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    from npu_model.host import HostInfo
+
+    machine = HostInfo(system="Windows", native_arch="arm64", python_platform="win-arm64",
+                       processor_name="Snapdragon(R) X Elite - X1E78100 - Qualcomm(R) Oryon(TM) CPU")
+    routes: list[tuple[str, Any]] = []
+
+    def qnn_plan(options: Any) -> Any:
+        routes.append(("qnn", options.target))
+        raise NpuModelError("plan", "STOP", "stop here")
+
+    monkeypatch.setattr("npu_model.host.detect_host", lambda: machine)
+    monkeypatch.setattr("npu_model.cli.main._convert_gguf",
+                        lambda model, target, **kwargs: routes.append((target, kwargs["machine"])))
+    monkeypatch.setattr("npu_model.convert.plan", qnn_plan)
+    monkeypatch.setenv("OLLAMA_HEXAGON", "1")
+    assert runner.invoke(app, ["convert", "org/model", "--plan"]).exit_code == 0
+    monkeypatch.setenv("OLLAMA_HEXAGON", "0")
+    assert runner.invoke(app, ["convert", "org/model", "--plan"]).exit_code == 2
+    assert routes == [("gguf-hexagon", machine), ("qnn", "auto")]
+
+
 def test_convert_requires_confirmation(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from npu_model import convert
 

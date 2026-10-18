@@ -12,8 +12,9 @@ npu-model convert Qwen/Qwen2.5-0.5B-Instruct
 
 That one command:
 
-1. detects the NPU target (Snapdragon X Elite → QNN, HTP v73) and the quantization
-   device (CUDA if an NVIDIA GPU is present, otherwise CPU);
+1. detects the NPU target (Snapdragon X Elite → QNN, HTP v73; or a GGUF when the fork's
+   Hexagon backend is switched on, see below) and the quantization device (CUDA if an
+   NVIDIA GPU is present, otherwise CPU);
 2. resolves the model to an exact commit and shows a plan: recipe, precision, time, RAM,
    disk, licence and any warnings;
 3. on first use, sets up three isolated toolchains (~2.4 GB): quantize (PyTorch, Olive,
@@ -62,15 +63,22 @@ model page, then `hf auth login` or set `HF_TOKEN`. Tokens are never written to 
 
 ### GGUF for the Hexagon NPU (experimental)
 
-`--target gguf-hexagon` makes one GGUF file instead, for a fork build whose llama.cpp has
-the Hexagon backend (in development: the fork's `hexagon_arm64` preset plus the
-Microsoft-signed HTP libraries from GenieX; not yet published). It converts with llama.cpp's own converter
-(pinned to the runtime's commit, about 300 architectures), quantizes with the fork's
-`llama-quantize` (`--quant Q4_0`, the default, `Q4_K_M` or `Q8_0`) and verifies on the NPU
-with the fork's `llama-server`:
+The fork can also run GGUF models on the NPU through llama.cpp's Hexagon backend (branch
+`npu/hexagon-spike`: the `hexagon_arm64` preset plus Microsoft-signed HTP libraries from
+Qualcomm's GenieX release). Like upstream Ollama's first Vulkan release, the backend is
+off unless the server starts with `OLLAMA_HEXAGON=1`; with it on, GGUF models load onto
+the NPU by default. `npu-model` follows the same switch: with `OLLAMA_HEXAGON=1` set where
+it runs, `--target auto` makes a GGUF instead of a QNN bundle (`--target gguf-hexagon` asks
+for one either way, and `npu-model doctor` shows which applies).
+
+The GGUF route converts with llama.cpp's own converter (pinned to the runtime's commit,
+about 300 architectures), quantizes with the fork's `llama-quantize` (`--quant Q4_0`, the
+default because it is the fastest, `Q4_K_M` or `Q8_0`) and verifies on the NPU with the
+fork's `llama-server`:
 
 ```powershell
-npu-model convert Qwen/Qwen2.5-1.5B-Instruct --target gguf-hexagon `
+$env:OLLAMA_HEXAGON = "1"   # also set for the fork's server
+npu-model convert Qwen/Qwen2.5-1.5B-Instruct `
   --ollama-exe C:\path\to\fork\ollama.exe --install --host http://127.0.0.1:11434
 ```
 
@@ -86,7 +94,7 @@ NPU (55 tok/s), so the NPU's gains are prefill, power and a free CPU.
 |---|---|
 | `npu-model convert MODEL` | Plan, convert, assemble and verify. `--plan` stops after the plan; `--yes` skips the prompt; `--install` installs into the fork; `--context N`, `--verify quick\|standard\|full\|none`, `--out DIR`, `--template FILE --stop S`, `--target gguf-hexagon --quant TYPE` |
 | `npu-model setup` | Create or check (`--check`) the toolchains |
-| `npu-model doctor` | Target, NPU, quantization device, memory, disk, toolchain health |
+| `npu-model doctor` | Target (and the `OLLAMA_HEXAGON` switch), NPU, quantization device, memory, disk, toolchain health |
 | `npu-model models` | Verified conversions, maintained recipes, supported families |
 | `npu-model verify BUNDLE` | Re-run verification on this machine's NPU |
 | `npu-model inspect --input BUNDLE` | Structural and declaration report (never runs the model) |

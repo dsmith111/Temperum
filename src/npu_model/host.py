@@ -15,12 +15,15 @@ import subprocess
 import sys
 import sysconfig
 from dataclasses import asdict, dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from npu_model.core.errors import NpuModelError
-from npu_model.profiles import DEFAULT_FORMAT, TARGETS, TargetProfile, get_target
+from npu_model.profiles import DEFAULT_FORMAT, HEXAGON_FORMAT, TARGETS, TargetProfile, get_target
 
 Runner = Callable[..., "subprocess.CompletedProcess[str]"]
+
+# The Ollama fork's switch for llama.cpp's experimental Hexagon NPU backend (off by default).
+HEXAGON_OPT_IN = "OLLAMA_HEXAGON"
 
 
 
@@ -186,11 +189,26 @@ def detect_host(run: Runner = subprocess.run) -> HostInfo:
     )
 
 
-def resolve_target(host: HostInfo, requested: str | None = None) -> TargetProfile:
-    """Pick the target profile: an explicit id, or the one matching this machine's processor."""
+def hexagon_opted_in(env: Mapping[str, str] | None = None) -> bool:
+    """Whether OLLAMA_HEXAGON switches on the fork's experimental Hexagon NPU backend.
+
+    Read the way the fork's envconfig reads it: unset or a Go false string is off, anything else is on.
+    """
+    value = (os.environ if env is None else env).get(HEXAGON_OPT_IN, "").strip().strip("\"'")
+    return value not in ("", "0", "f", "F", "false", "FALSE", "False")
+
+
+def auto_format(env: Mapping[str, str] | None = None) -> str:
+    """What `--target auto` builds: GGUF when the fork's Hexagon backend is switched on, else a QNN bundle."""
+    return HEXAGON_FORMAT if hexagon_opted_in(env) else DEFAULT_FORMAT
+
+
+def resolve_target(host: HostInfo, requested: str | None = None, fmt: str | None = None) -> TargetProfile:
+    """Pick the target profile: an explicit id, or the one of `fmt` (default: auto_format()) for this processor."""
     if requested and requested != "auto":
         return get_target(requested)
-    matches = [t for t in TARGETS.values() if t.format == DEFAULT_FORMAT and t.matches(host.processor_name)]
+    fmt = fmt or auto_format()
+    matches = [t for t in TARGETS.values() if t.format == fmt and t.matches(host.processor_name)]
     if not matches:
         raise NpuModelError(
             "target", "NO_MATCHING_TARGET",

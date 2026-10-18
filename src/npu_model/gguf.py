@@ -29,7 +29,7 @@ from typing import Any, Callable
 
 from npu_model import __version__, paths
 from npu_model.core.errors import NpuModelError
-from npu_model.host import HostInfo
+from npu_model.host import HEXAGON_OPT_IN, HostInfo, hexagon_opted_in
 from npu_model.profiles import (DEFAULT_LLAMA_RUNTIME, DEFAULT_RUNTIME, LLAMA_RUNTIMES, LlamaRuntimeProfile,
                                 TargetProfile, get_runtime)
 from npu_model.sources import ResolvedModel, fetch
@@ -194,7 +194,9 @@ def plan(model: ResolvedModel, host: HostInfo, target: TargetProfile, *, ollama_
     if not on_target:
         warnings.append(f"this machine is not a {target.id} device: the file is built but not verified here")
     if not target.verified:
-        warnings.append(f"target {target.id} has not been verified on hardware yet (GGUF/Hexagon spike)")
+        warnings.append(f"target {target.id} has not been verified on hardware yet")
+    if not hexagon_opted_in():
+        warnings.append(f"the fork uses the Hexagon NPU only when its server starts with {HEXAGON_OPT_IN}=1")
     est = estimates(model, quant)
     status = chains_factory(host, get_runtime(DEFAULT_RUNTIME), "cpu", python=python).status("quantize")
     if status.state != "ready":
