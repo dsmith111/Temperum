@@ -3,3 +3,4 @@ src/npu_model/recipes/upstream/*.json -text
 tests/fixtures/m0_configs/*.json eol=lf
 src/npu_model/toolchains/locks/*/*.txt eol=lf
 tests/fixtures/templates/* eol=lf
+src/npu_model/toolchains/llama_cpp_pins/*.json eol=lf

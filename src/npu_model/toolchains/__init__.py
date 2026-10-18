@@ -56,7 +56,8 @@ PYTHON_SIZE_GB = 0.06
 ROLE_MODULES: dict[str, list[tuple[str, str | None]]] = {
     "quantize": [("torch", "torch"), ("transformers", "transformers"), ("olive", "olive-ai"),
                  ("onnxruntime", None), ("onnxruntime_genai", "onnxruntime-genai"),
-                 ("accelerate", "accelerate"), ("psutil", "psutil"), ("requests", "requests")],
+                 ("accelerate", "accelerate"), ("psutil", "psutil"), ("requests", "requests"),
+                 ("sentencepiece", "sentencepiece")],  # llama.cpp's GGUF converter imports it for every model
     "compile": [("olive", "olive-ai"), ("onnxruntime", None), ("requests", "requests")],
     "verify": [("onnxruntime", None), ("onnxruntime_genai", "onnxruntime-genai"), ("numpy", "numpy")],
 }

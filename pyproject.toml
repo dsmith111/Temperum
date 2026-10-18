@@ -38,7 +38,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "npu_model.recipes" = ["upstream/*.json", "verified.json"]
-"npu_model.toolchains" = ["locks/*/*.txt"]
+"npu_model.toolchains" = ["locks/*/*.txt", "llama_cpp_pins/*.json"]
 
 [tool.ruff]
 line-length = 110

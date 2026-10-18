@@ -22,6 +22,7 @@ from npu_model.bundle.inspect import Inspection, inspect_prebuilt, inventory, re
 
 MAX_MODELFILE = 1 << 20
 MAX_RESPONSE = 4 << 20
+TAGS_TIMEOUT = 180.0
 
 
 def _fail(code: str, message: str) -> NoReturn:
@@ -358,3 +359,27 @@ def execute_import(plan: ImportPlan, *, expected_fingerprint: str | None, work_d
             "content_fingerprint": plan.inspection.content_fingerprint,
             "native_evidence": {"status": "not-run", "certified": False},
             "detail": "Local create returned zero and tag presence was confirmed; generation/native execution unverified."}
+
+
+def install_gguf(bundle: Path, name: str, *, executable: Path, host: str | None, work_dir: Path,
+                 overwrite: bool = False, timeout: float = 900) -> dict[str, Any]:
+    """`ollama create` from a GGUF bundle's Modelfile, through an already running local fork.
+
+    The GGUF carries its own chat template, so the Modelfile is just FROM and parameters.
+    """
+    endpoint = local_endpoint(host)
+    tag = _model_name(name)
+    modelfile = bundle / "Modelfile"
+    if not modelfile.is_file() or not (bundle / "model.gguf").is_file():
+        _fail("BUNDLE_INVALID", f"{bundle} is not a GGUF bundle (needs model.gguf and Modelfile).")
+    if not executable.is_file():
+        _fail("EXE_REQUIRED", f"Fork executable not found: {executable}")
+    # A fork lists large models slowly the first time (33 s for a 3 GB ORT bundle).
+    if _canonical_tag(tag) in _tags(endpoint, TAGS_TIMEOUT) and not overwrite:
+        _fail("TAG_EXISTS", f"Local tag {tag} exists. Pass --overwrite to replace it.")
+    work_dir.mkdir(parents=True, exist_ok=True)
+    _run_create([str(executable), "create", tag, "-f", str(modelfile)], bundle,
+                _child_env(executable, work_dir, endpoint), timeout)
+    if _canonical_tag(tag) not in _tags(endpoint, TAGS_TIMEOUT):
+        _fail("CREATE_FAILED", f"Ollama create finished but {tag} is not listed by {endpoint}.")
+    return {"name": tag, "endpoint": endpoint}

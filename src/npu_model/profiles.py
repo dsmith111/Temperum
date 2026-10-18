@@ -18,10 +18,13 @@ class TargetProfile:
     description: str
     vendor: str
     provider: str  # execution-provider family the runtime uses for NPU stages
-    soc_model: str  # QNN EP `soc_model` for ahead-of-time context compilation
+    soc_model: str  # QNN EP `soc_model` for ahead-of-time context compilation ("" when not compiled ahead)
     htp_arch: str
     processor_patterns: tuple[str, ...]  # regexes matched against the CPU name string
     verified: bool  # a conversion has been run and checked on this hardware
+    # "qnn": ORT GenAI pipeline with QNN context binaries; "gguf": a GGUF file that llama.cpp's
+    # Hexagon backend runs on the NPU (one file for every HTP version, no ahead-of-time compile).
+    format: str = "qnn"
 
     def matches(self, processor_name: str | None) -> bool:
         return bool(processor_name) and any(
@@ -67,7 +70,20 @@ TARGETS: dict[str, TargetProfile] = {
         processor_patterns=(r"\bX2E[-\d]", r"\bX2P[-\d]"),
         verified=False,
     ),
+    "gguf-hexagon": TargetProfile(
+        id="gguf-hexagon",
+        description="GGUF (Q4_0) for llama.cpp's Hexagon NPU backend, Snapdragon X (HTP v73-v81)",
+        vendor="qualcomm",
+        provider="hexagon",
+        soc_model="",
+        htp_arch="v73-v81",
+        processor_patterns=(r"\bX1E[-\d]", r"\bX1P[-\d]", r"\bX2E[-\d]", r"\bX2P[-\d]"),
+        verified=False,
+        format="gguf",
+    ),
 }
+# `--target auto` picks the first matching target of this format.
+DEFAULT_FORMAT = "qnn"
 
 RUNTIMES: dict[str, RuntimeProfile] = {
     "fork-qnn-1.24.1": RuntimeProfile(
@@ -84,6 +100,32 @@ RUNTIMES: dict[str, RuntimeProfile] = {
 }
 
 DEFAULT_RUNTIME = "fork-qnn-1.24.1"
+
+
+@dataclass(frozen=True)
+class LlamaRuntimeProfile:
+    """A llama.cpp build that runs GGUF models, with the Hexagon backend for the NPU."""
+
+    id: str
+    description: str
+    llama_cpp_tag: str  # release tag; also names the pinned converter manifest
+    llama_cpp_commit: str
+    # Windows loads the HTP ops libraries only from a trusted signed catalog; this build must
+    # ship the signed set made from llama_cpp_commit (the host and NPU sides share a protocol).
+    htp_libraries: str
+
+
+LLAMA_RUNTIMES: dict[str, LlamaRuntimeProfile] = {
+    "fork-llama-b11644": LlamaRuntimeProfile(
+        id="fork-llama-b11644",
+        description="Ollama NPU fork llama-server, llama.cpp b11644 with the Hexagon backend",
+        llama_cpp_tag="b11644",
+        llama_cpp_commit="e467e5b5e5ba43071d6151b3d881deb9300d000e",
+        htp_libraries="GenieX v0.9.1 Microsoft-signed libggml-htp-v73..v81 (llama.cpp e467e5b)",
+    ),
+}
+
+DEFAULT_LLAMA_RUNTIME = "fork-llama-b11644"
 
 
 def get_target(target_id: str) -> TargetProfile:

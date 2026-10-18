@@ -144,6 +144,9 @@ def plan(options: ConvertOptions, host: HostInfo | None = None, *, resolver: Cal
          chains_factory: Callable[..., Toolchains] = Toolchains) -> ConvertPlan:
     host = host or detect_host()
     target = resolve_target(host, options.target)
+    if target.format != "qnn":
+        raise NpuModelError("plan", "WRONG_TARGET_FORMAT", f"{target.id} is a {target.format} target",
+                            hint="GGUF targets are converted by npu_model.gguf (the CLI routes them there).")
     runtime = get_runtime(options.runtime)
     model = resolver(parse_ref(options.model))
     recipe = choose(model.ref.repo, model.model_type, model.architecture)

@@ -89,14 +89,21 @@ def convert_command(
     ollama_exe: Optional[Path] = typer.Option(None, "--ollama-exe", help="Fork executable for --install"),
     host: Optional[str] = typer.Option(None, "--host", help="Fork endpoint http://127.0.0.1:PORT for --install "
                                                                 "(or OLLAMA_HOST)"),
+    quant: str = typer.Option("Q4_0", "--quant", help="GGUF type for --target gguf-hexagon: Q4_0 | Q8_0 | Q4_K_M"),
 ) -> None:
     """Convert a model into an NPU bundle for this machine (resolve, quantize, compile, verify)."""
     from npu_model import convert
+    from npu_model.profiles import get_target
 
     start = time.time()
     try:
         if install:  # fail now, not after a long conversion
             _check_install_options(ollama_exe, host)
+        if target != "auto" and get_target(target).format == "gguf":
+            _convert_gguf(model, target, quant=quant, context=context, out_dir=out_dir, verify_level=verify_level,
+                          overwrite=overwrite, python=python, plan_only=plan_only, yes=yes, as_json=as_json,
+                          install=install, name=name, ollama_exe=ollama_exe, host=host, start=start)
+            return
         options = convert.ConvertOptions(model=model, target=target, quality=quality, device=device,
                                          context=context, out=out_dir, verify=verify_level, overwrite=overwrite,
                                          template=template, stops=list(stop), num_splits=num_splits,
@@ -153,6 +160,82 @@ def convert_command(
             raise typer.Exit(code=3)
     except NpuModelError as exc:
         _handle_err(exc)
+
+
+def _convert_gguf(model: str, target_id: str, *, quant: str, context: Optional[int], out_dir: Optional[Path],
+                  verify_level: str, overwrite: bool, python: Optional[Path], plan_only: bool, yes: bool,
+                  as_json: bool, install: bool, name: Optional[str], ollama_exe: Optional[Path],
+                  host: Optional[str], start: float) -> None:
+    """The GGUF target: llama.cpp's converter, the fork's llama-quantize, verified on the NPU."""
+    from npu_model import gguf
+    from npu_model.gguf_verify import verify_gguf
+    from npu_model.host import detect_host
+    from npu_model.install.ollama_import import install_gguf
+    from npu_model.profiles import get_target
+    from npu_model.sources import parse_ref, resolve
+
+    exe = ollama_exe or (Path(os.environ["NPU_MODEL_OLLAMA_EXE"]) if os.environ.get("NPU_MODEL_OLLAMA_EXE") else None)
+    plan = gguf.plan(resolve(parse_ref(model)), detect_host(), get_target(target_id), ollama_exe=exe, quant=quant,
+                     context=context, out=out_dir, verify=verify_level, overwrite=overwrite, python=python)
+    if as_json:
+        typer.echo(json.dumps({"event": "plan", "plan": plan.to_dict()}, default=str), err=True)
+    else:
+        est = plan.estimates
+        table = Table(show_header=False, box=None, pad_edge=False)
+        table.add_row("Model", escape(f"{plan.model.ref.display}" + (f" @ {plan.model.commit[:12]}"
+                                                                      if plan.model.commit else "")))
+        table.add_row("Architecture", escape(f"{plan.model.architecture}, ~{est['params_billions']}B params"))
+        table.add_row("Licence", escape(plan.model.license or "unknown") + (" (gated)" if plan.model.gated else ""))
+        table.add_row("Target", escape(f"{plan.target.id}: {plan.target.description}"))
+        table.add_row("Runtime", escape(f"{plan.runtime.description} ({plan.payload.root})"))
+        table.add_row("Format", escape(f"GGUF {plan.quant}, context {plan.context}"))
+        table.add_row("Verification", escape(plan.verify_level))
+        table.add_row("Output", escape(str(plan.destination)))
+        table.add_row("Estimate", escape(f"~{est['minutes']:.0f} min, ~{est['ram_gb']} GB RAM, ~{est['disk_gb']} GB "
+                                         f"disk, {est['gguf_gb']} GB file"))
+        err.print(table)
+        for warning in plan.warnings:
+            err.print(f"[yellow]![/yellow] {escape(warning)}")
+    if plan_only:
+        if as_json:
+            typer.echo(json.dumps(plan.to_dict(), indent=2, default=str))
+        return
+    if not yes and not typer.confirm("Proceed?", default=True, err=True):
+        raise typer.Exit(code=1)
+    result = gguf.run(plan, progress=_progress(start, as_json), verifier=verify_gguf)
+    report = result.verification
+    summary: dict[str, Any] = {"bundle": str(result.bundle), "verdict": report.get("verdict"),
+                               "reasons": report.get("reasons", []), "job": str(result.job_dir),
+                               "minutes": round((time.time() - start) / 60, 1),
+                               "npu_placement": report.get("npu_placement", {}), "speed": report.get("speed", {})}
+    ppl = report.get("quality", {}).get("perplexity", {})
+    if ppl:
+        summary["perplexity_ratio"] = ppl.get("ratio")
+    if install and summary["verdict"] != "failed" and exe is not None:
+        summary["install"] = install_gguf(result.bundle, name or f"{plan.model.name}:npu-gguf", executable=exe,
+                                          host=host or os.environ.get("OLLAMA_HOST"), work_dir=result.job_dir / "install")
+    if as_json:
+        typer.echo(json.dumps(summary, indent=2, default=str))
+    else:
+        colour = {"passed": "green", "warning": "yellow"}.get(str(summary["verdict"]), "red")
+        err.print(f"[bold {colour}]{escape(str(summary['verdict']))}[/bold {colour}] "
+                  f"{escape(str(result.bundle))} ({summary['minutes']} min)")
+        for reason in summary["reasons"]:
+            err.print(f"  - {escape(reason)}")
+        placed = summary["npu_placement"]
+        if placed.get("layers_total"):
+            err.print(f"  NPU: {placed.get('layers_offloaded')}/{placed.get('layers_total')} layers, "
+                      f"{placed.get('htp_weight_mib')} MiB of weights on HTP")
+        if "perplexity_ratio" in summary:
+            err.print(f"  perplexity vs the 16-bit model: {summary['perplexity_ratio']}x")
+        speed = summary["speed"]
+        if speed.get("median_tokens_per_s"):
+            err.print(f"  decode: {speed['median_tokens_per_s']:.0f} tokens/s, prompt: "
+                      f"{speed.get('median_prompt_tokens_per_s') or 0:.0f} tokens/s")
+        if "install" in summary:
+            err.print(f"  installed as {escape(str(summary['install']['name']))}")
+    if summary["verdict"] == "failed":
+        raise typer.Exit(code=3)
 
 
 def _check_install_options(ollama_exe: Optional[Path], host: Optional[str]) -> None:
@@ -353,9 +436,25 @@ def install_command(
     timeout: float = typer.Option(300, "--timeout", min=1, max=3600, help="Execution time budget in seconds"),
 ) -> None:
     """Plan (default) or execute a local `ollama create` of a bundle; never downloads or uploads."""
-    from npu_model.install.ollama_import import execute_import, plan_import
+    from npu_model.install.ollama_import import execute_import, install_gguf, plan_import
 
     try:
+        if (input / "model.gguf").is_file():  # GGUF bundle: FROM + parameters; the GGUF carries its template
+            exe = ollama_exe or (Path(os.environ["NPU_MODEL_OLLAMA_EXE"])
+                                 if os.environ.get("NPU_MODEL_OLLAMA_EXE") else None)
+            if exe is None:
+                raise NpuModelError("import", "EXE_REQUIRED", "Installing needs the fork executable.",
+                                    hint="Pass --ollama-exe PATH or set NPU_MODEL_OLLAMA_EXE.")
+            if not execute:
+                typer.echo(json.dumps({"action": "local-create", "format": "gguf", "bundle": str(input), "name": name,
+                                       "executable": str(exe), "executed": False,
+                                       "next": "Repeat with --execute to run `ollama create` on the fork."}, indent=2))
+                return
+            result = install_gguf(input, name, executable=exe, host=host or os.environ.get("OLLAMA_HOST"),
+                                  work_dir=work_dir / "npu-model-install", overwrite=overwrite, timeout=timeout)
+            typer.echo(json.dumps({"action": "local-create", "format": "gguf", "executed": True, "installed": True,
+                                   **result}, indent=2))
+            return
         plan = plan_import(input, name, executable=ollama_exe, host=host, modelfile=modelfile,
                            overwrite=overwrite, processor_name=processor_name)
         result = (execute_import(plan, expected_fingerprint=expect_fingerprint, work_dir=work_dir,

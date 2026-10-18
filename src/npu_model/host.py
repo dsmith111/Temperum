@@ -18,7 +18,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Callable
 
 from npu_model.core.errors import NpuModelError
-from npu_model.profiles import TARGETS, TargetProfile, get_target
+from npu_model.profiles import DEFAULT_FORMAT, TARGETS, TargetProfile, get_target
 
 Runner = Callable[..., "subprocess.CompletedProcess[str]"]
 
@@ -190,7 +190,7 @@ def resolve_target(host: HostInfo, requested: str | None = None) -> TargetProfil
     """Pick the target profile: an explicit id, or the one matching this machine's processor."""
     if requested and requested != "auto":
         return get_target(requested)
-    matches = [t for t in TARGETS.values() if t.matches(host.processor_name)]
+    matches = [t for t in TARGETS.values() if t.format == DEFAULT_FORMAT and t.matches(host.processor_name)]
     if not matches:
         raise NpuModelError(
             "target", "NO_MATCHING_TARGET",

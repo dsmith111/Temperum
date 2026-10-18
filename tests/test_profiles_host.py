@@ -60,7 +60,9 @@ def test_default_runtime_compiles_with_the_fork_qnn_build() -> None:
 
 def test_every_target_profile_is_well_formed() -> None:
     for target in TARGETS.values():
-        assert target.provider == "qnn" and target.soc_model.isdigit() and target.processor_patterns
+        assert target.processor_patterns and target.format in ("qnn", "gguf")
+        if target.format == "qnn":
+            assert target.provider == "qnn" and target.soc_model.isdigit()
     assert DEFAULT_RUNTIME in RUNTIMES
 
 
