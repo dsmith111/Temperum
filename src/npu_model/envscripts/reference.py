@@ -35,6 +35,34 @@ def _chat_ids(tok: Any, text: str) -> list[int]:
     return _ids(tok.encode(text))
 
 
+def _float32_compute(model: Any) -> None:
+    """Keep the large weights in 16-bit storage but compute in float32.
+
+    PyTorch's 16-bit CPU matmuls can be about 100x slower than float32 (Windows on Arm), so a
+    16-bit reference would take hours. Upcasting each weight as it is used gives float32
+    results at half the memory: identical to a float32 load for a 16-bit checkpoint.
+    """
+    import torch.nn.functional as F
+
+    def linear(module: Any) -> Any:
+        return lambda x: F.linear(x.float(), module.weight.float(),
+                                  None if module.bias is None else module.bias.float())
+
+    def embedding(module: Any) -> Any:
+        return lambda ids: F.embedding(ids, module.weight, module.padding_idx).float()
+
+    for module in model.modules():
+        if type(module) is torch.nn.Linear:
+            module.forward = linear(module)
+        elif type(module) is torch.nn.Embedding:
+            module.forward = embedding(module)
+        elif any(p.ndim >= 2 for p in module.parameters(recurse=False)):
+            module.float()  # an unfamiliar layer with its own weights: plain float32
+    for param in model.parameters():
+        if param.ndim < 2:
+            param.data = param.data.float()  # norms and biases are small
+
+
 def _heldout_chunks(tok: Any, path: Path, count: int, length: int) -> list[list[int]]:
     buf: list[int] = []
     chunks: list[list[int]] = []
@@ -64,7 +92,13 @@ def main() -> None:
     torch.manual_seed(0)
     spec = json.loads(Path(args.spec).read_text(encoding="utf-8"))
     tok = AutoTokenizer.from_pretrained(args.model)
-    model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=getattr(torch, args.dtype))
+    if args.dtype == "float32":
+        model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=torch.float32)
+    else:  # 16-bit storage (the checkpoint's own 16-bit type when it has one), float32 compute
+        model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype="auto")
+        if model.dtype not in (torch.bfloat16, torch.float16):
+            model.to(torch.bfloat16)
+        _float32_compute(model)
     model.eval()
     eos = model.generation_config.eos_token_id
     pad = tok.pad_token_id if tok.pad_token_id is not None else (eos[0] if isinstance(eos, list) else eos)

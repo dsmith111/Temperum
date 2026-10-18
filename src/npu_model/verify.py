@@ -72,6 +72,7 @@ def reference_dtype(params: int | None, available_gb: float | None, total_gb: fl
 
     The budget is half of the larger of free memory and half the machine's memory: desktop
     load makes "free" memory small but reclaimable (M0 ran the fp32 reference with ~2 GB free).
+    "bfloat16" keeps 16-bit weights but still computes in float32 (see reference.py).
     """
     if not params or not (available_gb or total_gb):
         return "float32"
@@ -180,7 +181,8 @@ def verify(bundle: Path, snapshot: Path, chat: ChatTemplate, level: str, *, quan
             spec_path = work / "reference_spec.json"
             spec_path.write_text(json.dumps(spec, indent=2), encoding="utf-8")
             reference_path = work / "reference.json"
-            say(f"running the source model ({dtype}) for reference answers")
+            label = "float32" if dtype == "float32" else "16-bit weights, float32 compute"
+            say(f"running the source model ({label}) for reference answers")
             code, tail = run_script(quantize_python, "reference.py",
                                     ["--model", str(snapshot), "--spec", str(spec_path), "--heldout", str(heldout),
                                      "--dtype", dtype, "--out", str(reference_path)], say, popen)
@@ -189,6 +191,7 @@ def verify(bundle: Path, snapshot: Path, chat: ChatTemplate, level: str, *, quan
                 reference_path = None
             else:
                 quality["reference_dtype"] = dtype
+                quality["reference_compute"] = "float32"
     npu_out = work / "npu_check.json"
     args = ["--bundle", str(bundle), "--out", str(npu_out), "--max-new", str(settings.max_new),
             "--needle-answer", NEEDLE["answer"]]
