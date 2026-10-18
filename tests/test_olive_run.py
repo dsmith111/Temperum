@@ -91,6 +91,13 @@ def test_deterministic_failures_are_not_retried(tmp_path: Path) -> None:
     assert result.error == "ModuleNotFoundError: No module named 'requests'"
 
 
+def test_a_rerun_keeps_the_logs_of_the_interrupted_run(tmp_path: Path) -> None:
+    run_olive(Path("python.exe"), _config(tmp_path), tmp_path / "work", popen=FakeOlive(["missing-dep"]))
+    result = run_olive(Path("python.exe"), _config(tmp_path), tmp_path / "work", popen=FakeOlive(["ok"]))
+    assert result.ok and result.logs == [str(tmp_path / "work" / "olive-2.log")]
+    assert (tmp_path / "work" / "olive-1.log").is_file()
+
+
 def test_repeated_crashes_give_up_after_the_last_attempt(tmp_path: Path) -> None:
     result = run_olive(Path("python.exe"), _config(tmp_path), tmp_path / "work", popen=FakeOlive(["crash"] * 3))
     assert not result.ok and result.attempts == 3 and "status 3221225477" in (result.error or "")

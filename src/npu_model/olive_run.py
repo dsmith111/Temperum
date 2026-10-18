@@ -103,8 +103,9 @@ def run_olive(python: Path, config: dict[str, Any], work_dir: Path, *, attempts:
     config_path = work_dir / "olive_config.json"
     config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
     result = OliveResult(ok=False, attempts=0)
+    first_log = len(list(work_dir.glob("olive-*.log"))) + 1  # keep logs of interrupted earlier runs
     for attempt in range(1, attempts + 1):
-        log = work_dir / f"olive-{attempt}.log"
+        log = work_dir / f"olive-{first_log + attempt - 1}.log"
         result.attempts = attempt
         result.logs.append(str(log))
         cmd = [str(python), str(ENVSCRIPTS / "run_olive.py"), "--config", str(config_path), "--log", str(log),
