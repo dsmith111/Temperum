@@ -64,12 +64,16 @@ model page, then `hf auth login` or set `HF_TOKEN`. Tokens are never written to 
 ### GGUF for the Hexagon NPU (experimental)
 
 The fork can also run GGUF models on the NPU through llama.cpp's Hexagon backend (branch
-`npu/hexagon-spike`: the `hexagon_arm64` preset plus Microsoft-signed HTP libraries from
-Qualcomm's GenieX release). Like upstream Ollama's first Vulkan release, the backend is
+`npu/hexagon-spike`, built with its `hexagon_arm64` preset). The backend's NPU half is a
+Microsoft-signed set of libraries from Qualcomm's GenieX release, and Qualcomm's terms
+restrict its use, so the fork downloads it at setup instead of shipping it:
+`ollama npu setup --provider hexagon --accept-qualcomm-terms` shows those terms, then
+fetches and checks the set. Like upstream Ollama's first Vulkan release, the backend is
 off unless the server starts with `OLLAMA_HEXAGON=1`; with it on, GGUF models load onto
 the NPU by default. `npu-model` follows the same switch: with `OLLAMA_HEXAGON=1` set where
 it runs, `--target auto` makes a GGUF instead of a QNN bundle (`--target gguf-hexagon` asks
-for one either way, and `npu-model doctor` shows which applies).
+for one either way, and `npu-model doctor` shows which applies). It uses the signed set
+the fork reports, and its plan names the folder.
 
 The GGUF route converts with llama.cpp's own converter (pinned to the runtime's commit,
 about 300 architectures), quantizes with the fork's `llama-quantize` (`--quant Q4_0`, the
@@ -77,6 +81,7 @@ default because it is the fastest, `Q4_K_M` or `Q8_0`) and verifies on the NPU w
 fork's `llama-server`:
 
 ```powershell
+C:\path\to\fork\ollama.exe npu setup --provider hexagon --accept-qualcomm-terms   # once
 $env:OLLAMA_HEXAGON = "1"   # also set for the fork's server
 npu-model convert Qwen/Qwen2.5-1.5B-Instruct `
   --ollama-exe C:\path\to\fork\ollama.exe --install --host http://127.0.0.1:11434

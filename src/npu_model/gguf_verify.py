@@ -42,7 +42,7 @@ def runtime_env(payload: LlamaPayload) -> dict[str, str]:
     if backend:
         env["GGML_BACKEND_PATH"] = str(backend[0])
     existing = env.get("ADSP_LIBRARY_PATH")
-    env["ADSP_LIBRARY_PATH"] = str(payload.hexagon) + (f";{existing}" if existing else "")
+    env["ADSP_LIBRARY_PATH"] = str(payload.htp or payload.hexagon) + (f";{existing}" if existing else "")
     return env
 
 
@@ -126,9 +126,10 @@ class LlamaServer:
         finally:
             connection.close()
 
-    def complete(self, ids: list[int], n_predict: int) -> dict[str, Any]:
+    def complete(self, prompt: list[int] | str, n_predict: int) -> dict[str, Any]:
+        """Greedy completion of token ids, or of text the server tokenizes with the model's own tokenizer."""
         return self._request("POST", "/completion", {
-            "prompt": ids, "n_predict": n_predict, "temperature": 0.0, "top_k": 1, "cache_prompt": False,
+            "prompt": prompt, "n_predict": n_predict, "temperature": 0.0, "top_k": 1, "cache_prompt": False,
             "return_tokens": True, "stream": False}, REQUEST_TIMEOUT)
 
     def apply_template(self, messages: list[dict[str, str]]) -> str | None:
@@ -212,23 +213,30 @@ def verify_gguf(bundle: Path, snapshot: Path, plan: GgufPlan, chains: Any, work:
         with LlamaServer(plan.payload, bundle / "model.gguf", plan.context, work / "llama-server.log") as server:
             report["load"] = {"ok": True}
             report["npu_placement"] = placement(server.text())
-            prompts = [(p["prompt"], p["input_ids"], p) for p in reference["prompts"]] if reference else []
-            for index, (text, ids, ref) in enumerate(prompts, 1):
+            prompts: list[tuple[str, list[int] | str, dict[str, Any] | None]]
+            if reference:
+                prompts = [(p["prompt"], p["input_ids"], p) for p in reference["prompts"]]
+            else:  # no source-model answers (quick, or the reference was skipped): the bundle's own chat format
+                prompts = [(text, server.apply_template([{"role": "user", "content": text}]) or text, None)
+                           for text in PROMPTS[: settings.prompts]]
+            for index, (question, prompt, ref) in enumerate(prompts, 1):
                 say(f"prompt {index}/{len(prompts)}")
-                result = server.complete(ids, settings.max_new)
+                result = server.complete(prompt, settings.max_new)
                 tokens = [int(t) for t in result.get("tokens") or []]
                 timings = result.get("timings") or {}
                 if timings.get("prompt_per_second"):
                     prompt_rates.append(float(timings["prompt_per_second"]))
                 if timings.get("predicted_per_second") and len(tokens) > 1:
                     decode_rates.append(float(timings["predicted_per_second"]))
-                want = ref["output_ids"]
-                same = next((i for i in range(min(len(tokens), len(want))) if tokens[i] != want[i]),
-                            min(len(tokens), len(want)))
-                rows.append({"prompt": text, "output": result.get("content", ""), "tokens": len(tokens),
-                             "degenerate": _degenerate(tokens), "reference": ref["output"], "matching_prefix": same,
-                             "reference_tokens": len(want), "exact": tokens == want,
-                             "prompt_ms": timings.get("prompt_ms")})
+                row = {"prompt": question, "output": result.get("content", ""), "tokens": len(tokens),
+                       "degenerate": _degenerate(tokens), "prompt_ms": timings.get("prompt_ms")}
+                if ref is not None:
+                    want = ref["output_ids"]
+                    same = next((i for i in range(min(len(tokens), len(want))) if tokens[i] != want[i]),
+                                min(len(tokens), len(want)))
+                    row.update({"reference": ref["output"], "matching_prefix": same, "reference_tokens": len(want),
+                                "exact": tokens == want})
+                rows.append(row)
             needles = []
             for needle in (reference or {}).get("needle", []):
                 say(f"long prompt {needle['input_len']} tokens")
@@ -250,10 +258,11 @@ def verify_gguf(bundle: Path, snapshot: Path, plan: GgufPlan, chains: Any, work:
     report["prompts"] = rows
     report["speed"] = {"median_prompt_tokens_per_s": _median(prompt_rates),
                        "median_tokens_per_s": _median(decode_rates)}
-    if rows:
-        quality["greedy_exact"] = sum(1 for r in rows if r["exact"])
+    scored = [r for r in rows if "exact" in r]
+    if scored:
+        quality["greedy_exact"] = sum(1 for r in scored if r["exact"])
         quality["mean_matching_prefix"] = round(
-            sum(r["matching_prefix"] / max(1, r["reference_tokens"]) for r in rows) / len(rows), 3)
+            sum(r["matching_prefix"] / max(1, r["reference_tokens"]) for r in scored) / len(scored), 3)
     if report["load"].get("ok") and heldout is not None and source_gguf is not None and settings.ppl_chunks:
         # The reference is a Q8_0 copy on the CPU: within about 0.5% of 16-bit, but ggml's 16-bit
         # CPU kernels are slow here (BF16 took 211 s per 4 chunks for a 1.5B model).

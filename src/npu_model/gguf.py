@@ -46,6 +46,8 @@ MANIFEST = "npu_model_manifest.json"
 LICENSE_PREFIXES = ("license", "notice", "use_policy", "readme")
 HTP_LIBRARIES = ("libggml-htp-v73.so", "libggml-htp-v75.so", "libggml-htp-v79.so", "libggml-htp-v81.so",
                  "libggml-htp.cat")
+# How users get the signed HTP set; the fork shows Qualcomm's terms first.
+SETUP_COMMAND = "ollama npu setup --provider hexagon --accept-qualcomm-terms"
 # Approximate GGUF bytes per parameter by type (block scales included).
 BYTES_PER_PARAM = {"Q4_0": 0.5625, "Q8_0": 1.0625, "Q4_K_M": 0.6, "BF16": 2.0, "F16": 2.0}
 _REGISTER = re.compile(r"@ModelBase\.register\(([^)]*)\)")
@@ -60,10 +62,12 @@ class LlamaPayload:
     """The llama.cpp runtime files of an Ollama fork installation (<fork dir>/lib/ollama)."""
 
     root: Path
+    htp: Path | None = None  # the signed HTP set the fork's runners use, if any
 
     @classmethod
-    def from_executable(cls, executable: Path) -> LlamaPayload:
-        return cls(executable.resolve().parent / "lib" / "ollama")
+    def from_executable(cls, executable: Path, run: Runner = subprocess.run) -> LlamaPayload:
+        root = executable.resolve().parent / "lib" / "ollama"
+        return cls(root, signed_htp_set(executable, root / "hexagon", run))
 
     @property
     def quantize(self) -> Path:
@@ -81,7 +85,8 @@ class LlamaPayload:
         missing = [p.name for p in (self.quantize, self.server) if not p.is_file()]
         if not any(self.hexagon.glob("*ggml-hexagon*")):
             missing.append("hexagon/ggml-hexagon")
-        missing += [f"hexagon/{name}" for name in HTP_LIBRARIES if not (self.hexagon / name).is_file()]
+        if self.htp is None:
+            missing.append(f"the signed HTP libraries ({SETUP_COMMAND})")
         return missing
 
     def version(self, run: Runner = subprocess.run) -> str | None:
@@ -95,6 +100,26 @@ class LlamaPayload:
         match = re.search(r"commit ([0-9a-f]{7,40})|version:\s*\d+\s*\(([0-9a-f]{7,40})\)",
                           (proc.stdout or "") + (proc.stderr or ""))
         return (match.group(1) or match.group(2)) if match else None
+
+
+def signed_htp_set(executable: Path, backend: Path, run: Runner = subprocess.run) -> Path | None:
+    """The signed HTP set the fork's runners would use, as the fork reports it.
+
+    Packages leave the set out (Qualcomm's terms restrict its use); `ollama npu setup --provider hexagon`
+    installs it, and the fork checks it against its pin. Builds from before that command can only use a set
+    bundled beside the backend.
+    """
+    try:
+        proc = run([str(executable), "npu", "setup", "--provider", "hexagon", "--validate-only", "--json"],
+                   capture_output=True, text=True, timeout=60)
+        report = json.loads(proc.stdout or "{}")
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        report = {}
+    checks = report.get("checks") if isinstance(report, dict) else None
+    stages = {c.get("stage"): c.get("status") for c in checks or [] if isinstance(c, dict)}
+    if "htp_integrity" in stages:  # older builds answer --validate-only for the QNN runtime instead
+        return Path(report["dir"]) if stages["htp_integrity"] == "pass" and report.get("dir") else None
+    return backend if all((backend / name).is_file() for name in HTP_LIBRARIES) else None
 
 
 def supported_architectures(source_dir: Path) -> set[str]:
@@ -151,6 +176,7 @@ class GgufPlan:
     def to_dict(self) -> dict[str, Any]:
         return {"model": self.model.to_dict(), "target": self.target.id, "runtime": self.runtime.id,
                 "llama_cpp": self.runtime.llama_cpp_commit, "payload": str(self.payload.root),
+                "htp": str(self.payload.htp) if self.payload.htp else None,
                 "quant": self.quant, "context": self.context, "destination": str(self.destination),
                 "job": str(self.job_dir), "verify": self.verify_level, "estimates": self.estimates,
                 "warnings": self.warnings, "host": self.host.to_dict()}
@@ -169,12 +195,13 @@ def plan(model: ResolvedModel, host: HostInfo, target: TargetProfile, *, ollama_
         raise NpuModelError("plan", "NEEDS_RUNTIME",
                             "The GGUF target quantizes and verifies with the Ollama fork's own llama.cpp build.",
                             hint="Pass --ollama-exe with the fork executable (its lib\\ollama folder is used).")
-    payload = LlamaPayload.from_executable(ollama_exe)
+    payload = LlamaPayload.from_executable(ollama_exe, run)
     missing = payload.problems()
     if missing:
         raise NpuModelError("plan", "RUNTIME_INCOMPLETE",
                             f"{payload.root} lacks the llama.cpp Hexagon runtime: {', '.join(missing)}",
-                            hint="Use a fork build with the hexagon_arm64 preset and the signed HTP libraries.")
+                            hint=f"Use a fork build with the hexagon_arm64 preset; get Qualcomm's signed HTP libraries "
+                                 f"with `{SETUP_COMMAND}`.")
     warnings: list[str] = []
     commit = payload.version(run)
     if commit is None:

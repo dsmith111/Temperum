@@ -11,6 +11,7 @@ import pytest
 
 from npu_model import gguf
 from npu_model.core.errors import NpuModelError
+from npu_model.gguf_verify import runtime_env
 from npu_model.host import HostInfo, resolve_target
 from npu_model.profiles import get_target
 from npu_model.sources import ModelRef, ResolvedModel
@@ -66,8 +67,32 @@ def test_plan_needs_a_complete_runtime(tmp_path: Path) -> None:
     assert exc.value.reason_code == "NEEDS_RUNTIME"
     partial = _payload(tmp_path / "partial", complete=False)
     with pytest.raises(NpuModelError) as exc:
-        gguf.plan(_model(), X_ELITE, target, ollama_exe=partial)
-    assert exc.value.reason_code == "RUNTIME_INCOMPLETE" and "libggml-htp-v79.so" in str(exc.value)
+        gguf.plan(_model(), X_ELITE, target, ollama_exe=partial, run=_version(""))
+    assert exc.value.reason_code == "RUNTIME_INCOMPLETE" and "npu setup --provider hexagon" in str(exc.value)
+
+
+def _setup_report(status: str, directory: Path | None = None, stage: str = "htp_integrity") -> Any:
+    """What `ollama npu setup --provider hexagon --validate-only --json` prints."""
+    return _version(json.dumps({"status": "files_verified" if status == "pass" else "checks_failed",
+                                "dir": str(directory or ""), "checks": [{"stage": stage, "status": status}]}))
+
+
+def test_the_signed_htp_set_is_where_the_fork_says(tmp_path: Path) -> None:
+    exe = _payload(tmp_path / "fork", complete=False)  # a package: the backend without the signed set
+    backend = exe.parent / "lib" / "ollama" / "hexagon"
+    installed = tmp_path / "htp"
+    assert gguf.signed_htp_set(exe, backend, _setup_report("pass", installed)) == installed
+    assert gguf.signed_htp_set(exe, backend, _setup_report("fail")) is None
+    # Older builds answer --validate-only for the QNN runtime; only a bundled set counts for them.
+    qnn = _setup_report("pass", tmp_path / "qnn", stage="runtime_integrity")
+    assert gguf.signed_htp_set(exe, backend, qnn) is None
+    bundled = _payload(tmp_path / "bundled")
+    bundled_backend = bundled.parent / "lib" / "ollama" / "hexagon"
+    assert gguf.signed_htp_set(bundled, bundled_backend, qnn) == bundled_backend
+
+    payload = gguf.LlamaPayload.from_executable(exe, _setup_report("pass", installed))
+    assert payload.htp == installed and payload.problems() == []
+    assert runtime_env(payload)["ADSP_LIBRARY_PATH"].startswith(str(installed))
 
 
 def test_plan_checks_the_runtime_commit_and_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -147,3 +172,34 @@ def test_converter_source_is_fetched_and_checked_file_by_file(tmp_path: Path) ->
     assert small.ensure(opener=archive(b"print(1)\n")) == small.directory
     assert not small.problems() and not (small.directory / "other.txt").exists()
     assert small.environment()["PYTHONPATH"].endswith("gguf-py")
+
+
+def test_quick_verification_generates_with_the_bundles_own_chat_format(tmp_path: Path,
+                                                                        monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    from npu_model import gguf_verify
+
+    sent: list[Any] = []
+
+    class FakeServer:
+        def __init__(self, *_args: Any) -> None: ...
+        def __enter__(self) -> FakeServer: return self
+        def __exit__(self, *_exc: object) -> None: ...
+        def text(self) -> str:
+            return ("load_tensors: offloaded 29/29 layers to GPU\n"
+                    "load_tensors:         HTP0 model buffer size =   898.14 MiB\n")
+        def apply_template(self, messages: list[dict[str, str]]) -> str:
+            return f"<user>{messages[-1]['content']}<assistant>"
+        def complete(self, prompt: Any, n_predict: int) -> dict[str, Any]:
+            sent.append(prompt)
+            return {"content": "Paris", "tokens": [1, 2, 3], "timings": {"predicted_per_second": 30.0}}
+
+    monkeypatch.setattr(gguf_verify, "LlamaServer", FakeServer)
+    plan = SimpleNamespace(verify_level="quick", payload=None, context=4096)
+    report = gguf_verify.verify_gguf(tmp_path / "bundle", tmp_path / "source", plan, None,  # type: ignore[arg-type]
+                                     tmp_path / "work", lambda _message: None)
+    # No source model runs at quick level, so the prompts go through the GGUF's own chat template.
+    assert report["verdict"] == "passed", report["reasons"]
+    assert len(sent) == 3 and all(p.startswith("<user>") for p in sent)
+    assert "greedy_exact" not in report["quality"] and report["speed"]["median_tokens_per_s"] == 30.0

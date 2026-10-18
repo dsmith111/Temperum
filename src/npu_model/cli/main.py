@@ -197,6 +197,7 @@ def _convert_gguf(model: str, target_id: str, *, quant: str, context: Optional[i
         table.add_row("Licence", escape(plan.model.license or "unknown") + (" (gated)" if plan.model.gated else ""))
         table.add_row("Target", escape(f"{plan.target.id}: {plan.target.description}"))
         table.add_row("Runtime", escape(f"{plan.runtime.description} ({plan.payload.root})"))
+        table.add_row("NPU libraries", escape(str(plan.payload.htp)))
         table.add_row("Format", escape(f"GGUF {plan.quant}, context {plan.context}"))
         table.add_row("Verification", escape(plan.verify_level))
         table.add_row("Output", escape(str(plan.destination)))
