@@ -48,10 +48,10 @@ perplexity, and the fork loaded it as `declared` and served it on the NPU.
   Llama 3.1/3.2, Phi-3/3.5/4 (vendored from `microsoft/olive-recipes`).
 - **Other models of the same families** (`model_type` qwen2, qwen3, llama, phi3) use their
   family's recipe; verification decides whether the result is usable.
-- **Size**: on a CPU the conversion needs RAM of roughly 8 bytes per parameter (about 5 GB
-  for a 0.5B model), so 16 GB laptops are limited to models of about 1.5B parameters.
-  Larger models need an x64 machine with an NVIDIA GPU (`--target qnn-x-elite`), a path
-  that is implemented but not yet tested.
+- **Size**: on a CPU the conversion's peak memory grows with the model (measured: 3.8 GB
+  for 0.5B, 7.9 GB for 1.5B, which took 55 minutes), so 16 GB laptops are limited to models
+  of about 1.5B parameters. Larger models need an x64 machine with an NVIDIA GPU
+  (`--target qnn-x-elite`), a path that is implemented but not yet tested.
 
 Quality modes: `standard` (default on CPU) uses rotated 8-bit round-to-nearest weights,
 which measured 1.04–1.15× the source model's perplexity; `recipe` (default on CUDA) uses
@@ -60,17 +60,37 @@ the maintained recipe's own GPTQ settings, usually 4-bit.
 Gated models (for example Llama) work with your Hugging Face access: request access on the
 model page, then `hf auth login` or set `HF_TOKEN`. Tokens are never written to outputs.
 
+### GGUF for the Hexagon NPU (experimental)
+
+`--target gguf-hexagon` makes one GGUF file instead, for a fork build whose llama.cpp has
+the Hexagon backend (in development: the fork's `hexagon_arm64` preset plus the
+Microsoft-signed HTP libraries from GenieX; not yet published). It converts with llama.cpp's own converter
+(pinned to the runtime's commit, about 300 architectures), quantizes with the fork's
+`llama-quantize` (`--quant Q4_0`, the default, `Q4_K_M` or `Q8_0`) and verifies on the NPU
+with the fork's `llama-server`:
+
+```powershell
+npu-model convert Qwen/Qwen2.5-1.5B-Instruct --target gguf-hexagon `
+  --ollama-exe C:\path\to\fork\ollama.exe --install --host http://127.0.0.1:11434
+```
+
+For Qwen2.5-1.5B that took under a minute (plus the shared toolchain setup) against 55
+minutes for the QNN bundle. Through the fork it decodes at 28.7 tok/s and prefills at
+1,229 tok/s on the NPU, against 20.2 and 772 for the QNN bundle. Q4_0 costs about 9%
+perplexity, Q4_K_M about 5% and Q8_0 nothing measurable. The CPU decodes faster than the
+NPU (55 tok/s), so the NPU's gains are prefill, power and a free CPU.
+
 ## Commands
 
 | Command | Purpose |
 |---|---|
-| `npu-model convert MODEL` | Plan, convert, assemble and verify. `--plan` stops after the plan; `--yes` skips the prompt; `--install` installs into the fork; `--context N`, `--verify quick\|standard\|full\|none`, `--out DIR`, `--template FILE --stop S` |
+| `npu-model convert MODEL` | Plan, convert, assemble and verify. `--plan` stops after the plan; `--yes` skips the prompt; `--install` installs into the fork; `--context N`, `--verify quick\|standard\|full\|none`, `--out DIR`, `--template FILE --stop S`, `--target gguf-hexagon --quant TYPE` |
 | `npu-model setup` | Create or check (`--check`) the toolchains |
 | `npu-model doctor` | Target, NPU, quantization device, memory, disk, toolchain health |
 | `npu-model models` | Verified conversions, maintained recipes, supported families |
 | `npu-model verify BUNDLE` | Re-run verification on this machine's NPU |
 | `npu-model inspect --input BUNDLE` | Structural and declaration report (never runs the model) |
-| `npu-model install --input BUNDLE --name TAG --ollama-exe FORK` | Plan, then `--execute --expect-fingerprint FP` a local `ollama create` |
+| `npu-model install --input BUNDLE --name TAG --ollama-exe FORK` | Plan, then `--execute --expect-fingerprint FP` a local `ollama create` (GGUF bundles: `--execute` alone) |
 
 Everything lives under `%LOCALAPPDATA%\npu-model` (toolchains, source snapshots, jobs,
 bundles); set `NPU_MODEL_HOME` to a short path if Windows long paths are disabled and your
@@ -85,8 +105,10 @@ continues where it stopped, and `jobs/<id>/job.json` records every stage.
   (the default Python on Windows on Arm is often an emulated x64 build); packages through
   your pip configuration, torch from the PyTorch index.
 - `olive_run.py`, `assemble.py`, `verify.py`, `convert.py`: the pipeline. Rules learned in
-  the M0 spike are enforced there, such as a pad token that never appears in prompts and
-  automatic retries for an intermittent QNN compiler crash.
+  the M0 spike are enforced there, such as a pad token that never appears in prompts,
+  automatic retries for an intermittent QNN compiler crash, and NPU graph splits that keep
+  each compiled context near 1 GB (a single 2.65 GB context fails to load).
+- `gguf.py`, `gguf_verify.py`, `toolchains/llama_cpp.py`: the GGUF target.
 
 Background and measurements: [spike/m0/RESULTS.md](spike/m0/RESULTS.md).
 
