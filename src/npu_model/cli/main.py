@@ -308,7 +308,8 @@ def verify_command(
         if as_json:
             typer.echo(json.dumps(report, indent=2, ensure_ascii=False))
         else:
-            err.print(f"{report['verdict']}: " + "; ".join(report.get("reasons", [])))
+            reasons = "; ".join(report.get("reasons", []))
+            err.print(str(report["verdict"]) + (f": {reasons}" if reasons else ""))
         if report["verdict"] == "failed":
             raise typer.Exit(code=3)
     except NpuModelError as exc:

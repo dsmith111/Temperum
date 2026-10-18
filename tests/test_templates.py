@@ -39,7 +39,7 @@ def test_qwen3_has_no_default_system_prompt() -> None:
 
 def test_qwen3_gets_a_thinking_aware_template() -> None:
     chat = from_jinja(_jinja("qwen3.jinja"))
-    assert chat.variant == "think" and not chat.verified
+    assert chat.variant == "think" and chat.verified  # served through the fork: thinking split, think=false
     # The server infers the thinking capability from .Thinking between tags inside the message loop.
     assert "{{ if and $last .Thinking }}<think>\n{{ .Thinking }}\n</think>" in chat.template
     hello = [{"role": "user", "content": "Hello!"}]

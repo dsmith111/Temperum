@@ -166,7 +166,7 @@ def from_jinja(jinja: str | None) -> ChatTemplate:
             return ChatTemplate("chatml-imsep", _chatml(None, "<|im_sep|>", ""), ("<|im_start|>", "<|im_end|>"),
                                 None, verified=False)
         if "enable_thinking" in jinja and "<think>" in jinja:  # Qwen3-style reasoning switch
-            return ChatTemplate("chatml", _CHATML_THINK, ("<|im_start|>", "<|im_end|>"), None, verified=False,
+            return ChatTemplate("chatml", _CHATML_THINK, ("<|im_start|>", "<|im_end|>"), None, verified=True,
                                 variant="think")
         match = _CHATML_SYSTEM.search(jinja)
         default = match.group(1).strip() if match else None
