@@ -34,6 +34,7 @@ class HostInfo:
     cuda_gpus: list[str] = field(default_factory=list)
     total_ram_gb: float | None = None
     available_ram_gb: float | None = None
+    available_commit_gb: float | None = None  # Windows commit headroom (RAM + page file)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -119,22 +120,33 @@ def _cuda_gpus(run: Runner) -> list[str]:
     return [line.strip() for line in (proc.stdout or "").splitlines() if line.strip()] if proc.returncode == 0 else []
 
 
+def _windows_memory_status() -> Any:
+    class _MemoryStatus(ctypes.Structure):
+        _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+    status = _MemoryStatus()
+    status.dwLength = ctypes.sizeof(_MemoryStatus)
+    return status if getattr(ctypes, "windll").kernel32.GlobalMemoryStatusEx(ctypes.byref(status)) else None
+
+
+def commit_available_gb() -> float | None:
+    """Memory Windows can still commit (RAM + page file headroom). Running out of commit makes
+    allocations fail in every program, not just the converter. None elsewhere."""
+    if sys.platform != "win32":
+        return None
+    status = _windows_memory_status()
+    return float(status.ullAvailPageFile / 2**30) if status else None
+
+
 def memory_gb() -> tuple[float | None, float | None]:
     """(total, available) physical memory in GB."""
     if sys.platform == "win32":
-
-        class _MemoryStatus(ctypes.Structure):
-            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
-                        ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
-                        ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
-                        ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
-                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
-
-        status = _MemoryStatus()
-        status.dwLength = ctypes.sizeof(_MemoryStatus)
-        if getattr(ctypes, "windll").kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
-            return status.ullTotalPhys / 2**30, status.ullAvailPhys / 2**30
-        return None, None
+        status = _windows_memory_status()
+        return (status.ullTotalPhys / 2**30, status.ullAvailPhys / 2**30) if status else (None, None)
     try:
         info: dict[str, int] = {}
         with open("/proc/meminfo", encoding="utf-8") as fh:
@@ -170,6 +182,7 @@ def detect_host(run: Runner = subprocess.run) -> HostInfo:
         cuda_gpus=_cuda_gpus(run),
         total_ram_gb=round(total, 1) if total else None,
         available_ram_gb=round(available, 1) if available else None,
+        available_commit_gb=round(commit, 1) if (commit := commit_available_gb()) is not None else None,
     )
 
 

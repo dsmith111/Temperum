@@ -156,7 +156,11 @@ def plan(options: ConvertOptions, host: HostInfo | None = None, *, resolver: Cal
         raise NpuModelError("plan", "NOT_ENOUGH_MEMORY",
                             f"Converting needs about {est['ram_gb']} GB of RAM; this machine has {host.total_ram_gb} GB.",
                             hint="Use a smaller model, or convert on a machine with more memory (--target).")
-    if host.available_ram_gb and est["ram_gb"] > host.available_ram_gb:
+    if host.available_commit_gb is not None and est["ram_gb"] > host.available_commit_gb:
+        warnings.append(f"Windows can commit only {host.available_commit_gb} GB more memory right now and the "
+                        f"conversion needs about {est['ram_gb']} GB: close applications first, or the conversion "
+                        "may fail and other programs may run out of memory")
+    elif host.available_ram_gb and est["ram_gb"] > host.available_ram_gb:
         warnings.append(f"about {est['ram_gb']} GB of RAM is needed and {host.available_ram_gb} GB is free; "
                         "close other applications or expect heavy paging")
     license_id = (model.license or "unknown").lower()

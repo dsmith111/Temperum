@@ -92,6 +92,16 @@ def test_memory_and_device_checks() -> None:
     assert exc.value.reason_code == "QUALITY_NEEDS_CUDA"
 
 
+def test_low_commit_headroom_is_flagged() -> None:
+    from dataclasses import replace
+
+    tight = replace(X_ELITE, available_commit_gb=2.0)
+    result = _plan(ConvertOptions(model="org/x"), host=tight)
+    assert any("Windows can commit only 2.0 GB" in w for w in result.warnings)
+    roomy = replace(X_ELITE, available_commit_gb=20.0)
+    assert not any("commit" in w for w in _plan(ConvertOptions(model="org/x"), host=roomy).warnings)
+
+
 def test_estimates_match_m0_scale() -> None:
     est = estimates(_model())
     assert est["params_billions"] == 0.49 and 4.0 <= est["ram_gb"] <= 5.5 and 12 <= est["minutes"] <= 18

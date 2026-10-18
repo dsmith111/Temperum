@@ -233,7 +233,9 @@ def doctor_command(as_json: bool = typer.Option(False, "--json", help="Print JSO
     table.add_row("NPU", escape(", ".join(host.npu_devices) or "none found"))
     table.add_row("Target", escape(report["target"] or report.get("target_error", "")))
     table.add_row("Quantization", f"{device}" + (f" ({escape(', '.join(host.cuda_gpus))})" if host.cuda_gpus else ""))
-    table.add_row("Memory", f"{host.total_ram_gb} GB total, {host.available_ram_gb} GB free")
+    table.add_row("Memory", f"{host.total_ram_gb} GB total, {host.available_ram_gb} GB free"
+                  + (f", {host.available_commit_gb} GB more can be committed"
+                     if host.available_commit_gb is not None else ""))
     table.add_row("Home", escape(report["home"]) + f" ({report['disk_free_gb']} GB free)")
     table.add_row("Long paths", "enabled" if report["long_paths_enabled"] else "disabled (keep the home path short)")
     for status in report.get("toolchains", []):
