@@ -24,6 +24,7 @@ import onnxruntime_genai as og
 
 WINDOW = 64  # static prefill window of the QNN pipeline
 MIN_MAX_LENGTH = 1024  # GenAI 0.12.2 misbehaves when max_length is below the prefill window
+CONTEXT = {"length": 1 << 30}  # the bundle's declared context, set in main()
 
 
 def _say(msg: str) -> None:
@@ -32,7 +33,10 @@ def _say(msg: str) -> None:
 
 def _generator(model: Any, needed: int) -> Any:
     params = og.GeneratorParams(model)
-    params.set_search_options(do_sample=False, top_k=1, max_length=max(needed, MIN_MAX_LENGTH))
+    context = CONTEXT["length"]
+    if needed > context:
+        raise ValueError(f"needs {needed} tokens but the bundle's context is {context}")
+    params.set_search_options(do_sample=False, top_k=1, max_length=min(context, max(needed, MIN_MAX_LENGTH)))
     return og.Generator(model, params)
 
 
@@ -99,7 +103,9 @@ def main() -> None:
         sys.exit(1)
     eos = {int(x) for x in np.asarray(tok.eos_token_ids).reshape(-1)}
     # Ollama sends the rendered prompt text to the same tokenizer: does encoding add BOS?
-    bos = json.loads((Path(args.bundle) / "genai_config.json").read_text(encoding="utf-8"))["model"].get("bos_token_id")
+    model_cfg = json.loads((Path(args.bundle) / "genai_config.json").read_text(encoding="utf-8"))["model"]
+    CONTEXT["length"] = int(model_cfg.get("context_length") or CONTEXT["length"])
+    bos = model_cfg.get("bos_token_id")
     probe = [int(i) for i in tok.encode("Hi")]
     report["tokenizer"] = {"adds_bos": bool(probe) and bos is not None and probe[0] == bos}
 
