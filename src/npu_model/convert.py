@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from npu_model import __version__, calib, paths
-from npu_model.assemble import AssembleInputs, assemble
+from npu_model.assemble import MIN_CONTEXT, AssembleInputs, assemble
 from npu_model.checkpoint import read_checkpoint
 from npu_model.core.errors import NpuModelError
 from npu_model.host import HostInfo, detect_host, resolve_target
@@ -107,6 +107,14 @@ def _job_id(model: ResolvedModel, recipe: RecipeChoice, target: TargetProfile, r
     return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:12]
 
 
+def disk_free_gb(path: Path) -> float | None:
+    """Free space on the volume holding `path` (or its nearest existing parent)."""
+    for candidate in (path, *path.parents):
+        if candidate.exists():
+            return shutil.disk_usage(candidate).free / 2**30
+    return None
+
+
 def _params(model: ResolvedModel) -> int:
     """Parameter count from the weight size (bf16/fp16 checkpoints: 2 bytes per parameter)."""
     dtype = str(model.config.get("torch_dtype") or model.config.get("dtype") or "bfloat16")
@@ -138,6 +146,16 @@ def plan(options: ConvertOptions, host: HostInfo | None = None, *, resolver: Cal
     level = options.verify if on_target else "none"
     job_id = _job_id(model, recipe, target, runtime, quality, device, options)
     destination = options.out or paths.models_dir() / f"{model.name}-{target.id}"
+    # Checks that would otherwise fail only after the long quantize/compile stage.
+    if destination.exists() and not options.overwrite:
+        raise NpuModelError("plan", "DESTINATION_EXISTS", f"{destination} already exists.",
+                            hint="Pass --overwrite to rebuild it, --out to write elsewhere, or "
+                                 "`npu-model verify` to re-check the existing bundle.")
+    maximum = model.config.get("max_position_embeddings")
+    if options.context is not None and (options.context < MIN_CONTEXT
+                                        or (isinstance(maximum, int) and options.context > maximum)):
+        raise NpuModelError("plan", "BAD_CONTEXT",
+                            f"--context {options.context} is outside {MIN_CONTEXT}..{maximum or 'the model maximum'}.")
     chains = chains_factory(host, runtime, device, python=options.python)
     roles = ["quantize", "compile"] + (["verify"] if level != "none" else [])
     statuses = [chains.status(role) for role in roles]
@@ -163,6 +181,11 @@ def plan(options: ConvertOptions, host: HostInfo | None = None, *, resolver: Cal
     elif host.available_ram_gb and est["ram_gb"] > host.available_ram_gb:
         warnings.append(f"about {est['ram_gb']} GB of RAM is needed and {host.available_ram_gb} GB is free; "
                         "close other applications or expect heavy paging")
+    free_gb = disk_free_gb(paths.home())
+    if free_gb is not None and est["disk_gb"] > free_gb:
+        raise NpuModelError("plan", "NOT_ENOUGH_DISK",
+                            f"Converting needs about {est['disk_gb']} GB of disk; {free_gb:.1f} GB is free at "
+                            f"{paths.home()}.", hint="Free some space or set NPU_MODEL_HOME to another drive.")
     license_id = (model.license or "unknown").lower()
     if license_id not in PERMISSIVE_LICENSES:
         warnings.append(f"licence '{model.license or 'unknown'}': you are responsible for complying with its terms")

@@ -92,6 +92,25 @@ def test_memory_and_device_checks() -> None:
     assert exc.value.reason_code == "QUALITY_NEEDS_CUDA"
 
 
+def test_problems_that_would_surface_late_fail_the_plan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    out = tmp_path / "existing"
+    out.mkdir()
+    with pytest.raises(NpuModelError) as exc:
+        _plan(ConvertOptions(model="org/x", out=out))
+    assert exc.value.reason_code == "DESTINATION_EXISTS"
+    assert _plan(ConvertOptions(model="org/x", out=out, overwrite=True)).destination == out
+    model = _model()
+    model.config["max_position_embeddings"] = 32768
+    for context in (64, 65536):
+        with pytest.raises(NpuModelError) as exc:
+            _plan(ConvertOptions(model="org/x", context=context), model=model)
+        assert exc.value.reason_code == "BAD_CONTEXT"
+    monkeypatch.setattr("npu_model.convert.disk_free_gb", lambda _path: 1.0)
+    with pytest.raises(NpuModelError) as exc:
+        _plan(ConvertOptions(model="org/x"))
+    assert exc.value.reason_code == "NOT_ENOUGH_DISK"
+
+
 def test_low_commit_headroom_is_flagged() -> None:
     from dataclasses import replace
 
