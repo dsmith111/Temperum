@@ -80,13 +80,16 @@ def convert_command(
     install: bool = typer.Option(False, "--install", help="Also install into a running Ollama fork"),
     name: Optional[str] = typer.Option(None, "--name", help="Ollama tag for --install (default: <model>:npu)"),
     ollama_exe: Optional[Path] = typer.Option(None, "--ollama-exe", help="Fork executable for --install"),
-    host: Optional[str] = typer.Option(None, "--host", help="Fork endpoint for --install (or OLLAMA_HOST)"),
+    host: Optional[str] = typer.Option(None, "--host", help="Fork endpoint http://127.0.0.1:PORT for --install "
+                                                                "(or OLLAMA_HOST)"),
 ) -> None:
     """Convert a model into an NPU bundle for this machine (resolve, quantize, compile, verify)."""
     from npu_model import convert
 
     start = time.time()
     try:
+        if install:  # fail now, not after a long conversion
+            _check_install_options(ollama_exe, host)
         options = convert.ConvertOptions(model=model, target=target, quality=quality, device=device,
                                          context=context, out=out_dir, verify=verify_level, overwrite=overwrite,
                                          template=template, stops=list(stop), num_splits=num_splits,
@@ -108,6 +111,7 @@ def convert_command(
         if quality_report.get("perplexity"):
             summary["perplexity_ratio"] = quality_report["perplexity"].get("ratio")
         summary["speed"] = report.get("speed", {})
+        install = install and summary["verdict"] != "failed"  # never install a bundle that failed verification
         if install:
             summary["install"] = _install(result.bundle, name or f"{plan.model.name}:npu", ollama_exe, host,
                                           result.job_dir, plan.host.processor_name)
@@ -128,13 +132,24 @@ def convert_command(
             if install:
                 err.print(f"  installed as {escape(str(summary['install'].get('name')))}: "
                           f"ollama run {escape(str(summary['install'].get('name')))}")
-            else:
+            elif summary["verdict"] != "failed":
                 err.print(f"  install: npu-model install --input {escape(str(result.bundle))} "
-                          f"--name {escape(plan.model.name)}:npu --ollama-exe <fork> (then --execute)")
+                          f"--name {escape(plan.model.name)}:npu --ollama-exe FORK_EXE --host http://127.0.0.1:11434 "
+                          "(review the plan, then add --execute --expect-fingerprint FP)")
         if summary["verdict"] == "failed":
             raise typer.Exit(code=3)
     except NpuModelError as exc:
         _handle_err(exc)
+
+
+def _check_install_options(ollama_exe: Optional[Path], host: Optional[str]) -> None:
+    from npu_model.install.ollama_import import local_endpoint
+
+    local_endpoint(host or os.environ.get("OLLAMA_HOST"))
+    exe = ollama_exe or (Path(os.environ["NPU_MODEL_OLLAMA_EXE"]) if os.environ.get("NPU_MODEL_OLLAMA_EXE") else None)
+    if exe is None or not exe.is_file():
+        raise NpuModelError("import", "EXE_REQUIRED", "--install needs the fork executable.",
+                            hint="Pass --ollama-exe PATH or set NPU_MODEL_OLLAMA_EXE.")
 
 
 def _install(bundle: Path, name: str, ollama_exe: Optional[Path], host: Optional[str], job_dir: Path,

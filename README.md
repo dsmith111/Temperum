@@ -26,12 +26,19 @@ That one command:
 6. verifies it: loads it on the NPU, generates, and compares perplexity, answers and
    long-prompt retrieval with the original model.
 
-Install into a running fork with `--install` (or `npu-model install` later):
+Install into a running fork with `--install` (or `npu-model install` later). The tool
+never picks or starts a server itself, so name the fork executable and its endpoint:
 
 ```powershell
-npu-model convert Qwen/Qwen2.5-0.5B-Instruct --install --ollama-exe C:\path\to\fork\ollama.exe
+npu-model convert Qwen/Qwen2.5-0.5B-Instruct --install `
+  --ollama-exe C:\path\to\fork\ollama.exe --host http://127.0.0.1:11434
 ollama run qwen2.5-0.5b-instruct:npu
 ```
+
+On a Snapdragon X Elite laptop (X1E78100, 16 GB) that conversion took 22 minutes on the
+CPU, covering model download, quantization, compilation and verification. The one-time
+toolchain setup adds about 18 minutes. The result measured 1.04× the source model's
+perplexity, and the fork loaded it as `declared` and served it on the NPU.
 
 ## What converts today
 

@@ -31,6 +31,19 @@ def test_convert_plan_errors_are_actionable(monkeypatch: pytest.MonkeyPatch) -> 
     assert "HF_GATED" in result.output and "Request access" in result.output
 
 
+def test_install_options_are_checked_before_converting(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    planned: list[str] = []
+    monkeypatch.setattr("npu_model.convert.plan", lambda options: planned.append("plan"))
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    monkeypatch.delenv("NPU_MODEL_OLLAMA_EXE", raising=False)
+    result = runner.invoke(app, ["convert", "org/model", "--install"])
+    assert result.exit_code == 2 and "HOST_REQUIRED" in result.output
+    result = runner.invoke(app, ["convert", "org/model", "--install", "--host", "http://127.0.0.1:11434",
+                                 "--ollama-exe", str(tmp_path / "missing.exe")])
+    assert result.exit_code == 2 and "EXE_REQUIRED" in result.output
+    assert planned == []
+
+
 def test_convert_requires_confirmation(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from npu_model import convert
 

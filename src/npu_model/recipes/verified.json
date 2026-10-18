@@ -2,7 +2,7 @@
   "_comment": "Conversions checked end to end on hardware. Evidence lives in spike/m0/RESULTS.md and the bundles' npu_model_verification.json.",
   "entries": [
     {"repo": "Qwen/Qwen2.5-0.5B-Instruct", "target": "qnn-x-elite", "quality": "standard", "ppl_ratio": 1.04,
-     "decode_tokens_per_s": 57, "evidence": "M0 spike, 2026-10-17; served through the fork"},
+     "decode_tokens_per_s": 57, "evidence": "npu-model convert 0.2.0.dev0, 2026-10-17: verdict passed (ppl x1.037, 875/1763-token retrieval OK, template match), installed declared and served through the fork; speed from M0 on AC power"},
     {"repo": "Qwen/Qwen3-0.6B", "target": "qnn-x-elite", "quality": "standard", "ppl_ratio": 1.06,
      "decode_tokens_per_s": 27, "evidence": "M0 spike, 2026-10-17; measured under shared load"},
     {"repo": "HuggingFaceTB/SmolLM2-360M-Instruct", "target": "qnn-x-elite", "quality": "standard", "ppl_ratio": 1.15,
