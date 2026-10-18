@@ -54,6 +54,28 @@ def test_convert_requires_confirmation(monkeypatch: pytest.MonkeyPatch, tmp_path
     assert result.exit_code == 1 and calls == []
 
 
+def test_json_mode_streams_events_and_prints_the_result(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from npu_model import convert
+
+    def fake_run(plan: Any, progress: Any) -> Any:
+        progress("pass sq:onnxstaticquantization")
+        return SimpleNamespace(bundle=tmp_path / "bundle", job_dir=tmp_path / "job", verification={
+            "verdict": "passed", "reasons": [], "quality": {"perplexity": {"ratio": 1.04}},
+            "speed": {"median_tokens_per_s": 50.0}})
+
+    monkeypatch.setattr(convert, "plan", lambda options: _FakePlan(tmp_path))
+    monkeypatch.setattr(convert, "run", fake_run)
+    result = runner.invoke(app, ["convert", "org/model", "--yes", "--json"])
+    assert result.exit_code == 0, result.output
+    events = [json.loads(line) for line in result.stderr.splitlines() if line.startswith("{")]
+    assert [e["event"] for e in events] == ["plan", "progress"]
+    assert events[1]["message"] == "pass sq:onnxstaticquantization"
+    summary = json.loads(result.stdout)
+    assert summary["verdict"] == "passed" and summary["perplexity_ratio"] == 1.04
+
+
 class _FakePlan:
     def __init__(self, tmp_path: Path) -> None:
         from npu_model.profiles import get_runtime, get_target
@@ -69,3 +91,6 @@ class _FakePlan:
         self.destination = tmp_path / "bundle"
         self.estimates = {"params_billions": 0.5, "minutes": 15, "ram_gb": 5.0, "disk_gb": 7.0, "download_gb": 1.0}
         self.warnings = ["a warning"]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"model": "org/model", "warnings": self.warnings}

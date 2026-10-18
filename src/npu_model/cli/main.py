@@ -33,9 +33,13 @@ def _handle_err(e: Exception) -> None:
     raise e
 
 
-def _progress(start: float) -> Any:
+def _progress(start: float, as_json: bool = False) -> Any:
     def say(message: str) -> None:
-        minutes, seconds = divmod(int(time.time() - start), 60)
+        elapsed = time.time() - start
+        if as_json:  # one JSON event per line on stderr; stdout carries the final document
+            typer.echo(json.dumps({"event": "progress", "seconds": round(elapsed, 1), "message": message}), err=True)
+            return
+        minutes, seconds = divmod(int(elapsed), 60)
         err.print(f"[dim]{minutes:3d}:{seconds:02d}[/dim] {escape(message)}")
     return say
 
@@ -95,14 +99,17 @@ def convert_command(
                                          template=template, stops=list(stop), num_splits=num_splits,
                                          keep_cache=keep_cache, python=python)
         plan = convert.plan(options)
-        _print_plan(plan)
+        if as_json:
+            typer.echo(json.dumps({"event": "plan", "plan": plan.to_dict()}, default=str), err=True)
+        else:
+            _print_plan(plan)
         if plan_only:
             if as_json:
                 typer.echo(json.dumps(plan.to_dict(), indent=2, default=str))
             return
         if not yes and not typer.confirm("Proceed?", default=True, err=True):
             raise typer.Exit(code=1)
-        result = convert.run(plan, progress=_progress(start))
+        result = convert.run(plan, progress=_progress(start, as_json))
         report = result.verification
         summary: dict[str, Any] = {"bundle": str(result.bundle), "verdict": report.get("verdict"),
                                    "reasons": report.get("reasons", []), "job": str(result.job_dir),
@@ -296,7 +303,7 @@ def verify_command(
                         work=paths.jobs_dir() / "verify" / bundle.name, heldout=heldout,
                         params=read_checkpoint(snapshot).total_params, available_gb=host.available_ram_gb,
                         total_gb=host.total_ram_gb,
-                        progress=_progress(time.time()))
+                        progress=_progress(time.time(), as_json))
         (bundle / VERIFICATION_FILE).write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
         if as_json:
             typer.echo(json.dumps(report, indent=2, ensure_ascii=False))
