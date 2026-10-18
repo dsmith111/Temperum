@@ -111,6 +111,37 @@ def test_problems_that_would_surface_late_fail_the_plan(tmp_path: Path, monkeypa
     assert exc.value.reason_code == "NOT_ENOUGH_DISK"
 
 
+def test_an_interrupted_job_resumes_into_its_own_bundle() -> None:
+    first = _plan(ConvertOptions(model="org/x"))
+    first.destination.mkdir(parents=True)
+    with pytest.raises(NpuModelError):  # a folder this job did not assemble
+        _plan(ConvertOptions(model="org/x"))
+    job = Job(first.job_dir, {"model": "org/x"})
+    job.record("assemble", "done", bundle=str(first.destination), fingerprint="abc")
+    job.release()
+    assert _plan(ConvertOptions(model="org/x")).destination == first.destination
+    job = Job(first.job_dir, {"model": "org/x"})
+    job.record("verify", "done", verdict="passed")
+    job.release()
+    with pytest.raises(NpuModelError) as exc:  # finished: nothing left to resume
+        _plan(ConvertOptions(model="org/x"))
+    assert exc.value.reason_code == "DESTINATION_EXISTS"
+
+
+def test_a_resumed_plan_skips_resource_checks_for_finished_heavy_stages(monkeypatch: pytest.MonkeyPatch) -> None:
+    from dataclasses import replace
+
+    tight = replace(X_ELITE, available_commit_gb=2.0)
+    first = _plan(ConvertOptions(model="org/x"), host=tight)
+    assert any("commit" in w for w in first.warnings) and first.resumed == []
+    job = Job(first.job_dir, {"model": "org/x"})
+    job.record("olive", "done")
+    job.release()
+    monkeypatch.setattr("npu_model.convert.disk_free_gb", lambda _path: 1.0)  # the cache already uses the disk
+    again = _plan(ConvertOptions(model="org/x"), host=tight)
+    assert again.resumed == ["olive"] and not any("commit" in w for w in again.warnings)
+
+
 def test_low_commit_headroom_is_flagged() -> None:
     from dataclasses import replace
 
@@ -121,9 +152,11 @@ def test_low_commit_headroom_is_flagged() -> None:
     assert not any("commit" in w for w in _plan(ConvertOptions(model="org/x"), host=roomy).warnings)
 
 
-def test_estimates_match_m0_scale() -> None:
+def test_estimates_match_measured_runs() -> None:
     est = estimates(_model())
-    assert est["params_billions"] == 0.49 and 4.0 <= est["ram_gb"] <= 5.5 and 12 <= est["minutes"] <= 18
+    assert est["params_billions"] == 0.49 and 4.0 <= est["ram_gb"] <= 5.5 and 12 <= est["minutes"] <= 20
+    big = estimates(_model(weight_bytes=3_087_467_144))  # Qwen2.5-1.5B: 7.9 GB peak, ~48 min in all
+    assert 7.9 <= big["ram_gb"] <= 9.5 and 42 <= big["minutes"] <= 52 and 20 <= big["disk_gb"] <= 24
 
 
 def test_job_receipt_records_and_resumes(tmp_path: Path) -> None:

@@ -56,8 +56,11 @@ def _print_plan(plan: Any) -> None:
     table.add_row("Runtime", escape(plan.runtime.description))
     table.add_row("Verification", escape(plan.verify_level))
     table.add_row("Output", escape(str(plan.destination)))
-    table.add_row("Estimate", escape(f"~{est['minutes']:.0f} min, ~{est['ram_gb']} GB RAM, ~{est['disk_gb']} GB disk "
-                                     f"(download {est['download_gb']} GB)"))
+    if plan.resumed:
+        table.add_row("Resuming", escape(f"already done: {', '.join(plan.resumed)}"))
+    if "olive" not in plan.resumed:
+        table.add_row("Estimate", escape(f"~{est['minutes']:.0f} min, ~{est['ram_gb']} GB RAM, ~{est['disk_gb']} GB "
+                                         f"disk (download {est['download_gb']} GB)"))
     err.print(table)
     for warning in plan.warnings:
         err.print(f"[yellow]![/yellow] {escape(warning)}")
@@ -143,6 +146,9 @@ def convert_command(
                 err.print(f"  install: npu-model install --input {escape(str(result.bundle))} "
                           f"--name {escape(plan.model.name)}:npu --ollama-exe FORK_EXE --host http://127.0.0.1:11434 "
                           "(review the plan, then add --execute --expect-fingerprint FP)")
+            else:
+                err.print(f"  Olive's cache is kept in {escape(str(result.job_dir))}, so rerunning with --overwrite "
+                          "(for example with --num-splits) reuses the quantization")
         if summary["verdict"] == "failed":
             raise typer.Exit(code=3)
     except NpuModelError as exc:

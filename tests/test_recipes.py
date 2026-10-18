@@ -107,11 +107,13 @@ def test_standard_quality_drops_overrides_that_equal_the_base() -> None:
 
 def test_split_count_follows_model_size() -> None:
     recipe = catalog()["Qwen/Qwen2.5-0.5B-Instruct"]
-    small = render(recipe, _opts(family=True, block_params=300_000_000))
+    small = render(recipe, _opts(family=True, block_params=440_000_000))  # Qwen3-0.6B: 0.9 GB context
+    middle = render(recipe, _opts(family=True, block_params=1_310_000_000))  # Qwen2.5-1.5B: 2.6 GB
     large = render(recipe, _opts(family=True, block_params=6_500_000_000))
     forced = render(recipe, _opts(num_splits=3))
     assert small["passes"]["cs"]["num_splits"] == 1
-    assert large["passes"]["cs"]["num_splits"] == 5  # 6.5 GB of 8-bit weights / 1.5 GiB
+    assert middle["passes"]["cs"]["num_splits"] == 4  # one 2.65 GB context failed to load
+    assert large["passes"]["cs"]["num_splits"] == 16  # ~13 GB of contexts at 8 bits
     assert forced["passes"]["cs"]["num_splits"] == 3
     curated = render(catalog()["Qwen/Qwen2.5-7B-Instruct"], _opts(block_params=None))
     assert curated["passes"]["cs"]["num_splits"] == 4  # recipe value kept when size is unknown

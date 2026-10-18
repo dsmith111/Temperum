@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import copy
 import json
-import math
 import re
 from dataclasses import dataclass
 from functools import lru_cache
@@ -52,9 +51,12 @@ DATA_NAMES = {"join": "calib_joined", "line-by-line": "calib_act"}
 ADD_SPECIAL_TOKENS = {"join": False, "line-by-line": True}
 # CPU calibration budget (samples, tokens per sample); CUDA keeps the recipe's own budget.
 CPU_BUDGET = {"join": (32, 1024), "line-by-line": (64, 512)}
-# Weight bytes per NPU graph split. Upstream compiles Qwen3-1.7B at 8 bits (~1.4 GB of block
-# weights) as one split for the X Elite; larger models are split further.
-SPLIT_BUDGET_BYTES = int(1.5 * 1024**3)
+# Size budget for one compiled NPU context binary (one graph split). With the pinned QNN 2.42,
+# contexts hold about 2 bytes per block weight at 8 bits and 1 at 4 bits. On the X1E78100 a
+# 0.9 GB context loads (four of them together too), but a single 2.65 GB one fails with QNN
+# error 1002 (memory allocation), so stay at about 1 GB each.
+SPLIT_BUDGET_BYTES = 1024**3
+CONTEXT_BYTES_PER_WEIGHT_BIT = 2 / 8
 
 
 @dataclass(frozen=True)
@@ -212,8 +214,11 @@ def split_count(upstream_splits: int, opts: RenderOptions, bits: int) -> int:
         return opts.num_splits
     if opts.block_params is None:
         return upstream_splits
-    needed = math.ceil(opts.block_params * bits / 8 / SPLIT_BUDGET_BYTES)
-    return max(1 if opts.family else upstream_splits, needed, 1)
+    needed = opts.block_params * bits * CONTEXT_BYTES_PER_WEIGHT_BIT / SPLIT_BUDGET_BYTES
+    splits = 1
+    while splits < needed:  # powers of two, like the upstream recipes (1 or 4)
+        splits *= 2
+    return max(1 if opts.family else upstream_splits, splits)
 
 
 def render(recipe: Recipe, opts: RenderOptions) -> dict[str, Any]:

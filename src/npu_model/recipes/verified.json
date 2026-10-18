@@ -6,6 +6,8 @@
     {"repo": "Qwen/Qwen3-0.6B", "target": "qnn-x-elite", "quality": "standard", "ppl_ratio": 1.06,
      "decode_tokens_per_s": 43, "evidence": "M0 Olive output assembled and verified by npu-model 0.2.0.dev0, 2026-10-17: verdict passed (ppl x1.056, 858/1746-token retrieval OK, template match); served through the fork with thinking (think unset/true separates reasoning, think=false answers directly)"},
     {"repo": "HuggingFaceTB/SmolLM2-360M-Instruct", "target": "qnn-x-elite", "quality": "standard", "ppl_ratio": 1.15,
-     "decode_tokens_per_s": 85, "evidence": "npu-model convert 0.2.0.dev0, 2026-10-17: llama family recipe, killed mid-calibration and resumed; verdict passed (ppl x1.150, 884/1784-token retrieval OK, pad token rewritten 2->0, template match); served through the fork at 75 tok/s"}
+     "decode_tokens_per_s": 85, "evidence": "npu-model convert 0.2.0.dev0, 2026-10-17: llama family recipe, killed mid-calibration and resumed; verdict passed (ppl x1.150, 884/1784-token retrieval OK, pad token rewritten 2->0, template match); served through the fork at 75 tok/s"},
+    {"repo": "Qwen/Qwen2.5-1.5B-Instruct", "target": "qnn-x-elite", "quality": "standard", "ppl_ratio": 1.02,
+     "decode_tokens_per_s": 22, "evidence": "npu-model convert 0.2.0.dev0, 2026-10-18: 4 graph splits (one 2.65 GB context failed to load, QNN error 1002), 55 min on CPU, Olive peak RSS 7.9 GB; verdict passed (ppl x1.022, 875/1763-token retrieval OK, template match); installed declared and served through the fork (multi-turn chat, 22-23 tok/s decode, 180 tok/s prompt)"}
   ]
 }

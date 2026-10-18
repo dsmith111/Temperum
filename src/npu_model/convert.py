@@ -22,6 +22,7 @@ from typing import Any, Callable
 
 from npu_model import __version__, calib, paths
 from npu_model.assemble import MIN_CONTEXT, AssembleInputs, assemble
+from npu_model.bundle.inspect import inspect_prebuilt
 from npu_model.checkpoint import read_checkpoint
 from npu_model.core.errors import NpuModelError
 from npu_model.host import HostInfo, detect_host, resolve_target
@@ -73,6 +74,7 @@ class ConvertPlan:
     estimates: dict[str, float]
     warnings: list[str]
     verify_level: str
+    resumed: list[str] = field(default_factory=list)  # stages an interrupted run of this job finished
 
     @property
     def job_dir(self) -> Path:
@@ -85,7 +87,7 @@ class ConvertPlan:
                 "quality": self.quality, "device": self.device, "destination": str(self.destination),
                 "job": str(self.job_dir), "verify": self.verify_level,
                 "toolchains": [t.to_dict() for t in self.toolchains], "estimates": self.estimates,
-                "warnings": self.warnings, "host": self.host.to_dict()}
+                "warnings": self.warnings, "resumed": self.resumed, "host": self.host.to_dict()}
 
 
 def _device(requested: str, host: HostInfo) -> str:
@@ -123,14 +125,19 @@ def _params(model: ResolvedModel) -> int:
 
 
 def estimates(model: ResolvedModel) -> dict[str, float]:
-    """Rough resources for a CPU conversion, calibrated on the M0 runs (0.36-0.75B params)."""
+    """Rough resources for a CPU conversion, fitted to measured runs on the X1E78100.
+
+    Olive peak RSS was 4.5 GB (0.36B), 3.8 GB (0.49B) and 7.9 GB (1.54B); RAM is that fit plus
+    10%. Olive took 7 min (0.36B) and 44 min (1.54B, one compile retry); verification adds a
+    few minutes. Olive's cache for 1.54B was 18 GB.
+    """
     params = _params(model)
     billions = params / 1e9
     return {"params_billions": round(billions, 2),
             "download_gb": round((model.weight_bytes or 0) / 2**30, 1),
             "disk_gb": round(((model.weight_bytes or 0) + params * 13.5) / 2**30, 1),
-            "ram_gb": round(params * 8 / 2**30 + 1, 1),
-            "minutes": round(5 + 20 * billions)}
+            "ram_gb": round((3.5 + params * 3 / 2**30) * 1.1, 1),
+            "minutes": round(5 + 28 * billions)}
 
 
 def plan(options: ConvertOptions, host: HostInfo | None = None, *, resolver: Callable[..., ResolvedModel] = resolve,
@@ -147,7 +154,8 @@ def plan(options: ConvertOptions, host: HostInfo | None = None, *, resolver: Cal
     job_id = _job_id(model, recipe, target, runtime, quality, device, options)
     destination = options.out or paths.models_dir() / f"{model.name}-{target.id}"
     # Checks that would otherwise fail only after the long quantize/compile stage.
-    if destination.exists() and not options.overwrite:
+    if destination.exists() and not options.overwrite and not _resumable_bundle(paths.jobs_dir() / job_id,
+                                                                                  destination):
         raise NpuModelError("plan", "DESTINATION_EXISTS", f"{destination} already exists.",
                             hint="Pass --overwrite to rebuild it, --out to write elsewhere, or "
                                  "`npu-model verify` to re-check the existing bundle.")
@@ -170,22 +178,9 @@ def plan(options: ConvertOptions, host: HostInfo | None = None, *, resolver: Cal
     if device == "cuda":
         warnings.append("the CUDA quantization path has not been tested yet (decision D8)")
     est = estimates(model)
-    if host.total_ram_gb and est["ram_gb"] > host.total_ram_gb * 0.9:
-        raise NpuModelError("plan", "NOT_ENOUGH_MEMORY",
-                            f"Converting needs about {est['ram_gb']} GB of RAM; this machine has {host.total_ram_gb} GB.",
-                            hint="Use a smaller model, or convert on a machine with more memory (--target).")
-    if host.available_commit_gb is not None and est["ram_gb"] > host.available_commit_gb:
-        warnings.append(f"Windows can commit only {host.available_commit_gb} GB more memory right now and the "
-                        f"conversion needs about {est['ram_gb']} GB: close applications first, or the conversion "
-                        "may fail and other programs may run out of memory")
-    elif host.available_ram_gb and est["ram_gb"] > host.available_ram_gb:
-        warnings.append(f"about {est['ram_gb']} GB of RAM is needed and {host.available_ram_gb} GB is free; "
-                        "close other applications or expect heavy paging")
-    free_gb = disk_free_gb(paths.home())
-    if free_gb is not None and est["disk_gb"] > free_gb:
-        raise NpuModelError("plan", "NOT_ENOUGH_DISK",
-                            f"Converting needs about {est['disk_gb']} GB of disk; {free_gb:.1f} GB is free at "
-                            f"{paths.home()}.", hint="Free some space or set NPU_MODEL_HOME to another drive.")
+    resumed = _finished_stages(paths.jobs_dir() / job_id)
+    if "olive" not in resumed:  # once quantize/compile is done, the rest needs little memory or disk
+        warnings += _resource_checks(est, host)
     license_id = (model.license or "unknown").lower()
     if license_id not in PERMISSIVE_LICENSES:
         warnings.append(f"licence '{model.license or 'unknown'}': you are responsible for complying with its terms")
@@ -195,7 +190,56 @@ def plan(options: ConvertOptions, host: HostInfo | None = None, *, resolver: Cal
         warnings.append(f"first use: sets up {', '.join(missing)} toolchains (~{size:.1f} GB; torch comes from "
                         "download.pytorch.org, everything else through your pip configuration)")
     return ConvertPlan(options, host, model, target, runtime, recipe, quality, device, destination, job_id,
-                       statuses, est, warnings, level)
+                       statuses, est, warnings, level, resumed)
+
+
+def _resource_checks(est: dict[str, float], host: HostInfo) -> list[str]:
+    """Fail now on memory or disk the conversion cannot get; warn when memory is tight."""
+    if host.total_ram_gb and est["ram_gb"] > host.total_ram_gb * 0.9:
+        raise NpuModelError("plan", "NOT_ENOUGH_MEMORY",
+                            f"Converting needs about {est['ram_gb']} GB of RAM; this machine has {host.total_ram_gb} GB.",
+                            hint="Use a smaller model, or convert on a machine with more memory (--target).")
+    free_gb = disk_free_gb(paths.home())
+    if free_gb is not None and est["disk_gb"] > free_gb:
+        raise NpuModelError("plan", "NOT_ENOUGH_DISK",
+                            f"Converting needs about {est['disk_gb']} GB of disk; {free_gb:.1f} GB is free at "
+                            f"{paths.home()}.", hint="Free some space or set NPU_MODEL_HOME to another drive.")
+    if host.available_commit_gb is not None and est["ram_gb"] > host.available_commit_gb:
+        return [f"Windows can commit only {host.available_commit_gb} GB more memory right now and the conversion "
+                f"needs about {est['ram_gb']} GB: close applications first, or the conversion may fail and other "
+                "programs may run out of memory"]
+    if host.available_ram_gb and est["ram_gb"] > host.available_ram_gb:
+        return [f"about {est['ram_gb']} GB of RAM is needed and {host.available_ram_gb} GB is free; "
+                "close other applications or expect heavy paging"]
+    return []
+
+
+def _finished_stages(job_dir: Path) -> list[str]:
+    """Stages an earlier, interrupted run of this job completed (empty for a new or finished job)."""
+    try:
+        stages = json.loads((job_dir / "job.json").read_text(encoding="utf-8"))["stages"]
+        done = [name for name, entry in stages.items() if entry.get("status") == "done"]
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return []
+    return [] if "verify" in done else done
+
+
+def _resumable_bundle(job_dir: Path, destination: Path) -> str | None:
+    """Fingerprint of the bundle that an interrupted run of this job assembled at destination.
+
+    None when the job never assembled there or already finished verifying it, so an existing
+    folder is someone else's (or a finished) bundle that must not be replaced silently.
+    """
+    try:
+        stages = json.loads((job_dir / "job.json").read_text(encoding="utf-8"))["stages"]
+        assembled, verified = stages.get("assemble") or {}, stages.get("verify") or {}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+    if assembled.get("status") != "done" or verified.get("status") == "done":
+        return None
+    if Path(str(assembled.get("bundle") or "")) != destination:
+        return None
+    return str(assembled.get("fingerprint") or "") or None
 
 
 def _pid_alive(pid: int) -> bool:
@@ -324,13 +368,19 @@ def _run(conversion: ConvertPlan, job: Job, say: Progress, chains_factory: Calla
         num_splits=options.num_splits)
     config = render(conversion.recipe.recipe, render_opts)
     precision = precision_label(config)
-    if job.done("olive") and output_complete(olive_out):
+    # Reuse Olive's output only if it came from this exact config: a newer converter may render
+    # the same job differently (for example with more graph splits).
+    config_hash = hashlib.sha256(json.dumps(config, sort_keys=True, default=str).encode()).hexdigest()
+    olive_stage = job.data["stages"].get("olive", {})
+    if job.done("olive") and olive_stage.get("config") == config_hash and output_complete(olive_out):
         say("reusing the finished quantize/compile stage")
-        olive = job.data["stages"]["olive"].get("result", {})
+        olive = olive_stage.get("result", {})
     else:
+        if olive_out.exists() and olive_stage.get("config") != config_hash:
+            shutil.rmtree(olive_out)  # output of a different config; Olive's cache still reuses what matches
         say(f"quantizing and compiling with Olive ({conversion.recipe.recipe.repo} recipe, {precision}, "
             f"{conversion.device}); about {conversion.estimates['minutes']:.0f} minutes")
-        job.record("olive", "running")
+        job.record("olive", "running", config=config_hash)
         result = run_olive(chains.python_exe("quantize"), config, job.dir / "olive", progress=say)
         olive = result.to_dict()
         if not result.ok:
@@ -339,9 +389,8 @@ def _run(conversion: ConvertPlan, job: Job, say: Progress, chains_factory: Calla
                                 f"Olive failed in {result.failed_pass or 'an unknown pass'}: {result.error}",
                                 hint=f"Logs: {', '.join(result.logs)}. Rerunning the same command resumes from "
                                      "the last completed pass.")
-        job.record("olive", "done", result=olive)
+        job.record("olive", "done", result=olive, config=config_hash)
 
-    say("assembling the bundle")
     source = {"repo": conversion.model.ref.repo, "commit": conversion.model.commit,
               "license": conversion.model.license, "architecture": conversion.model.architecture}
     provenance = {
@@ -354,11 +403,19 @@ def _run(conversion: ConvertPlan, job: Job, say: Progress, chains_factory: Calla
                   "attempts": olive.get("attempts")},
     }
     processor = conversion.host.processor_name if conversion.target.matches(conversion.host.processor_name) else None
-    bundle, inspection = assemble(AssembleInputs(
-        olive_output=olive_out, snapshot=snapshot, destination=conversion.destination, target=conversion.target,
-        runtime=conversion.runtime, chat=chat, context=options.context, precision=precision,
-        processor_name=processor, source=source, provenance=provenance, overwrite=options.overwrite))
-    job.record("assemble", "done", bundle=str(bundle), fingerprint=inspection.content_fingerprint)
+    assembled = _resumable_bundle(job.dir, conversion.destination)
+    previous = inspect_prebuilt(conversion.destination, processor_name=processor) if assembled else None
+    if previous is not None and previous.importable and previous.content_fingerprint == assembled:
+        say("reusing the bundle assembled before the interruption")
+        bundle = conversion.destination
+    else:
+        say("assembling the bundle")
+        bundle, inspection = assemble(AssembleInputs(
+            olive_output=olive_out, snapshot=snapshot, destination=conversion.destination, target=conversion.target,
+            runtime=conversion.runtime, chat=chat, context=options.context, precision=precision,
+            processor_name=processor, source=source, provenance=provenance,
+            overwrite=options.overwrite or assembled is not None))
+        job.record("assemble", "done", bundle=str(bundle), fingerprint=inspection.content_fingerprint)
 
     heldout = calib.ensure_corpus(calib.HELDOUT, paths.data_dir()).path if conversion.verify_level in (
         "standard", "full") else None
@@ -371,7 +428,9 @@ def _run(conversion: ConvertPlan, job: Job, say: Progress, chains_factory: Calla
     report["created"] = _now()
     (bundle / VERIFICATION_FILE).write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     job.record("verify", "done", verdict=report["verdict"], reasons=report.get("reasons", []))
-    if not options.keep_cache:
+    # A failed bundle is usually fixed by recompiling (for example with more splits): keep
+    # Olive's cache so the rerun reuses the quantization instead of recalibrating.
+    if not options.keep_cache and report["verdict"] != "failed":
         shutil.rmtree(job.dir / "cache", ignore_errors=True)
     job.data["result"] = {"bundle": str(bundle), "verdict": report["verdict"]}
     job.save()
