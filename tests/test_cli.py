@@ -26,7 +26,7 @@ def test_convert_plan_errors_are_actionable(monkeypatch: pytest.MonkeyPatch) -> 
         raise NpuModelError("source", "HF_GATED", "org/model is gated", hint="Request access at https://hf.co/org/model")
 
     monkeypatch.setattr("npu_model.convert.plan", gated)
-    result = runner.invoke(app, ["convert", "org/model", "--plan"])
+    result = runner.invoke(app, ["convert", "org/model", "--plan", "--target", "qnn-x-elite"])
     assert result.exit_code == 2
     assert "HF_GATED" in result.output and "Request access" in result.output
 
@@ -44,7 +44,7 @@ def test_install_options_are_checked_before_converting(monkeypatch: pytest.Monke
     assert planned == []
 
 
-def test_auto_target_takes_the_gguf_route_when_the_forks_hexagon_switch_is_on(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_auto_target_takes_the_gguf_route_and_qnn_is_asked_for(monkeypatch: pytest.MonkeyPatch) -> None:
     from npu_model.host import HostInfo
 
     machine = HostInfo(system="Windows", native_arch="arm64", python_platform="win-arm64",
@@ -59,11 +59,14 @@ def test_auto_target_takes_the_gguf_route_when_the_forks_hexagon_switch_is_on(mo
     monkeypatch.setattr("npu_model.cli.main._convert_gguf",
                         lambda model, target, **kwargs: routes.append((target, kwargs["machine"])))
     monkeypatch.setattr("npu_model.convert.plan", qnn_plan)
-    monkeypatch.setenv("OLLAMA_HEXAGON", "1")
-    assert runner.invoke(app, ["convert", "org/model", "--plan"]).exit_code == 0
-    monkeypatch.setenv("OLLAMA_HEXAGON", "0")
+    for switch in ("1", "0"):  # the server switch no longer picks the target (D14)
+        monkeypatch.setenv("OLLAMA_HEXAGON", switch)
+        assert runner.invoke(app, ["convert", "org/model", "--plan"]).exit_code == 0
+    assert runner.invoke(app, ["convert", "org/model", "--plan", "--target", "qnn-x-elite"]).exit_code == 2
+    monkeypatch.setenv("NPU_MODEL_TARGET", "qnn-x-elite")  # or set once
     assert runner.invoke(app, ["convert", "org/model", "--plan"]).exit_code == 2
-    assert routes == [("gguf-hexagon", machine), ("qnn", "auto")]
+    assert routes == [("gguf-hexagon", machine), ("gguf-hexagon", machine), ("qnn", "qnn-x-elite"),
+                      ("qnn", "qnn-x-elite")]
 
 
 def test_convert_requires_confirmation(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -72,7 +75,7 @@ def test_convert_requires_confirmation(monkeypatch: pytest.MonkeyPatch, tmp_path
     calls: list[str] = []
     monkeypatch.setattr(convert, "plan", lambda options: _FakePlan(tmp_path))
     monkeypatch.setattr(convert, "run", lambda plan, progress: calls.append("run"))
-    result = runner.invoke(app, ["convert", "org/model"], input="n\n")
+    result = runner.invoke(app, ["convert", "org/model", "--target", "qnn-x-elite"], input="n\n")
     assert result.exit_code == 1 and calls == []
 
 
@@ -89,7 +92,7 @@ def test_json_mode_streams_events_and_prints_the_result(monkeypatch: pytest.Monk
 
     monkeypatch.setattr(convert, "plan", lambda options: _FakePlan(tmp_path))
     monkeypatch.setattr(convert, "run", fake_run)
-    result = runner.invoke(app, ["convert", "org/model", "--yes", "--json"])
+    result = runner.invoke(app, ["convert", "org/model", "--yes", "--json", "--target", "qnn-x-elite"])
     assert result.exit_code == 0, result.output
     events = [json.loads(line) for line in result.stderr.splitlines() if line.startswith("{")]
     assert [e["event"] for e in events] == ["plan", "progress"]
@@ -116,3 +119,48 @@ class _FakePlan:
 
     def to_dict(self) -> dict[str, Any]:
         return {"model": "org/model", "warnings": self.warnings}
+
+
+def test_setup_prepares_what_the_target_needs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from npu_model.host import HostInfo
+
+    machine = HostInfo(system="Windows", native_arch="arm64", python_platform="win-arm64",
+                       processor_name="Snapdragon(R) X Elite - X1E78100 - Qualcomm(R) Oryon(TM) CPU")
+    built: list[str] = []
+    fetched: list[str] = []
+
+    class FakeChains:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None: ...
+        def ensure(self, role: str) -> Any:
+            built.append(role)
+            return SimpleNamespace(state="ready", detail="", path=tmp_path / role, tested="yes")
+
+    class FakeSource:
+        tag, directory = "b11644", tmp_path / "llama.cpp"
+        @classmethod
+        def load(cls, _tag: str) -> FakeSource: return cls()
+        def ensure(self, **_kwargs: Any) -> Path:
+            fetched.append(self.tag)
+            return self.directory
+        def problems(self) -> list[str]: return []
+
+    monkeypatch.setattr("npu_model.host.detect_host", lambda: machine)
+    monkeypatch.setattr("npu_model.toolchains.Toolchains", FakeChains)
+    monkeypatch.setattr("npu_model.toolchains.llama_cpp.ConverterSource", FakeSource)
+    # The default (a GGUF) needs the conversion toolchain and llama.cpp's converter, not the QNN toolchains.
+    assert runner.invoke(app, ["setup"]).exit_code == 0
+    assert built == ["quantize"] and fetched == ["b11644"]
+    built.clear()
+    assert runner.invoke(app, ["setup", "--target", "qnn-x-elite"]).exit_code == 0
+    assert built == ["quantize", "compile", "verify"] and fetched == ["b11644"]
+
+
+def test_doctor_names_the_missing_fork_setting(monkeypatch: pytest.MonkeyPatch) -> None:
+    from npu_model.cli.main import _fork_status
+
+    monkeypatch.delenv("NPU_MODEL_OLLAMA_EXE", raising=False)
+    assert _fork_status()["state"] == "not set" and "NPU_MODEL_OLLAMA_EXE" in _fork_status()["hint"]
+    monkeypatch.setenv("NPU_MODEL_OLLAMA_EXE", "C:/nowhere/ollama.exe")
+    assert _fork_status()["state"] == "missing"

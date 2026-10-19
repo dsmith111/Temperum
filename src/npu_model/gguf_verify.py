@@ -195,21 +195,24 @@ def verify_gguf(bundle: Path, snapshot: Path, plan: GgufPlan, chains: Any, work:
     quality: dict[str, Any] = {}
     reference: dict[str, Any] | None = None
     heldout = calib.ensure_corpus(calib.HELDOUT, paths.data_dir()).path if level in ("standard", "full") else None
-    if heldout is not None:
+    if level != "none":
         params = int(plan.estimates["params_billions"] * 1e9)
-        dtype = reference_dtype(params, plan.host.available_ram_gb, plan.host.total_ram_gb)
+        dtype = reference_dtype(params, plan.host.available_ram_gb, plan.host.total_ram_gb) if heldout else None
         spec = {"prompts": PROMPTS[: settings.prompts], "max_new_tokens": settings.max_new,
                 "ppl_chunks": settings.ppl_chunks, "chunk_len": 256, "needle": NEEDLE,
-                "needle_sizes": [s for s in settings.needle_sizes if s + 256 <= plan.context],
+                "needle_sizes": [s for s in settings.needle_sizes if s + 256 <= plan.context] if heldout else [],
                 "conversations": CONVERSATIONS}
         spec_path = work / "reference_spec.json"
         spec_path.write_text(json.dumps(spec, indent=2), encoding="utf-8")
         out = work / "reference.json"
-        args = ["--model", str(snapshot), "--spec", str(spec_path), "--heldout", str(heldout), "--out", str(out)]
+        args = ["--model", str(snapshot), "--spec", str(spec_path), "--out", str(out)]
+        if heldout is not None:
+            args += ["--heldout", str(heldout)]
         if dtype is None:
-            # Too large to run here: the source tokenizer still gives identical inputs and the chat
-            # renderings, so retrieval and the template are checked; answers are not compared.
-            quality["skipped"] = "not enough free memory to run the source model"
+            # Quick level, or too large to run here: the source tokenizer still gives identical inputs and
+            # the chat renderings, so the template (and at standard, retrieval) is checked; answers are not.
+            if heldout is not None:
+                quality["skipped"] = "not enough free memory to run the source model"
             args.append("--tokenizer-only")
             say("reading the source model's tokenizer and chat template")
         else:

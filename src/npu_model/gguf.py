@@ -201,14 +201,15 @@ def plan(model: ResolvedModel, host: HostInfo, target: TargetProfile, *, ollama_
     if ollama_exe is None:
         raise NpuModelError("plan", "NEEDS_RUNTIME",
                             "The GGUF target quantizes and verifies with the Ollama fork's own llama.cpp build.",
-                            hint="Pass --ollama-exe with the fork executable (its lib\\ollama folder is used).")
+                            hint="Set NPU_MODEL_OLLAMA_EXE to the fork's ollama.exe once (or pass --ollama-exe); "
+                                 "--target qnn-x-elite builds a QNN bundle instead.")
     payload = LlamaPayload.from_executable(ollama_exe, run)
     missing = payload.problems()
     if missing:
         raise NpuModelError("plan", "RUNTIME_INCOMPLETE",
                             f"{payload.root} lacks the llama.cpp Hexagon runtime: {', '.join(missing)}",
-                            hint=f"Use a fork build with the hexagon_arm64 preset; get Qualcomm's signed HTP libraries "
-                                 f"with `{SETUP_COMMAND}`.")
+                            hint=f"Use a fork package built with -HexagonSDKRoot; get Qualcomm's signed NPU libraries "
+                                 f"with `{SETUP_COMMAND}`. --target qnn-x-elite builds a QNN bundle instead.")
     warnings: list[str] = []
     commit = payload.version(run)
     if commit is None:

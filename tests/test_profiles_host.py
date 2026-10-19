@@ -5,7 +5,7 @@ import subprocess
 import pytest
 
 from npu_model.core.errors import NpuModelError
-from npu_model.host import HostInfo, auto_format, detect_host, hexagon_opted_in, resolve_target
+from npu_model.host import HostInfo, detect_host, hexagon_opted_in, resolve_target
 from npu_model.profiles import DEFAULT_RUNTIME, RUNTIMES, TARGETS, get_runtime, get_target
 
 X1E = "Snapdragon(R) X Elite - X1E78100 - Qualcomm(R) Oryon(TM) CPU"
@@ -16,18 +16,23 @@ def _host(name: str | None) -> HostInfo:
 
 
 def test_x_elite_processor_resolves_to_v73_target() -> None:
-    target = resolve_target(_host(X1E))
+    assert resolve_target(_host(X1E)).id == "gguf-hexagon"  # the default (D14)
+    target = resolve_target(_host(X1E), fmt="qnn")
     assert target.id == "qnn-x-elite"
     assert (target.soc_model, target.htp_arch) == ("60", "v73")
 
 
 def test_x_plus_shares_the_x_elite_profile() -> None:
-    assert resolve_target(_host("Snapdragon(R) X Plus - X1P64100 - Qualcomm(R) Oryon(TM) CPU")).id == "qnn-x-elite"
+    x_plus = _host("Snapdragon(R) X Plus - X1P64100 - Qualcomm(R) Oryon(TM) CPU")
+    assert resolve_target(x_plus, fmt="qnn").id == "qnn-x-elite"
+    assert resolve_target(x_plus).id == "gguf-hexagon"
 
 
 def test_x2_elite_resolves_to_its_own_profile() -> None:
-    target = resolve_target(_host("Snapdragon(R) X2 Elite - X2E88100 - Qualcomm(R) Oryon(TM) CPU"))
+    x2 = _host("Snapdragon(R) X2 Elite - X2E88100 - Qualcomm(R) Oryon(TM) CPU")
+    target = resolve_target(x2, fmt="qnn")
     assert target.id == "qnn-x2-elite" and target.soc_model == "87" and not target.verified
+    assert resolve_target(x2).id == "gguf-hexagon"  # one GGUF runs on every HTP version
 
 
 @pytest.mark.parametrize("name", [None, "Intel(R) Core(TM) Ultra 7 155H", "AMD Ryzen AI 9 HX 370"])
@@ -47,7 +52,6 @@ def test_explicit_target_overrides_detection() -> None:
 def test_hexagon_switch_reads_like_the_forks_envconfig(value: str, on: bool) -> None:
     # Go's strconv.ParseBool after trimming spaces and quotes; values it cannot parse count as on.
     assert hexagon_opted_in({"OLLAMA_HEXAGON": value}) is on
-    assert auto_format({"OLLAMA_HEXAGON": value}) == ("gguf" if on else "qnn")
 
 
 def test_unknown_profile_ids_fail_with_known_list() -> None:

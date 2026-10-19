@@ -89,7 +89,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
     ap.add_argument("--spec", required=True)
-    ap.add_argument("--heldout", required=True)
+    ap.add_argument("--heldout", help="held-out text for perplexity and long prompts (not needed for renderings)")
     ap.add_argument("--dtype", choices=["float32", "bfloat16"], default="float32")
     ap.add_argument("--tokenizer-only", action="store_true",
                     help="record inputs and chat renderings without running the model (too large for this machine)")
@@ -132,7 +132,8 @@ def main() -> None:
             row.update({"output_ids": gen, "output": tok.decode(gen, skip_special_tokens=True)})
         result["prompts"].append(row)
 
-    chunks = _heldout_chunks(tok, Path(args.heldout), spec["ppl_chunks"], spec["chunk_len"]) if model else []
+    chunks = (_heldout_chunks(tok, Path(args.heldout), spec["ppl_chunks"], spec["chunk_len"])
+              if model is not None and args.heldout else [])
     token_nll: list[list[float]] = []
     nlls: list[float] = []
     with torch.no_grad():
@@ -147,7 +148,7 @@ def main() -> None:
                             "ppl": math.exp(sum(nlls) / len(nlls)) if nlls else None}
 
     needle = spec.get("needle")
-    if needle and spec.get("needle_sizes"):
+    if needle and spec.get("needle_sizes") and args.heldout:
         filler: list[int] = []
         for chunk in _heldout_chunks(tok, Path(args.heldout), 64, 256):
             filler += chunk

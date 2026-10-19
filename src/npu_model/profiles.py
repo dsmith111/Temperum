@@ -72,7 +72,7 @@ TARGETS: dict[str, TargetProfile] = {
     ),
     "gguf-hexagon": TargetProfile(
         id="gguf-hexagon",
-        description="GGUF for llama.cpp's Hexagon NPU backend (experimental), Snapdragon X (HTP v73-v81)",
+        description="GGUF for the Hexagon NPU through the fork's llama.cpp backend, Snapdragon X (HTP v73-v81)",
         vendor="qualcomm",
         provider="hexagon",
         soc_model="",
@@ -82,10 +82,10 @@ TARGETS: dict[str, TargetProfile] = {
         format="gguf",
     ),
 }
-# `--target auto` picks the first matching target of this format, or of HEXAGON_FORMAT when the
-# fork's experimental Hexagon backend is switched on (OLLAMA_HEXAGON, see host.auto_format).
-DEFAULT_FORMAT = "qnn"
-HEXAGON_FORMAT = "gguf"
+# `--target auto` picks the first target of this format matching the processor (D14): a GGUF for
+# the Hexagon NPU, which converts in minutes, covers ~300 architectures and runs faster than a
+# QNN bundle. QNN bundles stay available with --target qnn-x-elite.
+DEFAULT_FORMAT = "gguf"
 
 RUNTIMES: dict[str, RuntimeProfile] = {
     "fork-qnn-1.24.1": RuntimeProfile(

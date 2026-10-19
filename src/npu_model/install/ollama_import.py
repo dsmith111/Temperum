@@ -388,16 +388,50 @@ def install_gguf(bundle: Path, name: str, *, executable: Path, host: str | None,
                 _child_env(executable, work_dir, endpoint), timeout)
     if _canonical_tag(tag) not in _tags(endpoint, TAGS_TIMEOUT):
         _fail("CREATE_FAILED", f"Ollama create finished but {tag} is not listed by {endpoint}.")
-    result: dict[str, Any] = {"name": tag, "endpoint": endpoint}
+    result: dict[str, Any] = {"name": tag, "endpoint": endpoint, "warnings": []}
     try:
         shown = str(_api(endpoint, "/api/show", TAGS_TIMEOUT, {"model": tag}).get("template") or "")
     except NpuModelError:
         shown = None
     result["template"] = template_source(modelfile.read_text(encoding="utf-8"), shown)
     if result["template"] == "fork built-in":
-        result["warning"] = ("the fork replaced the model's chat template with a similar built-in one, which the "
-                             "converter did not check; chats may be formatted differently")
+        result["warnings"].append("the fork replaced the model's chat template with a similar built-in one, which "
+                                  "the converter did not check; chats may be formatted differently")
+    try:
+        result["placement"] = npu_placement(endpoint, tag)
+    except NpuModelError as exc:
+        result["placement"] = {"where": "unknown", "error": str(exc)[:300]}
+    where = result["placement"]["where"]
+    if where == "cpu":
+        result["warnings"].append("the fork ran it on the CPU, not the NPU: start its server with OLLAMA_HEXAGON=1 "
+                                  "(after `ollama npu setup --provider hexagon --accept-qualcomm-terms`)")
+    elif where == "split":
+        result["warnings"].append("the fork split it between the NPU and the CPU, which is slower than either; a "
+                                  "smaller --context or --quant may let it fit on the NPU whole")
     return result
+
+
+def npu_placement(endpoint: str, tag: str, timeout: float = 300) -> dict[str, Any]:
+    """Where the fork puts the model: load it once, read `ollama ps`, unload it again.
+
+    A fork whose server started without OLLAMA_HEXAGON=1 runs GGUF models on the CPU without
+    complaint; this is how an install finds out.
+    """
+    _api(endpoint, "/api/generate", timeout, {"model": tag, "prompt": "Hi", "stream": False, "keep_alive": "60s",
+                                              "options": {"num_predict": 1}})
+    try:
+        for item in _api(endpoint, "/api/ps", TAGS_TIMEOUT).get("models") or []:
+            if isinstance(item, dict) and _canonical_tag(str(item.get("name", ""))) == _canonical_tag(tag):
+                return placement_of(int(item.get("size") or 0), int(item.get("size_vram") or 0))
+        return {"where": "unknown"}
+    finally:
+        _api(endpoint, "/api/generate", TAGS_TIMEOUT, {"model": tag, "keep_alive": 0})
+
+
+def placement_of(size: int, on_device: int) -> dict[str, Any]:
+    """Classify `ollama ps` sizes: whole on the NPU, split with the CPU, or on the CPU."""
+    where = "unknown" if not size else ("npu" if on_device >= size else ("split" if on_device else "cpu"))
+    return {"where": where, "size_mib": round(size / 2**20), "npu_mib": round(on_device / 2**20)}
 
 
 def template_source(modelfile_text: str, shown: str | None) -> str:

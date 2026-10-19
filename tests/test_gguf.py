@@ -53,11 +53,13 @@ def _version(stdout: str) -> Any:
     return run
 
 
-def test_auto_target_follows_the_forks_hexagon_switch(monkeypatch: pytest.MonkeyPatch) -> None:
-    assert resolve_target(X_ELITE).id == "qnn-x-elite"
-    monkeypatch.setenv("OLLAMA_HEXAGON", "1")
-    assert resolve_target(X_ELITE).id == "gguf-hexagon"
+def test_auto_target_is_a_gguf_for_the_npu(monkeypatch: pytest.MonkeyPatch) -> None:
+    # D14: GGUF is the default whatever the fork's server switch says (the install checks that switch).
+    for switch in ("0", "1"):
+        monkeypatch.setenv("OLLAMA_HEXAGON", switch)
+        assert resolve_target(X_ELITE).id == "gguf-hexagon"
     assert resolve_target(X_ELITE, fmt="qnn").id == "qnn-x-elite"  # the QNN pipeline resolves its own auto
+    assert resolve_target(X_ELITE, "qnn-x-elite").id == "qnn-x-elite"
 
 
 def test_plan_needs_a_complete_runtime(tmp_path: Path) -> None:
@@ -235,10 +237,21 @@ def test_quick_verification_generates_with_the_bundles_own_chat_format(tmp_path:
             return {"content": "Paris", "tokens": [1, 2, 3], "timings": {"predicted_per_second": 30.0}}
 
     monkeypatch.setattr(gguf_verify, "LlamaServer", FakeServer)
-    plan = SimpleNamespace(verify_level="quick", payload=None, context=4096)
-    report = gguf_verify.verify_gguf(tmp_path / "bundle", tmp_path / "source", plan, None,  # type: ignore[arg-type]
-                                     tmp_path / "work", lambda _message: None)
-    # No source model runs at quick level, so the prompts go through the GGUF's own chat template.
+    scripts: list[list[str]] = []
+
+    def failing_reference(_python: Path, script: str, args: list[str], *_rest: Any) -> tuple[int, str]:
+        scripts.append([script, *args])
+        return 1, "no tokenizer"
+
+    monkeypatch.setattr(gguf_verify, "run_script", failing_reference)
+    plan = SimpleNamespace(verify_level="quick", payload=None, context=4096, estimates={"params_billions": 1.5},
+                           host=SimpleNamespace(available_ram_gb=3.0, total_ram_gb=16.0))
+    chains = SimpleNamespace(python_exe=lambda _role: Path("python"))
+    report = gguf_verify.verify_gguf(tmp_path / "bundle", tmp_path / "source", plan,  # type: ignore[arg-type]
+                                     chains, tmp_path / "work", lambda _message: None)
+    # Quick runs only the source tokenizer (for its chat renderings, which decide the Modelfile template)...
+    assert "--tokenizer-only" in scripts[0] and "--heldout" not in scripts[0]
+    # ...and without it the prompts go through the GGUF's own chat template.
     assert report["verdict"] == "passed", report["reasons"]
     assert len(sent) == 3 and all(p.startswith("<user>") for p in sent)
     assert "greedy_exact" not in report["quality"] and report["speed"]["median_tokens_per_s"] == 30.0
@@ -304,3 +317,11 @@ def test_a_model_too_large_to_run_here_is_still_checked_with_its_tokenizer(tmp_p
     assert report["verdict"] == "warning"
     assert any(r.startswith("answers not compared with the source model") for r in report["reasons"])
     assert any("--quant Q4_K_M" in r for r in report["reasons"])
+
+
+@pytest.mark.parametrize("size,on_device,where", [(1079 << 20, 1079 << 20, "npu"), (3762 << 20, 1887 << 20, "split"),
+                                                   (1253 << 20, 0, "cpu"), (0, 0, "unknown")])
+def test_install_reads_where_the_fork_put_the_model(size: int, on_device: int, where: str) -> None:
+    from npu_model.install.ollama_import import placement_of
+
+    assert placement_of(size, on_device)["where"] == where
