@@ -29,8 +29,15 @@ def _report(**overrides: Any) -> dict[str, Any]:
     (_report(quality={"perplexity": {"ratio": 1.3}}), "standard", "warning"),
     (_report(quality={"perplexity": {"ratio": 2.4}}), "standard", "failed"),
     (_report(quality={"skipped": "not enough free memory"}), "standard", "warning"),
+    # GGUF measures perplexity without the source model; answers still need it
+    (_report(quality={"skipped": "not enough free memory", "perplexity": {"ratio": 1.05}}), "standard", "warning"),
+    (_report(quality={"skipped": "not enough free memory", "perplexity": {"ratio": 2.0}}), "standard", "failed"),
     (_report(quality={"perplexity": {"ratio": 1.0}, "needle": [
         {"input_len": 1800, "correct": False, "reference_correct": True}]}), "standard", "warning"),
+    (_report(quality={"perplexity": {"ratio": 1.0}, "needle": [  # the source model missed it too
+        {"input_len": 1800, "correct": False, "reference_correct": False}]}), "standard", "passed"),
+    (_report(quality={"perplexity": {"ratio": 1.0}, "needle": [  # no source answer: judged on its own
+        {"input_len": 1800, "correct": False, "reference_correct": None}]}), "standard", "warning"),
     (_report(template={"status": "mismatch"}), "full", "warning"),
 ])
 def test_verdicts_keep_claims_separate(report: dict[str, Any], level: str, expected: str) -> None:

@@ -2,7 +2,8 @@
 
 Records token IDs so the NPU check feeds identical inputs (differences then come from the
 converted model, not tokenization). Also renders the model's own chat template for a few
-conversations so the converter can compare its generated Ollama template.
+conversations so the converter can compare its generated Ollama template. With
+--tokenizer-only (a model too large to run here) it records only the inputs and renderings.
 
 Spec (JSON): prompts, max_new_tokens, ppl_chunks, chunk_len, needle {fact, question,
 answer}, needle_sizes, conversations.
@@ -19,6 +20,10 @@ from typing import Any
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+
+def _progress(message: str) -> None:
+    print(f"@@progress reference: {message}", flush=True)  # the converter shows these lines
 
 
 def _ids(value: Any) -> list[int]:
@@ -86,22 +91,27 @@ def main() -> None:
     ap.add_argument("--spec", required=True)
     ap.add_argument("--heldout", required=True)
     ap.add_argument("--dtype", choices=["float32", "bfloat16"], default="float32")
+    ap.add_argument("--tokenizer-only", action="store_true",
+                    help="record inputs and chat renderings without running the model (too large for this machine)")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
     torch.manual_seed(0)
     spec = json.loads(Path(args.spec).read_text(encoding="utf-8"))
     tok = AutoTokenizer.from_pretrained(args.model)
-    if args.dtype == "float32":
-        model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=torch.float32)
-    else:  # 16-bit storage (the checkpoint's own 16-bit type when it has one), float32 compute
-        model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype="auto")
-        if model.dtype not in (torch.bfloat16, torch.float16):
-            model.to(torch.bfloat16)
-        _float32_compute(model)
-    model.eval()
-    eos = model.generation_config.eos_token_id
-    pad = tok.pad_token_id if tok.pad_token_id is not None else (eos[0] if isinstance(eos, list) else eos)
+    model: Any = None
+    if not args.tokenizer_only:
+        _progress(f"loading the source model ({args.dtype})")
+        if args.dtype == "float32":
+            model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=torch.float32)
+        else:  # 16-bit storage (the checkpoint's own 16-bit type when it has one), float32 compute
+            model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype="auto")
+            if model.dtype not in (torch.bfloat16, torch.float16):
+                model.to(torch.bfloat16)
+            _float32_compute(model)
+        model.eval()
+        eos = model.generation_config.eos_token_id
+        pad = tok.pad_token_id if tok.pad_token_id is not None else (eos[0] if isinstance(eos, list) else eos)
 
     def greedy(ids: list[int], new: int) -> list[int]:
         with torch.no_grad():
@@ -110,19 +120,24 @@ def main() -> None:
         return [int(t) for t in out[0, len(ids):].tolist()]
 
     t0 = time.time()
-    result: dict[str, Any] = {"dtype": args.dtype, "max_new_tokens": spec["max_new_tokens"], "prompts": [],
-                              "needle": [], "rendered": [], "has_chat_template": bool(tok.chat_template)}
-    for text in spec["prompts"]:
+    result: dict[str, Any] = {"dtype": None if model is None else args.dtype, "tokenizer_only": model is None,
+                              "max_new_tokens": spec["max_new_tokens"], "prompts": [], "needle": [], "rendered": [],
+                              "has_chat_template": bool(tok.chat_template)}
+    for index, text in enumerate(spec["prompts"], 1):
         ids = _chat_ids(tok, text)
-        gen = greedy(ids, spec["max_new_tokens"])
-        result["prompts"].append({"prompt": text, "input_ids": ids, "output_ids": gen,
-                                  "output": tok.decode(gen, skip_special_tokens=True)})
+        row: dict[str, Any] = {"prompt": text, "input_ids": ids}
+        if model is not None:
+            _progress(f"prompt {index}/{len(spec['prompts'])}")
+            gen = greedy(ids, spec["max_new_tokens"])
+            row.update({"output_ids": gen, "output": tok.decode(gen, skip_special_tokens=True)})
+        result["prompts"].append(row)
 
-    chunks = _heldout_chunks(tok, Path(args.heldout), spec["ppl_chunks"], spec["chunk_len"])
+    chunks = _heldout_chunks(tok, Path(args.heldout), spec["ppl_chunks"], spec["chunk_len"]) if model else []
     token_nll: list[list[float]] = []
     nlls: list[float] = []
     with torch.no_grad():
-        for chunk in chunks:
+        for index, chunk in enumerate(chunks, 1):
+            _progress(f"perplexity chunk {index}/{len(chunks)}")
             x = torch.tensor([chunk])
             logits = model(x).logits[0, :-1].float()
             per_token = torch.nn.functional.cross_entropy(logits, x[0, 1:], reduction="none")
@@ -140,9 +155,12 @@ def main() -> None:
         for size in spec["needle_sizes"]:
             body = filler[: max(0, size - len(head) - 64)]
             ids = _chat_ids(tok, tok.decode(head + body) + "\n\n" + needle["question"])
-            answer = tok.decode(greedy(ids, 16), skip_special_tokens=True)
-            result["needle"].append({"target": size, "input_len": len(ids), "input_ids": ids, "output": answer,
-                                     "correct": needle["answer"] in answer})
+            row = {"target": size, "input_len": len(ids), "input_ids": ids}
+            if model is not None:
+                _progress(f"long prompt of about {size} tokens")
+                answer = tok.decode(greedy(ids, 16), skip_special_tokens=True)
+                row.update({"output": answer, "correct": needle["answer"] in answer})
+            result["needle"].append(row)
 
     if tok.chat_template:
         for conversation in spec.get("conversations", []):

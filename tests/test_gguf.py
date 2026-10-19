@@ -203,3 +203,65 @@ def test_quick_verification_generates_with_the_bundles_own_chat_format(tmp_path:
     assert report["verdict"] == "passed", report["reasons"]
     assert len(sent) == 3 and all(p.startswith("<user>") for p in sent)
     assert "greedy_exact" not in report["quality"] and report["speed"]["median_tokens_per_s"] == 30.0
+
+
+def test_a_model_too_large_to_run_here_is_still_checked_with_its_tokenizer(tmp_path: Path,
+                                                                           monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    from npu_model import gguf_verify
+    from npu_model.verify import CONVERSATIONS
+
+    heldout = tmp_path / "heldout.jsonl"
+    heldout.write_text(json.dumps({"text": "Some held-out text."}) + "\n", encoding="utf-8")
+    monkeypatch.setattr(gguf_verify.calib, "ensure_corpus", lambda *_a: SimpleNamespace(path=heldout))
+    scripts: list[list[str]] = []
+
+    def run_script(_python: Path, script: str, args: list[str], *_rest: Any) -> tuple[int, str]:
+        scripts.append([script, *args])
+        out = Path(args[args.index("--out") + 1])
+        out.write_text(json.dumps({  # what reference.py --tokenizer-only writes: inputs, no answers
+            "tokenizer_only": True, "prompts": [{"prompt": "Q", "input_ids": [7, 8, 9]}],
+            "needle": [{"target": 900, "input_len": 870, "input_ids": [5] * 870},
+                       {"target": 1800, "input_len": 1760, "input_ids": [5] * 1760}],
+            "rendered": [f"<user>{c[-1]['content']}<assistant>" for c in CONVERSATIONS]}), encoding="utf-8")
+        return 0, ""
+
+    sent: list[Any] = []
+
+    class FakeServer:
+        def __init__(self, *_args: Any) -> None: ...
+        def __enter__(self) -> FakeServer: return self
+        def __exit__(self, *_exc: object) -> None: ...
+        def text(self) -> str:
+            return ("load_tensors: offloaded 33/33 layers to GPU\n"
+                    "load_tensors:         HTP0 model buffer size =  2100.00 MiB\n")
+        def apply_template(self, messages: list[dict[str, str]]) -> str:
+            return f"<user>{messages[-1]['content']}<assistant>"
+        def complete(self, prompt: Any, n_predict: int) -> dict[str, Any]:
+            sent.append(prompt)
+            long = len(prompt) > 100
+            return {"content": "4721" if long else "Paris", "tokens": [1, 2, 3],
+                    "timings": {"predicted_per_second": 20.0, "prompt_ms": 1760.0 if long else 50.0}}
+
+    monkeypatch.setattr(gguf_verify, "run_script", run_script)
+    monkeypatch.setattr(gguf_verify, "LlamaServer", FakeServer)
+    monkeypatch.setattr(gguf_verify, "quantize", lambda *_a, **_k: None)
+    monkeypatch.setattr(gguf_verify, "perplexity", lambda *_a, npu, **_k: 12.6 if npu else 10.0)
+    plan = SimpleNamespace(verify_level="standard", payload=None, context=4096, quant="Q4_0",
+                           estimates={"params_billions": 3.8},
+                           host=SimpleNamespace(available_ram_gb=3.0, total_ram_gb=16.0))
+    chains = SimpleNamespace(python_exe=lambda _role: Path("python"))
+    report = gguf_verify.verify_gguf(tmp_path / "bundle", tmp_path / "source", plan,  # type: ignore[arg-type]
+                                     chains, tmp_path / "work", lambda _message: None,
+                                     source_gguf=tmp_path / "model-16bit.gguf")
+    assert "--tokenizer-only" in scripts[0] and "--dtype" not in scripts[0]
+    assert sent[0] == [7, 8, 9]  # the source tokenizer's inputs, not the server's own rendering
+    assert "greedy_exact" not in report["quality"]
+    assert [n["correct"] for n in report["quality"]["needle"]] == [True, True]
+    assert report["template"]["status"] == "match"
+    assert report["quality"]["perplexity"]["ratio"] == 1.26
+    assert report["speed"]["long_prompt_tokens"] == 1760 and report["speed"]["long_prompt_tokens_per_s"] == 1000.0
+    assert report["verdict"] == "warning"
+    assert any(r.startswith("answers not compared with the source model") for r in report["reasons"])
+    assert any("--quant Q4_K_M" in r for r in report["reasons"])

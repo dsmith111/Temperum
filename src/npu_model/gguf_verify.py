@@ -26,7 +26,8 @@ from typing import Any, Callable
 from npu_model import calib, paths
 from npu_model.core.errors import NpuModelError
 from npu_model.gguf import GgufPlan, LlamaPayload, _exe, quantize
-from npu_model.verify import CONVERSATIONS, NEEDLE, PROMPTS, SETTINGS, reference_dtype, run_script, verdict
+from npu_model.verify import (CONVERSATIONS, NEEDLE, PPL_PASS, PROMPTS, SETTINGS, reference_dtype, run_script,
+                              verdict)
 
 Progress = Callable[[str], None]
 LOAD_TIMEOUT = 300.0
@@ -186,24 +187,28 @@ def verify_gguf(bundle: Path, snapshot: Path, plan: GgufPlan, chains: Any, work:
     if heldout is not None:
         params = int(plan.estimates["params_billions"] * 1e9)
         dtype = reference_dtype(params, plan.host.available_ram_gb, plan.host.total_ram_gb)
+        spec = {"prompts": PROMPTS[: settings.prompts], "max_new_tokens": settings.max_new,
+                "ppl_chunks": settings.ppl_chunks, "chunk_len": 256, "needle": NEEDLE,
+                "needle_sizes": [s for s in settings.needle_sizes if s + 256 <= plan.context],
+                "conversations": CONVERSATIONS}
+        spec_path = work / "reference_spec.json"
+        spec_path.write_text(json.dumps(spec, indent=2), encoding="utf-8")
+        out = work / "reference.json"
+        args = ["--model", str(snapshot), "--spec", str(spec_path), "--heldout", str(heldout), "--out", str(out)]
         if dtype is None:
+            # Too large to run here: the source tokenizer still gives identical inputs and the chat
+            # renderings, so retrieval and the template are checked; answers are not compared.
             quality["skipped"] = "not enough free memory to run the source model"
+            args.append("--tokenizer-only")
+            say("reading the source model's tokenizer and chat template")
         else:
-            spec = {"prompts": PROMPTS[: settings.prompts], "max_new_tokens": settings.max_new,
-                    "ppl_chunks": settings.ppl_chunks, "chunk_len": 256, "needle": NEEDLE,
-                    "needle_sizes": [s for s in settings.needle_sizes if s + 256 <= plan.context],
-                    "conversations": CONVERSATIONS}
-            spec_path = work / "reference_spec.json"
-            spec_path.write_text(json.dumps(spec, indent=2), encoding="utf-8")
-            out = work / "reference.json"
+            args += ["--dtype", dtype]
             say("running the source model for reference answers")
-            code, tail = run_script(chains.python_exe("quantize"), "reference.py",
-                                    ["--model", str(snapshot), "--spec", str(spec_path), "--heldout", str(heldout),
-                                     "--dtype", dtype, "--out", str(out)], say, subprocess.Popen)
-            if code == 0 and out.is_file():
-                reference = json.loads(out.read_text(encoding="utf-8"))
-            else:
-                quality["skipped"] = f"reference run failed: {tail[-400:]}"
+        code, tail = run_script(chains.python_exe("quantize"), "reference.py", args, say, subprocess.Popen)
+        if code == 0 and out.is_file():
+            reference = json.loads(out.read_text(encoding="utf-8"))
+        else:
+            quality["skipped"] = f"reference run failed: {tail[-400:]}"
 
     say("loading the bundle on the NPU with llama-server")
     rows: list[dict[str, Any]] = []
@@ -230,7 +235,7 @@ def verify_gguf(bundle: Path, snapshot: Path, plan: GgufPlan, chains: Any, work:
                     decode_rates.append(float(timings["predicted_per_second"]))
                 row = {"prompt": question, "output": result.get("content", ""), "tokens": len(tokens),
                        "degenerate": _degenerate(tokens), "prompt_ms": timings.get("prompt_ms")}
-                if ref is not None:
+                if ref is not None and "output_ids" in ref:  # tokenizer-only references have no answers
                     want = ref["output_ids"]
                     same = next((i for i in range(min(len(tokens), len(want))) if tokens[i] != want[i]),
                                 min(len(tokens), len(want)))
@@ -243,7 +248,7 @@ def verify_gguf(bundle: Path, snapshot: Path, plan: GgufPlan, chains: Any, work:
                 result = server.complete(needle["input_ids"], 16)
                 content = str(result.get("content", ""))
                 needles.append({"input_len": needle["input_len"], "output": content,
-                                "correct": NEEDLE["answer"] in content, "reference_correct": needle["correct"],
+                                "correct": NEEDLE["answer"] in content, "reference_correct": needle.get("correct"),
                                 "prompt_ms": (result.get("timings") or {}).get("prompt_ms")})
             quality["needle"] = needles
             rendered = (reference or {}).get("rendered", [])
@@ -258,6 +263,11 @@ def verify_gguf(bundle: Path, snapshot: Path, plan: GgufPlan, chains: Any, work:
     report["prompts"] = rows
     report["speed"] = {"median_prompt_tokens_per_s": _median(prompt_rates),
                        "median_tokens_per_s": _median(decode_rates)}
+    timed = [n for n in quality.get("needle", []) if n["prompt_ms"]]
+    if timed:  # the chat prompts are a few dozen tokens; the longest prompt shows prefill speed
+        longest = max(timed, key=lambda n: n["input_len"])
+        report["speed"]["long_prompt_tokens"] = longest["input_len"]
+        report["speed"]["long_prompt_tokens_per_s"] = round(longest["input_len"] / (longest["prompt_ms"] / 1000), 1)
     scored = [r for r in rows if "exact" in r]
     if scored:
         quality["greedy_exact"] = sum(1 for r in scored if r["exact"])
@@ -290,4 +300,7 @@ def verify_gguf(bundle: Path, snapshot: Path, plan: GgufPlan, chains: Any, work:
     if report["verdict"] != "failed" and report["npu_placement"].get("status") != "weights-on-npu":
         report["verdict"] = "failed"
         report["reasons"] = ["the model did not run on the NPU (no layers on an HTP device)"] + report["reasons"]
+    ratio = quality.get("perplexity", {}).get("ratio")
+    if report["verdict"] == "warning" and plan.quant == "Q4_0" and ratio and ratio > PPL_PASS:
+        report["reasons"].append("Q4_0 is the fastest type; --quant Q4_K_M or Q8_0 keep more quality")
     return report

@@ -132,19 +132,27 @@ def verdict(report: dict[str, Any], level: str) -> tuple[str, list[str]]:
     quality = report.get("quality", {})
     if level in ("standard", "full"):
         ratio = quality.get("perplexity", {}).get("ratio")
-        if quality.get("skipped"):
-            status, reasons = "warning", [f"quality not checked: {quality['skipped']}"]
-        elif ratio is None:
-            status, reasons = "warning", ["quality not measured"]
+        skipped = quality.get("skipped")
+        if ratio is None:
+            status, reasons = "warning", [f"quality not checked: {skipped}" if skipped else "quality not measured"]
         elif ratio > PPL_FAIL:
             return "failed", [f"perplexity {ratio:.2f}x the source model (limit {PPL_FAIL})"]
-        elif ratio > PPL_PASS:
-            status = "warning"
-            reasons.append(f"perplexity {ratio:.2f}x the source model (pass <= {PPL_PASS})")
+        else:
+            if ratio > PPL_PASS:
+                status = "warning"
+                reasons.append(f"perplexity {ratio:.2f}x the source model (pass <= {PPL_PASS})")
+            if skipped:  # GGUF measures perplexity without the source model, but answers need it
+                status = "warning"
+                reasons.append(f"answers not compared with the source model: {skipped}")
         for needle in quality.get("needle", []):
-            if needle.get("reference_correct") and not needle.get("correct"):
+            if needle.get("correct"):
+                continue
+            if needle.get("reference_correct"):
                 status = "warning"
                 reasons.append(f"missed a fact in a {needle['input_len']}-token prompt that the source model found")
+            elif needle.get("reference_correct") is None:  # the source model did not run
+                status = "warning"
+                reasons.append(f"missed a fact in a {needle['input_len']}-token prompt")
         if report.get("template", {}).get("status") == "mismatch":
             status = "warning"
             reasons.append("generated Ollama template differs from the model's own chat template")

@@ -237,11 +237,13 @@ def _convert_gguf(model: str, target_id: str, *, quant: str, context: Optional[i
             err.print(f"  NPU: {placed.get('layers_offloaded')}/{placed.get('layers_total')} layers, "
                       f"{placed.get('htp_weight_mib')} MiB of weights on HTP")
         if "perplexity_ratio" in summary:
-            err.print(f"  perplexity vs the 16-bit model: {summary['perplexity_ratio']}x")
+            err.print(f"  perplexity vs a Q8_0 copy on the CPU: {summary['perplexity_ratio']}x")
         speed = summary["speed"]
         if speed.get("median_tokens_per_s"):
-            err.print(f"  decode: {speed['median_tokens_per_s']:.0f} tokens/s, prompt: "
+            prompt = (f"{speed['long_prompt_tokens_per_s']:.0f} tokens/s ({speed['long_prompt_tokens']}-token prompt)"
+                      if speed.get("long_prompt_tokens_per_s") else
                       f"{speed.get('median_prompt_tokens_per_s') or 0:.0f} tokens/s")
+            err.print(f"  decode: {speed['median_tokens_per_s']:.0f} tokens/s, prompt: {prompt}")
         if "install" in summary:
             err.print(f"  installed as {escape(str(summary['install']['name']))}")
             if not hexagon_opted_in():
