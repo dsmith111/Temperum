@@ -13,6 +13,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any, NoReturn, cast
 from urllib.parse import urlsplit
 
@@ -269,18 +270,34 @@ def _child_env(executable: Path, workspace: Path, endpoint: str) -> dict[str, st
 
 
 def _run_create(command: list[str], cwd: Path, env: dict[str, str], timeout: float) -> None:
-    # Stream output to avoid unbounded capture from a verbose native CLI.
+    # Captured rather than streamed: the CLI redraws a progress spinner, which is noise inside
+    # npu-model's own output and in logs. The output is small; its end explains a failure.
     try:
-        result = subprocess.run(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=sys.stderr,
-                                timeout=timeout, check=False, shell=False)
+        result = subprocess.run(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, timeout=timeout, check=False, shell=False)
     except subprocess.TimeoutExpired as exc:
         _fail("CREATE_TIMEOUT", f"Ollama create exceeded {timeout:.0f}s; tag state may be partial. "
               f"Inspect the dedicated local server before retrying: {exc}")
     except OSError as exc:
         _fail("CREATE_LAUNCH_FAILED", f"Cannot launch the selected fork executable: {exc}")
     if result.returncode != 0:
-        _fail("CREATE_FAILED", f"Ollama create returned {result.returncode}; inspect CLI/server output. "
-              "No install success is claimed; the local server may contain partial blobs.")
+        _fail("CREATE_FAILED", f"Ollama create returned {result.returncode}. No install success is claimed; "
+              "the local server may contain partial blobs." + _output_tail(getattr(result, "stdout", None)))
+
+
+_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")  # cursor moves of a redraw, read as line breaks
+_SPINNER = re.compile(r"[⠀-⣿]")
+
+
+def _output_tail(output: bytes | None, lines: int = 6) -> str:
+    """The last distinct lines a native CLI printed, without its spinner and terminal control sequences."""
+    kept: list[str] = []
+    text = _SPINNER.sub("", _ESCAPE.sub("\n", (output or b"").decode("utf-8", "replace")))
+    for line in text.replace("\r", "\n").splitlines():
+        line = line.strip()
+        if line and line not in kept[-lines:]:
+            kept.append(line)
+    return ("\nIts output ended:\n  " + "\n  ".join(kept[-lines:])) if kept else ""
 
 
 def execute_import(plan: ImportPlan, *, expected_fingerprint: str | None, work_dir: Path,
@@ -366,7 +383,8 @@ def execute_import(plan: ImportPlan, *, expected_fingerprint: str | None, work_d
 
 
 def install_gguf(bundle: Path, name: str, *, executable: Path, host: str | None, work_dir: Path,
-                 overwrite: bool = False, timeout: float = 900) -> dict[str, Any]:
+                 overwrite: bool = False, timeout: float = 900,
+                 say: Callable[[str], None] = lambda _: None) -> dict[str, Any]:
     """`ollama create` from a GGUF bundle's Modelfile, through an already running local fork.
 
     The GGUF carries its own chat template; the Modelfile adds a checked Ollama template when the
@@ -384,6 +402,7 @@ def install_gguf(bundle: Path, name: str, *, executable: Path, host: str | None,
     if _canonical_tag(tag) in _tags(endpoint, TAGS_TIMEOUT) and not overwrite:
         _fail("TAG_EXISTS", f"Local tag {tag} exists. Pass --overwrite to replace it.")
     work_dir.mkdir(parents=True, exist_ok=True)
+    say(f"installing into the fork as {tag}")
     _run_create([str(executable), "create", tag, "-f", str(modelfile)], bundle,
                 _child_env(executable, work_dir, endpoint), timeout)
     if _canonical_tag(tag) not in _tags(endpoint, TAGS_TIMEOUT):
@@ -397,6 +416,7 @@ def install_gguf(bundle: Path, name: str, *, executable: Path, host: str | None,
     if result["template"] == "fork built-in":
         result["warnings"].append("the fork replaced the model's chat template with a similar built-in one, which "
                                   "the converter did not check; chats may be formatted differently")
+    say("loading it once to see where the fork runs it")
     try:
         result["placement"] = npu_placement(endpoint, tag)
     except NpuModelError as exc:

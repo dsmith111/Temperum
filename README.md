@@ -59,10 +59,11 @@ You need a Snapdragon X laptop with Windows 11, Python 3.10 or newer, and Git.
    C:\path\to\fork\ollama.exe serve
    ```
 
-3. **`npu-model`, pointed at the fork once:**
+3. **`npu-model`, pointed at the fork once** (this version is on branch
+   `restore-hf-conversion`; `main` still has the original converter):
 
    ```powershell
-   git clone https://github.com/dsmith111/ollama-npu-model-converter
+   git clone -b restore-hf-conversion https://github.com/dsmith111/ollama-npu-model-converter
    cd ollama-npu-model-converter
    python -m pip install .
    setx NPU_MODEL_OLLAMA_EXE C:\path\to\fork\ollama.exe

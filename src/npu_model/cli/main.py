@@ -232,7 +232,8 @@ def _convert_gguf(model: str, target_id: str, *, quant: str, context: Optional[i
         summary["perplexity_ratio"] = ppl.get("ratio")
     if install and summary["verdict"] != "failed" and exe is not None:
         summary["install"] = install_gguf(result.bundle, name or f"{plan.model.name}:npu", executable=exe,
-                                          host=host or os.environ.get("OLLAMA_HOST"), work_dir=result.job_dir / "install")
+                                          host=host or os.environ.get("OLLAMA_HOST"), work_dir=result.job_dir / "install",
+                                          say=_progress(start, as_json))
     if as_json:
         typer.echo(json.dumps(summary, indent=2, default=str))
     else:

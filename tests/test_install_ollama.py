@@ -238,6 +238,18 @@ def test_subprocess_failures_explicit(monkeypatch: pytest.MonkeyPatch, tmp_path:
     assert mock.call_args.kwargs["shell"] is False
 
 
+def test_create_failure_quotes_the_end_of_its_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # The fork's CLI redraws a spinner even when its output is captured.
+    spinner = "".join(f"\x1b[?25l\x1b[1Gparsing GGUF {glyph} \x1b[K" for glyph in "⠋⠙⠹")
+    output = f"{spinner}\r\nparsing GGUF \x1b[K\r\nError: unsupported architecture\r\n".encode()
+    run = MagicMock(return_value=SimpleNamespace(returncode=1, stdout=output))
+    monkeypatch.setattr(local.subprocess, "run", run)
+    with pytest.raises(NpuModelError) as error:
+        local._run_create(["fake", "create"], tmp_path, {}, 1)
+    assert error.value.message.endswith("Its output ended:\n  parsing GGUF\n  Error: unsupported architecture")
+    assert run.call_args.kwargs["stdout"] is local.subprocess.PIPE
+
+
 def test_create_zero_without_tag_is_not_success(
     bundle: Path, modelfile: Path, fake_onnx: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
