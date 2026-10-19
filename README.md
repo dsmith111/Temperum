@@ -64,7 +64,8 @@ model page, then `hf auth login` or set `HF_TOKEN`. Tokens are never written to 
 ### GGUF for the Hexagon NPU (experimental)
 
 The fork can also run GGUF models on the NPU through llama.cpp's Hexagon backend (branch
-`npu/hexagon-spike`, built with its `hexagon_arm64` preset). The backend's NPU half is a
+`npu/hexagon-spike`: a portable package from `scripts\build_npu_windows.ps1
+-HexagonSDKRoot`, or a local build with its `hexagon_arm64` preset). The backend's NPU half is a
 Microsoft-signed set of libraries from Qualcomm's GenieX release, and Qualcomm's terms
 restrict its use, so the fork downloads it at setup instead of shipping it:
 `ollama npu setup --provider hexagon --accept-qualcomm-terms` shows those terms, then
