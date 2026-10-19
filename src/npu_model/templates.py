@@ -132,6 +132,7 @@ _DEEPSEEK_THINK = re.compile(r"<｜Assistant｜><think>(?:\\n|\n)")
 _RAW = "{{- if .System }}{{ .System }}\n\n{{ end }}{{ .Prompt }}"
 
 _CHATML_SYSTEM = re.compile(r"<\|im_start\|>system(?:\\n|\n)([^'\"{}<>+\\]+?)<\|im_end\|>")
+_PHI_ROLE_TAG = re.compile(r"""['"]<\|['"]\s*\+\s*message\[['"]role['"]\]\s*\+\s*['"]\|>""")
 
 
 def load_jinja(model_dir: Path) -> str | None:
@@ -171,7 +172,8 @@ def from_jinja(jinja: str | None) -> ChatTemplate:
         match = _CHATML_SYSTEM.search(jinja)
         default = match.group(1).strip() if match else None
         return ChatTemplate("chatml", _chatml(default), ("<|im_start|>", "<|im_end|>"), default, verified=True)
-    if "<|user|>" in jinja and "<|end|>" in jinja and "<|assistant|>" in jinja:
+    # Phi-4-mini builds the role tags: '<|' + message['role'] + '|>'
+    if ("<|user|>" in jinja or _PHI_ROLE_TAG.search(jinja)) and "<|end|>" in jinja and "<|assistant|>" in jinja:
         newline = bool(re.search(r"\|>'\s*\+\s*'\\n'|\|>\\n|\|>\n", jinja))
         return ChatTemplate("phi3", _phi3(newline), ("<|end|>", "<|user|>", "<|assistant|>", "<|endoftext|>"),
                             None, verified=False, variant="newline" if newline else "compact")

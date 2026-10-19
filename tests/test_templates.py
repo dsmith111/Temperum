@@ -60,6 +60,12 @@ def test_qwen3_gets_a_thinking_aware_template() -> None:
      "phi3", "<|assistant|>\n"),
     ("{{ '<|' + message['role'] + '|>' + message['content'] + '<|end|>' }}<|user|>{{ '<|assistant|>' }}",
      "phi3", "<|end|>{{ end }}{{- end }}<|assistant|>"),
+    # Phi-4-mini-instruct's own template: role tags built from message['role'], no literal <|user|>
+    ("{% for message in messages %}{% if message['role'] == 'system' and 'tools' in message and message['tools'] "
+     "is not none %}{{ '<|' + message['role'] + '|>' + message['content'] + '<|tool|>' + message['tools'] + "
+     "'<|/tool|>' + '<|end|>' }}{% else %}{{ '<|' + message['role'] + '|>' + message['content'] + '<|end|>' }}"
+     "{% endif %}{% endfor %}{% if add_generation_prompt %}{{ '<|assistant|>' }}{% else %}{{ eos_token }}{% endif %}",
+     "phi3", "<|end|>{{ end }}{{- end }}<|assistant|>"),
     ("{{'<｜User｜>' + content}}{{'<｜Assistant｜><think>\\n'}}", "deepseek", "<｜Assistant｜><think>\n"),
     ("{{'<|im_start|>user<|im_sep|>' + content + '<|im_end|>'}}", "chatml-imsep", "<|im_start|>assistant<|im_sep|>"),
 ])
