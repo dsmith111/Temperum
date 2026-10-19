@@ -218,12 +218,16 @@ def plan_import(
                       fingerprint, processor_name)
 
 
-def _api(endpoint: str, path: str, timeout: float) -> dict[str, Any]:
+def _api(endpoint: str, path: str, timeout: float, body: dict[str, Any] | None = None) -> dict[str, Any]:
     url = urlsplit(endpoint)
     connection = http.client.HTTPConnection(str(url.hostname), url.port, timeout=timeout)
     try:
         # http.client never uses proxies, follows redirects, or sends authorization.
-        connection.request("GET", path, headers={"Accept": "application/json"})
+        if body is None:
+            connection.request("GET", path, headers={"Accept": "application/json"})
+        else:
+            connection.request("POST", path, body=json.dumps(body).encode("utf-8"),
+                               headers={"Accept": "application/json", "Content-Type": "application/json"})
         response = connection.getresponse()
         data = response.read(MAX_RESPONSE + 1)
         if response.status != 200:
@@ -365,7 +369,9 @@ def install_gguf(bundle: Path, name: str, *, executable: Path, host: str | None,
                  overwrite: bool = False, timeout: float = 900) -> dict[str, Any]:
     """`ollama create` from a GGUF bundle's Modelfile, through an already running local fork.
 
-    The GGUF carries its own chat template, so the Modelfile is just FROM and parameters.
+    The GGUF carries its own chat template; the Modelfile adds a checked Ollama template when the
+    converter recognizes the format (gguf.modelfile). Afterwards the fork is asked which template the
+    model got, because `ollama create` substitutes a built-in one for formats close to it.
     """
     endpoint = local_endpoint(host)
     tag = _model_name(name)
@@ -382,4 +388,30 @@ def install_gguf(bundle: Path, name: str, *, executable: Path, host: str | None,
                 _child_env(executable, work_dir, endpoint), timeout)
     if _canonical_tag(tag) not in _tags(endpoint, TAGS_TIMEOUT):
         _fail("CREATE_FAILED", f"Ollama create finished but {tag} is not listed by {endpoint}.")
-    return {"name": tag, "endpoint": endpoint}
+    result: dict[str, Any] = {"name": tag, "endpoint": endpoint}
+    try:
+        shown = str(_api(endpoint, "/api/show", TAGS_TIMEOUT, {"model": tag}).get("template") or "")
+    except NpuModelError:
+        shown = None
+    result["template"] = template_source(modelfile.read_text(encoding="utf-8"), shown)
+    if result["template"] == "fork built-in":
+        result["warning"] = ("the fork replaced the model's chat template with a similar built-in one, which the "
+                             "converter did not check; chats may be formatted differently")
+    return result
+
+
+def template_source(modelfile_text: str, shown: str | None) -> str:
+    """Which chat template the fork renders for a GGUF model (`ollama show`'s template field).
+
+    The fork shows the template it will use: the GGUF's own (Jinja, rendered by llama-server) when
+    that one supports more, such as tool calls, else the Go template stored with the model.
+    """
+    if shown is None:
+        return "unknown"
+    if "{%" in shown:
+        return "gguf"  # the model's own template
+    if not shown:
+        return "none"
+    if re.search(r"^TEMPLATE ", modelfile_text, re.MULTILINE):
+        return "bundle"  # the converter's checked template
+    return "fork built-in"

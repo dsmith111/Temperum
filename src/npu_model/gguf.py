@@ -33,6 +33,7 @@ from npu_model.host import HEXAGON_OPT_IN, HostInfo, hexagon_opted_in
 from npu_model.profiles import (DEFAULT_LLAMA_RUNTIME, DEFAULT_RUNTIME, LLAMA_RUNTIMES, LlamaRuntimeProfile,
                                 TargetProfile, get_runtime)
 from npu_model.sources import ResolvedModel, fetch
+from npu_model.templates import ChatTemplate, from_jinja, load_jinja
 from npu_model.toolchains import ENV_SIZE_GB, Toolchains
 from npu_model.toolchains.llama_cpp import ConverterSource
 
@@ -295,10 +296,39 @@ def quantize(payload: LlamaPayload, src: Path, out: Path, quant: str, log: Path,
     return out
 
 
-def modelfile(context: int) -> str:
-    # The GGUF carries the model's own chat template (tokenizer.chat_template); the fork renders
-    # it through llama-server, so no Go TEMPLATE is written.
-    return f"FROM ./model.gguf\nPARAMETER num_ctx {context}\n"
+def derived_template(snapshot: Path) -> ChatTemplate | None:
+    """The converter's Ollama template for the model's chat format (None if the format is not recognized)."""
+    try:
+        chat = from_jinja(load_jinja(snapshot))
+    except NpuModelError:
+        return None
+    return None if chat.family == "raw" else chat
+
+
+def modelfile(context: int, chat: ChatTemplate | None = None) -> str:
+    # The GGUF carries the model's own chat template (tokenizer.chat_template), which the fork can
+    # render through llama-server. Without a TEMPLATE, though, `ollama create` swaps in a built-in Go
+    # template when one is close to the model's (SmolLM2 lost its default system prompt that way), and
+    # the fork renders chats with it. A template derived from the model's own and checked against it
+    # (verify) prevents that; the fork still prefers the GGUF's template when it supports more, such
+    # as tool calls.
+    lines = ["FROM ./model.gguf", f"PARAMETER num_ctx {context}"]
+    if chat is not None:
+        lines.append(f'TEMPLATE """{chat.template}"""')
+        lines += [f'PARAMETER stop "{stop}"' for stop in chat.stops]
+    return "\n".join(lines) + "\n"
+
+
+def set_template(bundle: Path, chat: ChatTemplate, context: int) -> None:
+    """Write a checked Ollama template into an assembled bundle's Modelfile and manifest."""
+    path = bundle / "Modelfile"
+    path.write_text(modelfile(context, chat), encoding="utf-8", newline="\n")
+    manifest_path = bundle / MANIFEST
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"]["Modelfile"] = {"size": path.stat().st_size, "sha256": _sha256(path)}
+    manifest["ollama_template"] = {"family": chat.family, "variant": chat.variant or None,
+                                   "checked_against": "the model's own chat template (transformers)"}
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
 
 def assemble(gguf: Path, snapshot: Path, plan: GgufPlan, provenance: dict[str, Any]) -> Path:
@@ -390,8 +420,13 @@ def run(gguf_plan: GgufPlan, progress: Progress | None = None,
         job.record("assemble", "done", bundle=str(bundle))
         report: dict[str, Any] = {"level": "none", "verdict": "not-verified",
                                   "reasons": ["verification skipped"]}
+        chat = derived_template(snapshot)
         if verifier is not None and gguf_plan.verify_level != "none":
-            report = verifier(bundle, snapshot, gguf_plan, chains, job.dir / "verify", say, source_gguf=src)
+            report = verifier(bundle, snapshot, gguf_plan, chains, job.dir / "verify", say, source_gguf=src,
+                              chat=chat)
+        if chat is not None and report.get("template", {}).get("ollama", {}).get("status") == "match":
+            set_template(bundle, chat, gguf_plan.context)
+            report["template"]["modelfile"] = chat.family
         report["created"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
         (bundle / "npu_model_verification.json").write_text(json.dumps(report, indent=2, ensure_ascii=False),
                                                             encoding="utf-8")

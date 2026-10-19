@@ -26,8 +26,9 @@ from typing import Any, Callable
 from npu_model import calib, paths
 from npu_model.core.errors import NpuModelError
 from npu_model.gguf import GgufPlan, LlamaPayload, _exe, quantize
+from npu_model.templates import ChatTemplate
 from npu_model.verify import (CONVERSATIONS, NEEDLE, PPL_PASS, PROMPTS, SETTINGS, reference_dtype, run_script,
-                              verdict)
+                              template_check, verdict)
 
 Progress = Callable[[str], None]
 LOAD_TIMEOUT = 300.0
@@ -133,6 +134,16 @@ class LlamaServer:
             "prompt": prompt, "n_predict": n_predict, "temperature": 0.0, "top_k": 1, "cache_prompt": False,
             "return_tokens": True, "stream": False}, REQUEST_TIMEOUT)
 
+    def bos_text(self) -> str | None:
+        """The BOS token text when the server adds one to every prompt (the GGUF's add_bos_token)."""
+        try:
+            value = self._request("POST", "/tokenize", {"content": "", "add_special": True, "with_pieces": True}, 60)
+        except (OSError, http.client.HTTPException, ValueError):
+            return None
+        tokens = value.get("tokens") or []
+        piece = tokens[0].get("piece") if tokens and isinstance(tokens[0], dict) else None
+        return piece if isinstance(piece, str) else None
+
     def apply_template(self, messages: list[dict[str, str]]) -> str | None:
         try:
             value = self._request("POST", "/apply-template", {"messages": messages}, 60)
@@ -176,7 +187,7 @@ def _heldout_text(path: Path, out: Path, rows: int = 400) -> Path:
 
 
 def verify_gguf(bundle: Path, snapshot: Path, plan: GgufPlan, chains: Any, work: Path, say: Progress,
-                source_gguf: Path | None = None) -> dict[str, Any]:
+                source_gguf: Path | None = None, chat: ChatTemplate | None = None) -> dict[str, Any]:
     level = plan.verify_level
     settings = SETTINGS[level]
     work.mkdir(parents=True, exist_ok=True)
@@ -257,6 +268,8 @@ def verify_gguf(bundle: Path, snapshot: Path, plan: GgufPlan, chains: Any, work:
                 "status": "match" if checks and all(r == g for _, r, g in checks) else
                           ("mismatch" if checks else "unchecked"),
                 "conversations": [{"match": r == g, "expected": r, "generated": g} for _, r, g in checks]}
+            if chat is not None and rendered:  # the Ollama template the bundle would carry (gguf.set_template)
+                report["template"]["ollama"] = template_check(chat, rendered, server.bos_text())
     except (OSError, RuntimeError, ValueError, http.client.HTTPException) as exc:
         report["load"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:1500]}
         report.setdefault("npu_placement", {"status": "not-established"})

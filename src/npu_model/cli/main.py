@@ -246,6 +246,8 @@ def _convert_gguf(model: str, target_id: str, *, quant: str, context: Optional[i
             err.print(f"  decode: {speed['median_tokens_per_s']:.0f} tokens/s, prompt: {prompt}")
         if "install" in summary:
             err.print(f"  installed as {escape(str(summary['install']['name']))}")
+            if summary["install"].get("warning"):
+                err.print(f"  [yellow]![/yellow] {escape(str(summary['install']['warning']))}")
             if not hexagon_opted_in():
                 err.print(f"  the fork runs it on the NPU when its server starts with {HEXAGON_OPT_IN}=1")
     if summary["verdict"] == "failed":

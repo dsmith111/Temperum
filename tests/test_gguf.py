@@ -147,6 +147,37 @@ def test_assemble_writes_model_modelfile_licence_and_manifest(tmp_path: Path) ->
     assert manifest["format"] == "gguf" and manifest["precision"] == "Q4_0"
     assert manifest["runtime"]["llama_cpp"].startswith("e467e5b") and "model.gguf" in manifest["files"]
 
+    # No chat template in this snapshot: nothing to derive, so the fork decides.
+    assert gguf.derived_template(snapshot) is None
+    # A checked template goes into the Modelfile, so `ollama create` keeps it instead of a built-in one.
+    (snapshot / "tokenizer_config.json").write_text(json.dumps({"chat_template": (
+        "{% for m in messages %}{% if loop.first and messages[0]['role'] != 'system' %}"
+        "{{ '<|im_start|>system\\nYou are SmolLM.<|im_end|>\\n' }}{% endif %}"
+        "{{ '<|im_start|>' + m['role'] + '\\n' + m['content'] + '<|im_end|>\\n' }}{% endfor %}")}), encoding="utf-8")
+    chat = gguf.derived_template(snapshot)
+    assert chat is not None and chat.family == "chatml" and chat.default_system == "You are SmolLM."
+    gguf.set_template(bundle, chat, plan.context)
+    text = (bundle / "Modelfile").read_text(encoding="utf-8")
+    assert text.startswith("FROM ./model.gguf\nPARAMETER num_ctx 4096\nTEMPLATE \"\"\"")
+    assert 'You are SmolLM.' in text and 'PARAMETER stop "<|im_end|>"' in text
+    manifest = json.loads((bundle / gguf.MANIFEST).read_text(encoding="utf-8"))
+    assert manifest["files"]["Modelfile"]["sha256"] == gguf._sha256(bundle / "Modelfile")
+    assert manifest["ollama_template"]["family"] == "chatml"
+
+
+@pytest.mark.parametrize("modelfile,shown,expected", [
+    ("FROM ./model.gguf\nTEMPLATE \"\"\"{{ .Prompt }}\"\"\"\n", "{{ .Prompt }}", "bundle"),
+    # the GGUF's template supports tools, so the fork keeps it over the bundle's (Qwen2.5)
+    ("FROM ./model.gguf\nTEMPLATE \"\"\"{{ .Prompt }}\"\"\"\n", "{%- if tools %}...", "gguf"),
+    ("FROM ./model.gguf\n", "{%- for message in messages %}...", "gguf"),
+    ("FROM ./model.gguf\n", "{{- range .Messages }}<|im_start|>{{ .Role }}", "fork built-in"),
+    ("FROM ./model.gguf\n", None, "unknown"),
+])
+def test_install_reports_which_chat_template_the_fork_kept(modelfile: str, shown: str | None, expected: str) -> None:
+    from npu_model.install.ollama_import import template_source
+
+    assert template_source(modelfile, shown) == expected
+
 
 def test_converter_source_is_fetched_and_checked_file_by_file(tmp_path: Path) -> None:
     source = ConverterSource.load("b11644")
