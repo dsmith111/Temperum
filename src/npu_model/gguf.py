@@ -133,14 +133,20 @@ def supported_architectures(source_dir: Path) -> set[str]:
     return names
 
 
-def estimates(model: ResolvedModel, quant: str) -> dict[str, float]:
+def estimates(model: ResolvedModel, quant: str, *, cached: bool = False,
+              verify: str = "standard") -> dict[str, float]:
     width = 4 if "32" in str(model.config.get("torch_dtype") or model.config.get("dtype") or "") else 2
     params = (model.weight_bytes or 0) / width
+    download = 0 if cached else (model.weight_bytes or 0)
+    # The download, the 16-bit intermediate and the quantized file (the bundle hard-links it), plus
+    # the Q8_0 copy that perplexity is measured against while verifying (deleted afterwards).
+    peak = download + params * (2 + BYTES_PER_PARAM[quant])
+    if verify in ("standard", "full"):
+        peak += params * BYTES_PER_PARAM["Q8_0"]
     return {"params_billions": round(params / 1e9, 2),
-            "download_gb": round((model.weight_bytes or 0) / 2**30, 1),
+            "download_gb": round(download / 2**30, 1),
             "gguf_gb": round(params * BYTES_PER_PARAM[quant] / 2**30, 1),
-            # the 16-bit intermediate, the quantized file and the bundle copy
-            "disk_gb": round(params * (2 + 2 * BYTES_PER_PARAM[quant]) / 2**30 + 0.5, 1),
+            "disk_gb": round(peak / 2**30 + 0.5, 1),
             "ram_gb": round(params * 2.2 / 2**30 + 1, 1),
             "minutes": round(2 + 3 * params / 1e9)}
 
@@ -225,7 +231,10 @@ def plan(model: ResolvedModel, host: HostInfo, target: TargetProfile, *, ollama_
         warnings.append(f"target {target.id} has not been verified on hardware yet")
     if not hexagon_opted_in():
         warnings.append(f"the fork uses the Hexagon NPU only when its server starts with {HEXAGON_OPT_IN}=1")
-    est = estimates(model, quant)
+    cached = model.ref.kind == "local" or (
+        model.ref.repo is not None and model.commit is not None
+        and (paths.sources_dir() / model.ref.repo.replace("/", "--") / model.commit / "_source.json").is_file())
+    est = estimates(model, quant, cached=cached, verify=verify if on_target else "none")
     status = chains_factory(host, get_runtime(DEFAULT_RUNTIME), "cpu", python=python).status("quantize")
     if status.state != "ready":
         warnings.append(f"first use: sets up the quantize toolchain (~{ENV_SIZE_GB['quantize']:.0f} GB, about 8 "

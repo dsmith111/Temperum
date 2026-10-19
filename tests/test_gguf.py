@@ -122,6 +122,14 @@ def test_estimates_scale_with_the_quant_type() -> None:
     assert q4["params_billions"] == 1.54 and 0.7 <= q4["gguf_gb"] <= 0.9 < q8["gguf_gb"]
 
 
+def test_disk_estimate_covers_the_download_and_the_verification_copy() -> None:
+    # Phi-4-mini (3.84B, bf16): 7.1 GiB download + 7.1 16-bit + 2.0 Q4_0 + 3.8 Q8_0 reference + 0.5
+    phi = _model(weight_bytes=7_672_000_000)
+    assert gguf.estimates(phi, "Q4_0")["disk_gb"] == 20.6
+    assert gguf.estimates(phi, "Q4_0", cached=True)["disk_gb"] == 13.5
+    assert gguf.estimates(phi, "Q4_0", cached=True, verify="quick")["disk_gb"] == 9.7
+
+
 def test_supported_architectures_reads_the_converter_registrations(tmp_path: Path) -> None:
     (tmp_path / "conversion").mkdir()
     (tmp_path / "conversion" / "qwen.py").write_text(
