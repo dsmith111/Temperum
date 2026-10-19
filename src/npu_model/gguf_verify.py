@@ -24,8 +24,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from npu_model import calib, paths
-from npu_model.core.errors import NpuModelError
-from npu_model.gguf import GgufPlan, LlamaPayload, _exe, quantize
+from npu_model.gguf import GgufPlan, LlamaPayload, _exe
 from npu_model.templates import ChatTemplate
 from npu_model.verify import (CONVERSATIONS, NEEDLE, PPL_PASS, PROMPTS, SETTINGS, reference_dtype, run_script,
                               template_check, verdict)
@@ -187,7 +186,7 @@ def _heldout_text(path: Path, out: Path, rows: int = 400) -> Path:
 
 
 def verify_gguf(bundle: Path, snapshot: Path, plan: GgufPlan, chains: Any, work: Path, say: Progress,
-                source_gguf: Path | None = None, chat: ChatTemplate | None = None) -> dict[str, Any]:
+                reference_gguf: Path | None = None, chat: ChatTemplate | None = None) -> dict[str, Any]:
     level = plan.verify_level
     settings = SETTINGS[level]
     work.mkdir(parents=True, exist_ok=True)
@@ -289,23 +288,19 @@ def verify_gguf(bundle: Path, snapshot: Path, plan: GgufPlan, chains: Any, work:
         quality["greedy_exact"] = sum(1 for r in scored if r["exact"])
         quality["mean_matching_prefix"] = round(
             sum(r["matching_prefix"] / max(1, r["reference_tokens"]) for r in scored) / len(scored), 3)
-    if report["load"].get("ok") and heldout is not None and source_gguf is not None and settings.ppl_chunks:
-        # The reference is a Q8_0 copy on the CPU: within about 0.5% of 16-bit, but ggml's 16-bit
-        # CPU kernels are slow here (BF16 took 211 s per 4 chunks for a 1.5B model).
-        say("measuring perplexity (the bundle on the NPU vs a Q8_0 copy on the CPU)")
+    if report["load"].get("ok") and heldout is not None and reference_gguf is not None and settings.ppl_chunks:
+        # The reference is the Q8_0 conversion on the CPU: within about 0.5% of 16-bit, but ggml's
+        # 16-bit CPU kernels are slow here (BF16 took 211 s per 4 chunks for a 1.5B model).
+        say("measuring perplexity (the bundle on the NPU vs the Q8_0 conversion on the CPU)")
         text = _heldout_text(heldout, work / "heldout.txt")
         log = work / "perplexity.log"
-        reference_gguf = work / "reference-Q8_0.gguf"
         chunks = settings.ppl_chunks * 4  # 16 at standard: 8 gave 1.14x where 16 gave 1.09x
         npu = cpu = None
         try:
-            quantize(plan.payload, source_gguf, reference_gguf, "Q8_0", log, say)
             npu = perplexity(plan.payload, bundle / "model.gguf", text, npu=True, context=512, chunks=chunks, log=log)
             cpu = perplexity(plan.payload, reference_gguf, text, npu=False, context=512, chunks=chunks, log=log)
-        except (NpuModelError, OSError, subprocess.SubprocessError) as exc:
+        except (OSError, subprocess.SubprocessError) as exc:
             quality["perplexity_error"] = str(exc)[:400]
-        finally:
-            reference_gguf.unlink(missing_ok=True)
         if npu and cpu:
             quality["perplexity"] = {"npu": npu, "reference": cpu, "ratio": round(npu / cpu, 4), "chunks": chunks,
                                      "reference_kind": "Q8_0 GGUF on the CPU (llama-perplexity, 512-token chunks)"}

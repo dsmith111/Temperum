@@ -246,7 +246,7 @@ def _convert_gguf(model: str, target_id: str, *, quant: str, context: Optional[i
             err.print(f"  NPU: {placed.get('layers_offloaded')}/{placed.get('layers_total')} layers, "
                       f"{placed.get('htp_weight_mib')} MiB of weights on HTP")
         if "perplexity_ratio" in summary:
-            err.print(f"  perplexity vs a Q8_0 copy on the CPU: {summary['perplexity_ratio']}x")
+            err.print(f"  perplexity vs the Q8_0 conversion on the CPU: {summary['perplexity_ratio']}x")
         speed = summary["speed"]
         if speed.get("median_tokens_per_s"):
             prompt = (f"{speed['long_prompt_tokens_per_s']:.0f} tokens/s ({speed['long_prompt_tokens']}-token prompt)"
@@ -449,19 +449,19 @@ def _verify_gguf_bundle(bundle: Path, manifest: dict[str, Any], snapshot: Path, 
     chains.ensure("quantize")
     work = paths.jobs_dir() / "verify" / bundle.name
     work.mkdir(parents=True, exist_ok=True)
-    source_gguf = None
+    reference = None
     try:
-        if level in ("standard", "full"):  # perplexity is measured against a Q8_0 copy of the 16-bit conversion
+        if level in ("standard", "full"):  # perplexity is measured against a Q8_0 conversion on the CPU
             converter = ConverterSource.load(runtime.llama_cpp_tag)
             converter.ensure(progress=say)
-            say("converting the source again for the perplexity reference")
-            source_gguf = gguf.convert(chains.python_exe("quantize"), converter, snapshot, work / "model-16bit.gguf",
-                                       work / "gguf.log", say)
-        return verify_gguf(bundle, snapshot, plan, chains, work, say, source_gguf=source_gguf,
+            say("converting the source again (Q8_0) for the perplexity reference")
+            reference = gguf.convert(chains.python_exe("quantize"), converter, snapshot, work / "reference-Q8_0.gguf",
+                                     work / "gguf.log", say)
+        return verify_gguf(bundle, snapshot, plan, chains, work, say, reference_gguf=reference,
                            chat=gguf.derived_template(snapshot))
     finally:
-        if source_gguf is not None:
-            source_gguf.unlink(missing_ok=True)
+        if reference is not None:
+            reference.unlink(missing_ok=True)
 
 
 @app.command("models")

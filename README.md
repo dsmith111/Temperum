@@ -23,15 +23,15 @@ That command:
    any warnings;
 3. on first use, sets up its conversion toolchain (~1 GB, about 8 minutes) and fetches
    llama.cpp's converter, pinned to the fork's llama.cpp;
-4. downloads the weights, converts them with llama.cpp's converter (about 300
-   architectures) and quantizes with the fork's `llama-quantize` (`--quant Q4_0`, the
-   default and the fastest; `Q4_K_M` or `Q8_0` keep more quality);
+4. downloads the weights, converts them straight to Q8_0 with llama.cpp's converter (about
+   300 architectures) and quantizes that with the fork's `llama-quantize` (`--quant Q4_0`,
+   the default and the fastest; `Q4_K_M` or `Q8_0` keep more quality);
 5. writes the bundle: `model.gguf`, a Modelfile (with an Ollama chat template checked against
    the model's own when the format is recognized, so the fork does not swap in a built-in
    one), the licence files and a provenance manifest;
 6. verifies it on the NPU with the fork's `llama-server`: where the layers run, answers
-   and long-prompt retrieval against the source model, perplexity against a Q8_0 copy, and
-   the chat template;
+   and long-prompt retrieval against the source model, perplexity against the Q8_0
+   conversion, and the chat template;
 7. with `--install`, runs `ollama create` on the fork, then loads the model once to check
    that the fork really runs it on the NPU.
 

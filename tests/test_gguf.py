@@ -124,12 +124,13 @@ def test_estimates_scale_with_the_quant_type() -> None:
     assert q4["params_billions"] == 1.54 and 0.7 <= q4["gguf_gb"] <= 0.9 < q8["gguf_gb"]
 
 
-def test_disk_estimate_covers_the_download_and_the_verification_copy() -> None:
-    # Phi-4-mini (3.84B, bf16): 7.1 GiB download + 7.1 16-bit + 2.0 Q4_0 + 3.8 Q8_0 reference + 0.5
+def test_disk_estimate_covers_the_download_and_the_q8_0_conversion() -> None:
+    # Phi-4-mini (3.84B, bf16): 7.1 GiB download + 3.8 Q8_0 conversion (also the reference) + 2.0 Q4_0 + 0.5;
+    # the former 16-bit intermediate and separate Q8_0 copy made it 20.6
     phi = _model(weight_bytes=7_672_000_000)
-    assert gguf.estimates(phi, "Q4_0")["disk_gb"] == 20.6
-    assert gguf.estimates(phi, "Q4_0", cached=True)["disk_gb"] == 13.5
-    assert gguf.estimates(phi, "Q4_0", cached=True, verify="quick")["disk_gb"] == 9.7
+    assert gguf.estimates(phi, "Q4_0")["disk_gb"] == 13.5
+    assert gguf.estimates(phi, "Q4_0", cached=True)["disk_gb"] == 6.3
+    assert gguf.estimates(phi, "Q8_0", cached=True)["disk_gb"] == 4.3  # the conversion is the result
 
 
 def test_supported_architectures_reads_the_converter_registrations(tmp_path: Path) -> None:
@@ -298,7 +299,6 @@ def test_a_model_too_large_to_run_here_is_still_checked_with_its_tokenizer(tmp_p
 
     monkeypatch.setattr(gguf_verify, "run_script", run_script)
     monkeypatch.setattr(gguf_verify, "LlamaServer", FakeServer)
-    monkeypatch.setattr(gguf_verify, "quantize", lambda *_a, **_k: None)
     monkeypatch.setattr(gguf_verify, "perplexity", lambda *_a, npu, **_k: 12.6 if npu else 10.0)
     plan = SimpleNamespace(verify_level="standard", payload=None, context=4096, quant="Q4_0",
                            estimates={"params_billions": 3.8},
@@ -306,7 +306,7 @@ def test_a_model_too_large_to_run_here_is_still_checked_with_its_tokenizer(tmp_p
     chains = SimpleNamespace(python_exe=lambda _role: Path("python"))
     report = gguf_verify.verify_gguf(tmp_path / "bundle", tmp_path / "source", plan,  # type: ignore[arg-type]
                                      chains, tmp_path / "work", lambda _message: None,
-                                     source_gguf=tmp_path / "model-16bit.gguf")
+                                     reference_gguf=tmp_path / "model-Q8_0.gguf")
     assert "--tokenizer-only" in scripts[0] and "--dtype" not in scripts[0]
     assert sent[0] == [7, 8, 9]  # the source tokenizer's inputs, not the server's own rendering
     assert "greedy_exact" not in report["quality"]

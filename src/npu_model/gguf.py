@@ -133,16 +133,13 @@ def supported_architectures(source_dir: Path) -> set[str]:
     return names
 
 
-def estimates(model: ResolvedModel, quant: str, *, cached: bool = False,
-              verify: str = "standard") -> dict[str, float]:
+def estimates(model: ResolvedModel, quant: str, *, cached: bool = False) -> dict[str, float]:
     width = 4 if "32" in str(model.config.get("torch_dtype") or model.config.get("dtype") or "") else 2
     params = (model.weight_bytes or 0) / width
     download = 0 if cached else (model.weight_bytes or 0)
-    # The download, the 16-bit intermediate and the quantized file (the bundle hard-links it), plus
-    # the Q8_0 copy that perplexity is measured against while verifying (deleted afterwards).
-    peak = download + params * (2 + BYTES_PER_PARAM[quant])
-    if verify in ("standard", "full"):
-        peak += params * BYTES_PER_PARAM["Q8_0"]
+    # The download, the Q8_0 conversion (also verification's perplexity reference, deleted afterwards)
+    # and the quantized file (the bundle hard-links it).
+    peak = download + params * BYTES_PER_PARAM["Q8_0"] + (params * BYTES_PER_PARAM[quant] if quant != "Q8_0" else 0)
     return {"params_billions": round(params / 1e9, 2),
             "download_gb": round(download / 2**30, 1),
             "gguf_gb": round(params * BYTES_PER_PARAM[quant] / 2**30, 1),
@@ -155,7 +152,7 @@ def job_id(model: ResolvedModel, target: TargetProfile, runtime: LlamaRuntimePro
            context: int | None) -> str:
     identity = {"model": model.ref.repo or str(model.ref.path), "commit": model.commit, "target": target.id,
                 "runtime": runtime.id, "llama_cpp": runtime.llama_cpp_commit, "quant": quant,
-                "context": context, "converter": __version__}
+                "context": context, "converter": __version__, "pipeline": "q8_0-first"}
     return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:12]
 
 
@@ -235,7 +232,7 @@ def plan(model: ResolvedModel, host: HostInfo, target: TargetProfile, *, ollama_
     cached = model.ref.kind == "local" or (
         model.ref.repo is not None and model.commit is not None
         and (paths.sources_dir() / model.ref.repo.replace("/", "--") / model.commit / "_source.json").is_file())
-    est = estimates(model, quant, cached=cached, verify=verify if on_target else "none")
+    est = estimates(model, quant, cached=cached)
     status = chains_factory(host, get_runtime(DEFAULT_RUNTIME), "cpu", python=python).status("quantize")
     if status.state != "ready":
         warnings.append(f"first use: sets up the quantize toolchain (~{ENV_SIZE_GB['quantize']:.0f} GB, about 8 "
@@ -278,11 +275,16 @@ def _stream(cmd: list[str], env: dict[str, str] | None, log: Path, say: Progress
 
 def convert(python: Path, source: ConverterSource, snapshot: Path, out: Path, log: Path, say: Progress,
             popen: Callable[..., Any] = subprocess.Popen) -> Path:
-    """HF snapshot -> GGUF in the model's own 16-bit type (convert_hf_to_gguf --outtype auto)."""
+    """HF snapshot -> Q8_0 GGUF (convert_hf_to_gguf --outtype q8_0).
+
+    Q8_0 rather than 16-bit halves the intermediate, and it doubles as verification's perplexity
+    reference. Requantizing it cost Qwen2.5-1.5B 0.1% perplexity at Q4_0 (9.599 vs 9.588 from 16-bit)
+    and 0.4% at Q4_K_M (9.246 vs 9.212).
+    """
     partial = out.with_name(out.name + ".partial")
     partial.unlink(missing_ok=True)
     code, tail = _stream([str(python), str(source.script), str(snapshot), "--outfile", str(partial),
-                          "--outtype", "auto"], source.environment(), log, say,
+                          "--outtype", "q8_0"], source.environment(), log, say,
                          lambda line: "Model successfully exported" in line, popen)
     if code != 0 or not partial.is_file():
         raise NpuModelError("convert", "GGUF_CONVERT_FAILED", f"llama.cpp's converter failed (exit {code}).",
@@ -296,7 +298,7 @@ def quantize(payload: LlamaPayload, src: Path, out: Path, quant: str, log: Path,
     partial = out.with_name(out.name + ".partial")
     partial.unlink(missing_ok=True)
     env = {**os.environ, "PATH": f"{payload.root}{os.pathsep}{os.environ.get('PATH', '')}"}
-    code, tail = _stream([str(payload.quantize), str(src), str(partial), quant], env, log, say,
+    code, tail = _stream([str(payload.quantize), "--allow-requantize", str(src), str(partial), quant], env, log, say,
                          lambda line: line.startswith(("llama_model_quantize_impl: model size",
                                                        "llama_model_quantize_impl: quant size")), popen)
     if code != 0 or not partial.is_file():
@@ -413,15 +415,15 @@ def run(gguf_plan: GgufPlan, progress: Progress | None = None,
         job.record("converter", "done", tag=source.tag, commit=source.commit)
 
         log = job.dir / "gguf.log"
-        src = job.dir / "model-16bit.gguf"
-        if not (job.done("convert") and src.is_file()):
-            say("converting to GGUF with llama.cpp's converter")
-            convert(chains.python_exe("quantize"), source, snapshot, src, log, say)
-            job.record("convert", "done", sha256=_sha256(src))
+        converted = job.dir / "model-Q8_0.gguf"  # also the perplexity reference
+        if not (job.done("convert") and converted.is_file()):
+            say("converting to GGUF (Q8_0) with llama.cpp's converter")
+            convert(chains.python_exe("quantize"), source, snapshot, converted, log, say)
+            job.record("convert", "done", sha256=_sha256(converted))
         quantized = job.dir / f"model-{gguf_plan.quant}.gguf"
-        if not (job.done("quantize") and quantized.is_file()):
+        if gguf_plan.quant != "Q8_0" and not (job.done("quantize") and quantized.is_file()):
             say(f"quantizing to {gguf_plan.quant} with the runtime's llama-quantize")
-            quantize(gguf_plan.payload, src, quantized, gguf_plan.quant, log, say)
+            quantize(gguf_plan.payload, converted, quantized, gguf_plan.quant, log, say)
             job.record("quantize", "done", sha256=_sha256(quantized))
 
         say("assembling the bundle")
@@ -432,7 +434,7 @@ def run(gguf_plan: GgufPlan, progress: Progress | None = None,
                                   "reasons": ["verification skipped"]}
         chat = derived_template(snapshot)
         if verifier is not None and gguf_plan.verify_level != "none":
-            report = verifier(bundle, snapshot, gguf_plan, chains, job.dir / "verify", say, source_gguf=src,
+            report = verifier(bundle, snapshot, gguf_plan, chains, job.dir / "verify", say, reference_gguf=converted,
                               chat=chat)
         if chat is not None and report.get("template", {}).get("ollama", {}).get("status") == "match":
             set_template(bundle, chat, gguf_plan.context)
@@ -441,8 +443,8 @@ def run(gguf_plan: GgufPlan, progress: Progress | None = None,
         (bundle / "npu_model_verification.json").write_text(json.dumps(report, indent=2, ensure_ascii=False),
                                                             encoding="utf-8")
         job.record("verify", "done", verdict=report["verdict"], reasons=report.get("reasons", []))
-        if report["verdict"] != "failed":
-            src.unlink(missing_ok=True)  # the 16-bit intermediate is only needed to requantize
+        if report["verdict"] != "failed" and gguf_plan.quant != "Q8_0":
+            converted.unlink(missing_ok=True)  # only needed to requantize and as the reference
         job.data["result"] = {"bundle": str(bundle), "verdict": report["verdict"]}
         job.save()
         return GgufResult(bundle, job.dir, report)
