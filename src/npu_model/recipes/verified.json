@@ -104,6 +104,14 @@
       "ppl_ratio": 1.16,
       "decode_tokens_per_s": 13,
       "evidence": "npu-model convert, 2026-10-19 (M5): verdict warning (source too large to compare answers on 16 GB); perplexity x1.16 against a Q8_0 copy on the CPU; whole on the NPU; installed into the fork package and answered a two-turn chat; GGUF template (tool calls); decode through the fork; docs/models.md"
+    },
+    {
+      "repo": "Qwen/Qwen2.5-7B-Instruct",
+      "target": "gguf-hexagon",
+      "quality": "Q4_0",
+      "ppl_ratio": 1.08,
+      "decode_tokens_per_s": 10,
+      "evidence": "npu-model convert, 2026-10-19: verdict warning (the source model does not fit in 16 GB, so answers were not compared); perplexity x1.08 against a Q8_0 copy on the CPU; whole on the NPU (4.2 GiB) with the fork's 6,144 MiB budget; installed into the fork package and answered a two-turn chat; GGUF template (tool calls); decode through the fork; docs/models.md"
     }
   ]
 }

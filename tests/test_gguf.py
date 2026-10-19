@@ -138,7 +138,7 @@ def test_memory_estimate_follows_the_measured_peaks() -> None:
         return ResolvedModel(ModelRef("hf", repo="org/m"), commit="c", gated=False, license=None, weight_bytes=weight_bytes,
                              config={"torch_dtype": "bfloat16", "vocab_size": vocab, "hidden_size": hidden})
 
-    # Phi-4-mini peaked at 5.9 GB in llama.cpp's converter (a 200k x 3072 embedding in float32, twice)
+    # Phi-4-mini peaked at 5.8 GB in llama.cpp's converter (a 200k x 3072 embedding in float32, twice)
     assert 5.0 <= gguf.estimates(model(7_672_000_000, 200064, 3072), "Q4_0")["ram_gb"] <= 6.5
     # a 7B: the CPU perplexity on its Q8_0 conversion dominates; quick verification skips it
     qwen7b = model(15_231_272_960, 152064, 3584)

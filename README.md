@@ -36,8 +36,8 @@ That command:
    that the fork really runs it on the NPU.
 
 Qwen2.5-1.5B converts in under a minute; standard verification, which runs the source model
-for reference answers, adds about 8. [docs/models.md](docs/models.md) has nine models from
-0.36B to 3.8B with times, quality and speed.
+for reference answers, adds about 8. [docs/models.md](docs/models.md) has ten models from
+0.36B to 7.6B with times, quality and speed.
 
 ## Install
 
@@ -81,15 +81,16 @@ model runs on the CPU and how to fix it.
 ## What converts today
 
 - **GGUF (the default):** whatever llama.cpp's converter handles, about 300 architectures;
-  verification on the NPU decides whether the result is usable. Nine models are checked so
-  far ([docs/models.md](docs/models.md), or `npu-model models`). Models up to about 4 GiB
-  (3.8B parameters at Q4_0 with a 4K context) load whole on the NPU; larger ones are split
-  with the CPU, which is slower.
+  verification on the NPU decides whether the result is usable. Ten models are checked so
+  far ([docs/models.md](docs/models.md), or `npu-model models`). Models up to 5 GiB on the
+  NPU (Qwen2.5-7B at Q4_0 with up to a 16K context) load whole; larger ones are split with
+  the CPU, which is slower.
 - **Gated models** (for example Llama) work with your Hugging Face access: request access
   on the model page, then `hf auth login` or set `HF_TOKEN`. Tokens are never written to
   outputs.
-- **Models whose source is too large to run here** (the 3.8B Phi models on 16 GB) are still
-  checked against their tokenizer and chat template; the verdict says what was not compared.
+- **Models whose source is too large to run here** (the 3.8B Phi models and Qwen2.5-7B on
+  16 GB) are still checked against their tokenizer and chat template; the verdict says what
+  was not compared.
 
 ## QNN bundles (`--target qnn-x-elite`)
 

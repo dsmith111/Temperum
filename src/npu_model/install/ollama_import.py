@@ -406,8 +406,8 @@ def install_gguf(bundle: Path, name: str, *, executable: Path, host: str | None,
         result["warnings"].append("the fork ran it on the CPU, not the NPU: start its server with OLLAMA_HEXAGON=1 "
                                   "(after `ollama npu setup --provider hexagon --accept-qualcomm-terms`)")
     elif where == "split":
-        result["warnings"].append("the fork split it between the NPU and the CPU, which is slower than either; a "
-                                  "smaller --context or --quant may let it fit on the NPU whole")
+        result["warnings"].append("the fork split it between the NPU and the CPU, which is slower than running "
+                                  "whole on the NPU; a smaller --context or --quant may let it fit there")
     return result
 
 

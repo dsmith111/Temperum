@@ -24,6 +24,7 @@ default): Q4_0, standard verification. The runtime is the fork's portable packag
 | Qwen/Qwen3-1.7B | 2.03B | 1.0 + 8.4 min | 29/29 | 1.21x | 3/6 | 858 ✓, 1746 ✓ | GGUF | warning |
 | microsoft/Phi-3.5-mini-instruct | 3.82B | 2.4 + 3.5 min | 33/33 | 1.10x | - | 858 ✓, 1758 ✓ | checked (phi3) | warning |
 | microsoft/Phi-4-mini-instruct | 3.84B | 2.8 + 3.0 min | 33/33 | 1.16x | - | 848 ✓, 1737 ✓ | GGUF | warning |
+| Qwen/Qwen2.5-7B-Instruct | 7.62B | 7.2 + 5.4 min | 29/29 | 1.08x | - | 875 ✓, 1763 ✓ | GGUF | warning |
 
 Speed through the fork (tokens per second; first token in seconds):
 
@@ -38,18 +39,21 @@ Speed through the fork (tokens per second; first token in seconds):
 | Qwen/Qwen3-1.7B | 1,054 | 26.3 | 0.55 | 443 | 50.4 | 1.24 |
 | microsoft/Phi-3.5-mini-instruct | 491 | 9.7 | 1.32 | 198 | 27.9 | 3.05 |
 | microsoft/Phi-4-mini-instruct | 713 | 12.8 | 0.78 | 231 | 30.5 | 2.20 |
+| Qwen/Qwen2.5-7B-Instruct | 390 | 10.0 | 1.53 | 118 | 13.8 | 5.00 |
 
 How to read it:
 
 - **Convert + verify:** convert is the download, llama.cpp's converter and `llama-quantize`;
   verify runs the source model for reference answers, the bundle on the NPU and perplexity
-  on both. The two Qwen2.5 jobs reused a quantized file from an earlier run, so only their
-  verification is timed. Peak memory for the 3.8B models was 5.9 GB (llama.cpp's converter,
-  Phi-4-mini) and 4.9 GB (the CPU perplexity reference, Phi-3.5-mini).
-- **Verdict "warning" for the Phi models:** their source models need more memory than this
-  laptop has free, so verification compares the source model's tokenizer and chat template
-  but not its answers ("Greedy exact" is blank); perplexity, long prompts and the template
-  are still checked. Qwen3-1.7B's warning is its Q4_0 perplexity, just over 1.20x.
+  on both. The two smaller Qwen2.5 jobs reused a quantized file from an earlier run, so only
+  their verification is timed; Qwen2.5-7B's 7.2 minutes include 3.9 of download. Peak memory
+  was 5.8 GB for Phi-4-mini (llama.cpp's converter), 4.8 GB for Phi-3.5-mini and 8.2 GB for
+  Qwen2.5-7B (the CPU perplexity reference).
+- **Verdict "warning" for the Phi models and Qwen2.5-7B:** their source models need more
+  memory than this laptop has free, so verification compares the source model's tokenizer
+  and chat template but not its answers ("Greedy exact" is blank); perplexity, long prompts
+  and the template are still checked. Qwen3-1.7B's warning is its Q4_0 perplexity, just over
+  1.20x.
 - **NPU layers:** layers `llama-server` placed on the NPU (HTP0) during verification.
 - **Perplexity:** the bundle on the NPU against a Q8_0 copy of the same conversion on the CPU
   (`llama-perplexity`, 16 × 512 tokens of held-out text); Q8_0 is within about 0.5% of the
@@ -73,18 +77,21 @@ How to read it:
 - **Speed** comes from the fork's `/api/generate`: a prompt of about 540 tokens of held-out
   text, 128 greedy tokens, the median of three runs after a warm-up, with a new prompt each
   run. First token is the prompt pass plus one decode step. CPU is the same model with
-  `num_gpu 0`. The Phi models load whole on the NPU with the fork's 5,120 MiB budget; under
-  the former 3,000 MiB the fork split them with the CPU, which was slower (Phi-4-mini: 384
-  tok/s prefill, 9.0 decode).
+  `num_gpu 0`. The Phi models load whole on the NPU with the fork's 5,120 MiB budget and
+  Qwen2.5-7B (4.2 GiB on the NPU) with its 6,144 MiB one; under smaller budgets the fork split
+  them with the CPU, which was slower (Phi-4-mini: 384 tok/s prefill, 9.0 decode; the 7B: 294
+  and 6.5). The 7B's CPU figures varied with other work on the laptop: an editor was using
+  about two cores around these runs, and a quieter run of `llama-server` alone decoded at 20.6
+  tok/s and prefilled 124, while the NPU stayed at about 10 tok/s.
 
 The NPU's main gain is leaving the CPU to you: generating with Qwen2.5-1.5B through the fork
 (a prompt of 540 tokens and 256 new tokens), the server used 0.1 of a CPU core on the NPU
 and 5.3 cores on the CPU. That is what lets an agent work alongside you without slowing your
-own work; power matters mostly for chat use. On speed, the NPU processes prompts 1.4 to 3.1
-times faster than the CPU and reaches the first token in 35 to 75% of the CPU's time, while
-the CPU decodes two to three times as fast. (These CPU figures are the package's CPU backend
-with dotprod and i8mm kernels; the earlier generic ARMv8 build prefilled 3 to 7 times
-slower.)
+own work; power matters mostly for chat use. On speed, the NPU processes prompts 1.4 to 3.3
+times faster than the CPU and reaches the first token in 31 to 75% of the CPU's time, while
+the CPU decodes two to three times as fast when nothing else needs it (Qwen2.5-7B: 1.4 times
+with the editor busy). (These CPU figures are the package's CPU backend with dotprod and
+i8mm kernels; the earlier generic ARMv8 build prefilled 3 to 7 times slower.)
 
 ## QNN bundles (8-bit)
 
