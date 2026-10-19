@@ -111,6 +111,25 @@ def test_fetch_records_source_and_reuses_snapshot(tmp_path: Path) -> None:
     assert fetch(model, tmp_path, snapshot=snapshot) == dest and len(calls) == 1
 
 
+def test_fetch_drops_only_the_repeated_xet_notice(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    import logging
+
+    model = ResolvedModel(ModelRef("hf", repo="Qwen/Qwen2.5-0.5B-Instruct"), commit=COMMIT, gated=False,
+                          license="apache-2.0", config=CONFIG, weight_bytes=1000)
+    log = logging.getLogger("huggingface_hub.file_download")
+
+    def snapshot(repo: str, **kwargs: Any) -> str:
+        for _ in range(3):
+            log.warning("Xet Storage is enabled for this repo, but the 'hf_xet' package is not installed. Falling back")
+        log.warning("Some other download problem")
+        return str(kwargs["local_dir"])
+
+    with caplog.at_level(logging.WARNING, logger="huggingface_hub.file_download"):
+        fetch(model, tmp_path, snapshot=snapshot)
+    assert [r.getMessage() for r in caplog.records] == ["Some other download problem"]
+    assert not log.filters  # the filter is removed afterwards
+
+
 def test_local_model_resolves_without_network(tmp_path: Path) -> None:
     (tmp_path / "config.json").write_text(json.dumps(CONFIG), encoding="utf-8")
     (tmp_path / "model.safetensors").write_bytes(b"abc")

@@ -7,6 +7,7 @@ repositories work once the account has been granted access. Tokens are never rec
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -151,9 +152,19 @@ def fetch(model: ResolvedModel, root: Path, snapshot: Callable[..., str] | None 
     if record.is_file():
         return dest
     dest.mkdir(parents=True, exist_ok=True)
+    downloads = logging.getLogger("huggingface_hub.file_download")
+    downloads.addFilter(_no_xet_notice)
     try:
         snapshot(model.ref.repo, revision=model.commit, local_dir=str(dest), allow_patterns=SNAPSHOT_PATTERNS)
     except Exception as exc:  # noqa: BLE001
         raise _hf_error(exc, model.ref) from exc
+    finally:
+        downloads.removeFilter(_no_xet_notice)
     record.write_text(json.dumps(model.to_dict(), indent=2), encoding="utf-8")
     return dest
+
+
+def _no_xet_notice(record: logging.LogRecord) -> bool:
+    # Without the optional hf_xet package, huggingface_hub repeats this for every file of a Xet-backed
+    # repo; it then downloads over plain HTTP, which works.
+    return not record.getMessage().startswith("Xet Storage is enabled for this repo, but the 'hf_xet' package")
