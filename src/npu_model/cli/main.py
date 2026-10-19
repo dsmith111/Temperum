@@ -416,6 +416,54 @@ def doctor_command(as_json: bool = typer.Option(False, "--json", help="Print JSO
     out.print(table)
 
 
+def _verify_gguf_bundle(bundle: Path, manifest: dict[str, Any], snapshot: Path, level: str,
+                        ollama_exe: Optional[Path], host: HostInfo, say: Any) -> dict[str, Any]:
+    """Re-run a GGUF bundle's verification with the fork's current runtime."""
+    from npu_model import gguf, paths
+    from npu_model.checkpoint import read_checkpoint
+    from npu_model.gguf_verify import verify_gguf
+    from npu_model.profiles import DEFAULT_LLAMA_RUNTIME, DEFAULT_RUNTIME, LLAMA_RUNTIMES, get_runtime, get_target
+    from npu_model.sources import ModelRef, ResolvedModel
+    from npu_model.toolchains import Toolchains
+    from npu_model.toolchains.llama_cpp import ConverterSource
+
+    exe = ollama_exe or (Path(os.environ["NPU_MODEL_OLLAMA_EXE"]) if os.environ.get("NPU_MODEL_OLLAMA_EXE") else None)
+    if exe is None:
+        raise NpuModelError("verify", "NEEDS_RUNTIME", "A GGUF bundle is verified with the fork's llama.cpp build.",
+                            hint="Set NPU_MODEL_OLLAMA_EXE to the fork's ollama.exe (or pass --ollama-exe).")
+    payload = gguf.LlamaPayload.from_executable(exe)
+    missing = payload.problems()
+    if missing:
+        raise NpuModelError("verify", "RUNTIME_INCOMPLETE", f"{payload.root} lacks: {', '.join(missing)}",
+                            hint=f"Get Qualcomm's signed NPU libraries with `{gguf.SETUP_COMMAND}`.")
+    src = manifest.get("source", {})
+    model = ResolvedModel(ModelRef("hf", repo=src["repo"]) if src.get("repo") else ModelRef("local", path=snapshot),
+                          commit=src.get("commit"), gated=False, license=src.get("license"),
+                          config=json.loads((snapshot / "config.json").read_text(encoding="utf-8")), weight_bytes=None)
+    runtime = LLAMA_RUNTIMES.get(str(manifest.get("runtime", {}).get("id")), LLAMA_RUNTIMES[DEFAULT_LLAMA_RUNTIME])
+    plan = gguf.GgufPlan(model, host, get_target(str(manifest.get("target", {}).get("id", "gguf-hexagon"))), runtime,
+                         payload, str(manifest.get("precision", gguf.DEFAULT_QUANT)),
+                         int(manifest.get("context_length") or gguf.DEFAULT_CONTEXT), bundle, "verify",
+                         {"params_billions": round(read_checkpoint(snapshot).total_params / 1e9, 2)}, level)
+    chains = Toolchains(host, get_runtime(DEFAULT_RUNTIME), "cpu")
+    chains.ensure("quantize")
+    work = paths.jobs_dir() / "verify" / bundle.name
+    work.mkdir(parents=True, exist_ok=True)
+    source_gguf = None
+    try:
+        if level in ("standard", "full"):  # perplexity is measured against a Q8_0 copy of the 16-bit conversion
+            converter = ConverterSource.load(runtime.llama_cpp_tag)
+            converter.ensure(progress=say)
+            say("converting the source again for the perplexity reference")
+            source_gguf = gguf.convert(chains.python_exe("quantize"), converter, snapshot, work / "model-16bit.gguf",
+                                       work / "gguf.log", say)
+        return verify_gguf(bundle, snapshot, plan, chains, work, say, source_gguf=source_gguf,
+                           chat=gguf.derived_template(snapshot))
+    finally:
+        if source_gguf is not None:
+            source_gguf.unlink(missing_ok=True)
+
+
 @app.command("models")
 def models_command(as_json: bool = typer.Option(False, "--json", help="Print JSON")) -> None:
     """List maintained recipes, supported families and conversions verified on hardware."""
@@ -427,17 +475,21 @@ def models_command(as_json: bool = typer.Option(False, "--json", help="Print JSO
     if as_json:
         typer.echo(json.dumps(data, indent=2))
         return
-    out.print("[bold]Verified on hardware[/bold] (perplexity vs source model, decode speed):")
-    for entry in data["verified"]:
+    out.print("[bold]Verified on hardware[/bold] (perplexity ratio, decode tok/s on the NPU; details in "
+              "docs/models.md):")
+    for entry in sorted(data["verified"], key=lambda e: (e["target"] != "gguf-hexagon", e["repo"])):
         out.print(f"  {escape(entry['repo'])}  {entry['target']}  {entry['quality']}  "
-                  f"x{entry['ppl_ratio']}  {entry['decode_tokens_per_s']} tok/s  [dim]{escape(entry['evidence'])}[/dim]")
-    out.print(f"[bold]Maintained recipes[/bold] (microsoft/olive-recipes @ {data['recipes_commit'][:8]}):")
+                  f"x{entry['ppl_ratio']}  {entry['decode_tokens_per_s']} tok/s")
+    out.print("[bold]GGUF (the default target)[/bold]: any architecture llama.cpp's converter handles (about 300); "
+              "verification on the NPU decides whether the result is usable.")
+    out.print(f"[bold]QNN bundles[/bold] (--target qnn-x-elite): maintained recipes (microsoft/olive-recipes @ "
+              f"{data['recipes_commit'][:8]}):")
     for repo in sorted(recipes):
         out.print(f"  {escape(repo)}")
-    out.print("[bold]Other models[/bold] use their family's recipe and are checked by verification:")
+    out.print("  Other models of these families use their family's recipe:")
     for family, repo in sorted(FAMILY_TEMPLATES.items()):
         out.print(f"  model_type {family}: {escape(repo)} recipe")
-    out.print("Converting on CPU needs RAM roughly 8x the parameter count in bytes; "
+    out.print("  Converting a QNN bundle on the CPU needs RAM roughly 8x the parameter count in bytes; "
               "`npu-model convert MODEL --plan` shows estimates.")
 
 
@@ -446,6 +498,8 @@ def verify_command(
     bundle: Path = typer.Argument(..., help="Bundle folder"),
     level: str = typer.Option("standard", "--level", help="quick | standard | full"),
     source: Optional[Path] = typer.Option(None, "--source", help="Source model folder (default: pinned snapshot)"),
+    ollama_exe: Optional[Path] = typer.Option(None, "--ollama-exe", help="GGUF: fork executable (or "
+                                                                          "NPU_MODEL_OLLAMA_EXE)"),
     as_json: bool = typer.Option(False, "--json", help="Print the full report"),
 ) -> None:
     """Re-run verification of a bundle on this machine's NPU."""
@@ -466,16 +520,20 @@ def verify_command(
             raise NpuModelError("verify", "SOURCE_MISSING", f"Source model not found at {snapshot}",
                                 hint="Pass --source with the original model folder.")
         host = detect_host()
-        chains = Toolchains(host, get_runtime(DEFAULT_RUNTIME), "cuda" if host.cuda_gpus else "cpu")
-        for role in ("quantize", "verify"):
-            chains.ensure(role)
-        heldout = calib.ensure_corpus(calib.HELDOUT, paths.data_dir()).path if level != "quick" else None
-        report = verify(bundle, snapshot, from_jinja(load_jinja(snapshot)), level,
-                        quantize_python=chains.python_exe("quantize"), verify_python=chains.python_exe("verify"),
-                        work=paths.jobs_dir() / "verify" / bundle.name, heldout=heldout,
-                        params=read_checkpoint(snapshot).total_params, available_gb=host.available_ram_gb,
-                        total_gb=host.total_ram_gb,
-                        progress=_progress(time.time(), as_json))
+        if manifest.get("format") == "gguf":
+            report = _verify_gguf_bundle(bundle, manifest, snapshot, level, ollama_exe, host,
+                                         _progress(time.time(), as_json))
+        else:
+            chains = Toolchains(host, get_runtime(DEFAULT_RUNTIME), "cuda" if host.cuda_gpus else "cpu")
+            for role in ("quantize", "verify"):
+                chains.ensure(role)
+            heldout = calib.ensure_corpus(calib.HELDOUT, paths.data_dir()).path if level != "quick" else None
+            report = verify(bundle, snapshot, from_jinja(load_jinja(snapshot)), level,
+                            quantize_python=chains.python_exe("quantize"), verify_python=chains.python_exe("verify"),
+                            work=paths.jobs_dir() / "verify" / bundle.name, heldout=heldout,
+                            params=read_checkpoint(snapshot).total_params, available_gb=host.available_ram_gb,
+                            total_gb=host.total_ram_gb,
+                            progress=_progress(time.time(), as_json))
         (bundle / VERIFICATION_FILE).write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
         if as_json:
             typer.echo(json.dumps(report, indent=2, ensure_ascii=False))

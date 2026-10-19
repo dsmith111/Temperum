@@ -19,6 +19,8 @@ def test_models_lists_recipes_families_and_verified_conversions() -> None:
     data = json.loads(result.stdout)
     assert "Qwen/Qwen2.5-0.5B-Instruct" in data["curated"] and data["families"]["llama"]
     assert any(entry["repo"] == "Qwen/Qwen2.5-0.5B-Instruct" for entry in data["verified"])
+    assert {entry["target"] for entry in data["verified"]} == {"qnn-x-elite", "gguf-hexagon"}
+    assert "GGUF (the default target)" in runner.invoke(app, ["models"]).stdout
 
 
 def test_convert_plan_errors_are_actionable(monkeypatch: pytest.MonkeyPatch) -> None:
