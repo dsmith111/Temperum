@@ -133,6 +133,21 @@ def test_disk_estimate_covers_the_download_and_the_q8_0_conversion() -> None:
     assert gguf.estimates(phi, "Q8_0", cached=True)["disk_gb"] == 4.3  # the conversion is the result
 
 
+def test_memory_estimate_follows_the_measured_peaks() -> None:
+    def model(weight_bytes: int, vocab: int, hidden: int) -> ResolvedModel:
+        return ResolvedModel(ModelRef("hf", repo="org/m"), commit="c", gated=False, license=None, weight_bytes=weight_bytes,
+                             config={"torch_dtype": "bfloat16", "vocab_size": vocab, "hidden_size": hidden})
+
+    # Phi-4-mini peaked at 5.9 GB in llama.cpp's converter (a 200k x 3072 embedding in float32, twice)
+    assert 5.0 <= gguf.estimates(model(7_672_000_000, 200064, 3072), "Q4_0")["ram_gb"] <= 6.5
+    # a 7B: the CPU perplexity on its Q8_0 conversion dominates; quick verification skips it
+    qwen7b = model(15_231_272_960, 152064, 3584)
+    assert 8.0 <= gguf.estimates(qwen7b, "Q4_0")["ram_gb"] <= 9.0
+    assert gguf.estimates(qwen7b, "Q4_0", verify="quick")["ram_gb"] < 6.0
+    # a small model whose source model runs in float32 for reference answers
+    assert gguf.estimates(model(988_000_000, 151936, 896), "Q4_0", reference="float32")["ram_gb"] >= 2.8
+
+
 def test_supported_architectures_reads_the_converter_registrations(tmp_path: Path) -> None:
     (tmp_path / "conversion").mkdir()
     (tmp_path / "conversion" / "qwen.py").write_text(

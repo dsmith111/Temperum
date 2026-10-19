@@ -133,18 +133,27 @@ def supported_architectures(source_dir: Path) -> set[str]:
     return names
 
 
-def estimates(model: ResolvedModel, quant: str, *, cached: bool = False) -> dict[str, float]:
+def estimates(model: ResolvedModel, quant: str, *, cached: bool = False, verify: str = "standard",
+              reference: str | None = None) -> dict[str, float]:
+    """Time, disk and memory for a GGUF conversion; `reference` is the dtype the source model runs in, if it does."""
     width = 4 if "32" in str(model.config.get("torch_dtype") or model.config.get("dtype") or "") else 2
     params = (model.weight_bytes or 0) / width
     download = 0 if cached else (model.weight_bytes or 0)
     # The download, the Q8_0 conversion (also verification's perplexity reference, deleted afterwards)
     # and the quantized file (the bundle hard-links it).
     peak = download + params * BYTES_PER_PARAM["Q8_0"] + (params * BYTES_PER_PARAM[quant] if quant != "Q8_0" else 0)
+    # Memory, as measured: the converter holds its largest tensor (the embedding) in float32 twice while
+    # quantizing it (Phi-4-mini: 5.9 GB); CPU perplexity loads the Q8_0 conversion (Phi-3.5-mini: 4.8 GB);
+    # the source model runs only when verification found room for it.
+    vocab, hidden = int(model.config.get("vocab_size") or 0), int(model.config.get("hidden_size") or 0)
+    conversion = (vocab * hidden * 8 if vocab and hidden else params * 0.6) + 2**30
+    perplexity = params * BYTES_PER_PARAM["Q8_0"] + 2**29 if verify in ("standard", "full") else 0
+    source = params * {"float32": 4, "bfloat16": 2}[reference] + 2**30 if reference else 0
     return {"params_billions": round(params / 1e9, 2),
             "download_gb": round(download / 2**30, 1),
             "gguf_gb": round(params * BYTES_PER_PARAM[quant] / 2**30, 1),
             "disk_gb": round(peak / 2**30 + 0.5, 1),
-            "ram_gb": round(params * 2.2 / 2**30 + 1, 1),
+            "ram_gb": round(max(conversion, perplexity, source) / 2**30, 1),
             "minutes": round(2 + 3 * params / 1e9)}
 
 
@@ -232,16 +241,20 @@ def plan(model: ResolvedModel, host: HostInfo, target: TargetProfile, *, ollama_
     cached = model.ref.kind == "local" or (
         model.ref.repo is not None and model.commit is not None
         and (paths.sources_dir() / model.ref.repo.replace("/", "--") / model.commit / "_source.json").is_file())
-    est = estimates(model, quant, cached=cached)
+    from npu_model.convert import _resource_checks  # the QNN target's memory and disk checks
+    from npu_model.verify import reference_dtype
+
+    level = verify if on_target else "none"
+    params = estimates(model, quant)["params_billions"] * 1e9
+    reference = (reference_dtype(int(params), host.available_ram_gb, host.total_ram_gb)
+                 if level in ("standard", "full") else None)
+    est = estimates(model, quant, cached=cached, verify=level, reference=reference)
     status = chains_factory(host, get_runtime(DEFAULT_RUNTIME), "cpu", python=python).status("quantize")
     if status.state != "ready":
         warnings.append(f"first use: sets up the quantize toolchain (~{ENV_SIZE_GB['quantize']:.0f} GB, about 8 "
                         "minutes; torch comes from download.pytorch.org, everything else through your pip "
                         "configuration)")
-    free = shutil.disk_usage(paths.home() if paths.home().exists() else Path.home()).free / 2**30
-    if est["disk_gb"] > free:
-        raise NpuModelError("plan", "NOT_ENOUGH_DISK", f"Converting needs about {est['disk_gb']} GB of disk; "
-                            f"{free:.1f} GB is free.", hint="Free some space or set NPU_MODEL_HOME to another drive.")
+    warnings += _resource_checks(est, host)
     identity = job_id(model, target, runtime, quant, context)
     return GgufPlan(model, host, target, runtime, payload, quant, ctx, destination, identity, est,
                     verify if on_target else "none", warnings, python, overwrite)
