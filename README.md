@@ -1,165 +1,163 @@
 # npu-model
 
-Convert a Hugging Face model into a bundle that runs on this machine's NPU through the
-[Ollama NPU fork](https://github.com/dsmith111/ollama-npu). Microsoft's maintained
-[Olive](https://github.com/microsoft/Olive) recipes do the heavy lifting; `npu-model`
-picks the recipe, adapts it to your machine, runs it in managed toolchains, assembles a
-bundle the fork accepts, and checks the result on the NPU against the source model.
+Convert a Hugging Face model to run on this machine's NPU through the
+[Ollama NPU fork](https://github.com/dsmith111/ollama-npu). One command converts it, checks
+the result on the NPU against the source model, and can install it into the fork:
 
 ```powershell
-npu-model convert Qwen/Qwen2.5-0.5B-Instruct
+npu-model convert Qwen/Qwen2.5-1.5B-Instruct --install --host http://127.0.0.1:11434
+ollama run qwen2.5-1.5b-instruct:npu
 ```
 
-That one command:
+**Why the NPU:** a model running there leaves the CPU to you. On the CPU alone a model can
+saturate a weaker machine, slowing your own work and the model alike; that matters most for
+an agent working alongside you. Generating with Qwen2.5-1.5B through the fork, the NPU run
+kept the server at 0.1 of a CPU core, against 5.3 cores on the CPU. Power matters mostly for
+chat use. The CPU still decodes about twice as fast; the NPU processes prompts faster.
 
-1. detects the NPU target (Snapdragon X Elite → QNN, HTP v73; or a GGUF when the fork's
-   Hexagon backend is switched on, see below) and the quantization device (CUDA if an
-   NVIDIA GPU is present, otherwise CPU);
-2. resolves the model to an exact commit and shows a plan: recipe, precision, time, RAM,
-   disk, licence and any warnings;
-3. on first use, sets up three isolated toolchains (~2.4 GB): quantize (PyTorch, Olive,
-   ONNX Runtime), compile (Olive + `onnxruntime-qnn` built against the fork's QNN SDK)
-   and verify (the fork's ONNX Runtime GenAI);
-4. downloads the weights, quantizes, exports and compiles the NPU context binaries;
-5. writes the bundle with a compatibility declaration (`ollama_npu.json`), an Ollama
-   Modelfile with a chat template derived from the model's own, its licence files and
-   a provenance manifest;
-6. verifies it: loads it on the NPU, generates, and compares perplexity, answers and
-   long-prompt retrieval with the original model.
+That command:
 
-Install into a running fork with `--install` (or `npu-model install` later). The tool
-never picks or starts a server itself, so name the fork executable and its endpoint:
+1. picks the target: on a Snapdragon X, a GGUF for the Hexagon NPU (QNN bundles are the
+   alternative, see below);
+2. resolves the model to an exact commit and shows a plan: time, RAM, disk, licence and
+   any warnings;
+3. on first use, sets up its conversion toolchain (~1 GB, about 8 minutes) and fetches
+   llama.cpp's converter, pinned to the fork's llama.cpp;
+4. downloads the weights, converts them with llama.cpp's converter (about 300
+   architectures) and quantizes with the fork's `llama-quantize` (`--quant Q4_0`, the
+   default and the fastest; `Q4_K_M` or `Q8_0` keep more quality);
+5. writes the bundle: `model.gguf`, a Modelfile (with an Ollama chat template checked against
+   the model's own when the format is recognized, so the fork does not swap in a built-in
+   one), the licence files and a provenance manifest;
+6. verifies it on the NPU with the fork's `llama-server`: where the layers run, answers
+   and long-prompt retrieval against the source model, perplexity against a Q8_0 copy, and
+   the chat template;
+7. with `--install`, runs `ollama create` on the fork, then loads the model once to check
+   that the fork really runs it on the NPU.
 
-```powershell
-npu-model convert Qwen/Qwen2.5-0.5B-Instruct --install `
-  --ollama-exe C:\path\to\fork\ollama.exe --host http://127.0.0.1:11434
-ollama run qwen2.5-0.5b-instruct:npu
-```
-
-On a Snapdragon X Elite laptop (X1E78100, 16 GB) that conversion took 22 minutes on the
-CPU, covering model download, quantization, compilation and verification. The one-time
-toolchain setup adds about 18 minutes. The result measured 1.04× the source model's
-perplexity, and the fork loaded it as `declared` and served it on the NPU.
+Qwen2.5-1.5B converts in under a minute; standard verification, which runs the source model
+for reference answers, adds about 8. [docs/models.md](docs/models.md) has nine models from
+0.36B to 3.8B with times, quality and speed.
 
 ## Install
 
 You need a Snapdragon X laptop with Windows 11, Python 3.10 or newer, and Git.
 
-1. **The Ollama NPU fork.** It has no published release yet: build its portable package with
-   `scripts\build_npu_windows.ps1` (the fork's `docs/development.md`; add `-HexagonSDKRoot` for
-   the GGUF route below). Set up the NPU runtime its server uses, then start the server:
+1. **The Ollama NPU fork, with its Hexagon backend.** It has no published release yet:
+   build its portable package from branch `npu/hexagon-spike` with
+   `scripts\build_npu_windows.ps1 ... -HexagonSDKRoot <Hexagon SDK>` (see the fork's
+   `docs/development.md`).
+
+2. **The NPU libraries and the switch.** The backend needs a set of Microsoft-signed NPU
+   libraries from Qualcomm, whose terms restrict their use, so the fork downloads them at
+   setup (showing the terms first) instead of shipping them. The backend stays off unless
+   the fork's server starts with `OLLAMA_HEXAGON=1`:
 
    ```powershell
-   C:\path\to\fork\ollama.exe npu setup --provider qnn   # see the fork's docs/npu_qnn.md
+   C:\path\to\fork\ollama.exe npu setup --provider hexagon --accept-qualcomm-terms
+   setx OLLAMA_HEXAGON 1          # for new terminals; open one, then start the server
    C:\path\to\fork\ollama.exe serve
    ```
 
-2. **`npu-model`:**
+3. **`npu-model`, pointed at the fork once:**
 
    ```powershell
    git clone https://github.com/dsmith111/ollama-npu-model-converter
    cd ollama-npu-model-converter
    python -m pip install .
-   npu-model doctor
+   setx NPU_MODEL_OLLAMA_EXE C:\path\to\fork\ollama.exe
+   npu-model setup      # in a new terminal: the conversion toolchain, ~1 GB
+   npu-model doctor     # checks the fork, its NPU libraries and the switch
    ```
 
    The CLI itself stays small. The conversion tools go into separate environments that it
-   creates on first use, each with its own native ARM64 Python, so the x64 Python that
-   Windows on Arm machines often have works too.
+   creates, each with its own native ARM64 Python, so the x64 Python that Windows on Arm
+   machines often have works too.
+
+`--install` needs the fork's endpoint (`--host` or `OLLAMA_HOST`): `npu-model` never picks
+or starts a server itself. If the fork's server runs without the switch, install says the
+model runs on the CPU and how to fix it.
 
 ## What converts today
 
-[docs/models.md](docs/models.md) has the models converted and served on a Snapdragon X Elite
-so far, with times, quality and speed: nine on the GGUF route (0.36B to 3.8B; Qwen2.5,
-Qwen3, SmolLM2, TinyLlama, DeepSeek-R1-Distill-Qwen, Phi-3.5-mini, Phi-4-mini) and four
-QNN bundles. `npu-model models` lists everything. In short:
+- **GGUF (the default):** whatever llama.cpp's converter handles, about 300 architectures;
+  verification on the NPU decides whether the result is usable. Nine models are checked so
+  far ([docs/models.md](docs/models.md), or `npu-model models`). Models up to about 4 GiB
+  (3.8B parameters at Q4_0 with a 4K context) load whole on the NPU; larger ones are split
+  with the CPU, which is slower.
+- **Gated models** (for example Llama) work with your Hugging Face access: request access
+  on the model page, then `hf auth login` or set `HF_TOKEN`. Tokens are never written to
+  outputs.
+- **Models whose source is too large to run here** (the 3.8B Phi models on 16 GB) are still
+  checked against their tokenizer and chat template; the verdict says what was not compared.
 
-- **Maintained recipes**: Qwen2.5 (0.5B–7B, Coder), Qwen3 (0.6B–8B), DeepSeek-R1-Distill-Qwen,
-  Llama 3.1/3.2, Phi-3/3.5/4 (vendored from `microsoft/olive-recipes`).
-- **Other models of the same families** (`model_type` qwen2, qwen3, llama, phi3) use their
-  family's recipe; verification decides whether the result is usable.
-- **Size**: on a CPU the conversion's peak memory grows with the model (measured: 3.8 GB
-  for 0.5B, 7.9 GB for 1.5B, which took 55 minutes), so 16 GB laptops are limited to models
-  of about 1.5B parameters. Larger models need an x64 machine with an NVIDIA GPU
-  (`--target qnn-x-elite`), a path that is implemented but not yet tested.
+## QNN bundles (`--target qnn-x-elite`)
 
-Quality modes: `standard` (default on CPU) uses rotated 8-bit round-to-nearest weights,
-which measured 1.04–1.15× the source model's perplexity; `recipe` (default on CUDA) uses
-the maintained recipe's own GPTQ settings, usually 4-bit.
-
-Gated models (for example Llama) work with your Hugging Face access: request access on the
-model page, then `hf auth login` or set `HF_TOKEN`. Tokens are never written to outputs.
-
-### GGUF for the Hexagon NPU (experimental)
-
-The fork can also run GGUF models on the NPU through llama.cpp's Hexagon backend (branch
-`npu/hexagon-spike`: a portable package from `scripts\build_npu_windows.ps1
--HexagonSDKRoot`, or a local build with its `hexagon_arm64` preset). The backend's NPU half is a
-Microsoft-signed set of libraries from Qualcomm's GenieX release, and Qualcomm's terms
-restrict its use, so the fork downloads it at setup instead of shipping it:
-`ollama npu setup --provider hexagon --accept-qualcomm-terms` shows those terms, then
-fetches and checks the set. Like upstream Ollama's first Vulkan release, the backend is
-off unless the server starts with `OLLAMA_HEXAGON=1`; with it on, GGUF models load onto
-the NPU by default. `npu-model` follows the same switch: with `OLLAMA_HEXAGON=1` set where
-it runs, `--target auto` makes a GGUF instead of a QNN bundle (`--target gguf-hexagon` asks
-for one either way, and `npu-model doctor` shows which applies). It uses the signed set
-the fork reports, and its plan names the folder.
-
-The GGUF route converts with llama.cpp's own converter (pinned to the runtime's commit,
-about 300 architectures), quantizes with the fork's `llama-quantize` (`--quant Q4_0`, the
-default because it is the fastest, `Q4_K_M` or `Q8_0`) and verifies on the NPU with the
-fork's `llama-server`:
+The fork also runs ONNX models compiled for the NPU with Qualcomm's QNN, through ONNX
+Runtime GenAI. `npu-model` builds them from Microsoft's maintained
+[Olive](https://github.com/microsoft/Olive) recipes: it picks the recipe, adapts it to the
+machine, quantizes, exports and compiles the NPU context binaries, and writes a bundle with
+a compatibility declaration (`ollama_npu.json`). Use it where the GGUF route cannot run, for
+example without accepting Qualcomm's terms for the Hexagon libraries:
 
 ```powershell
-C:\path\to\fork\ollama.exe npu setup --provider hexagon --accept-qualcomm-terms   # once
-$env:OLLAMA_HEXAGON = "1"   # also set for the fork's server
-npu-model convert Qwen/Qwen2.5-1.5B-Instruct `
-  --ollama-exe C:\path\to\fork\ollama.exe --install --host http://127.0.0.1:11434
+C:\path\to\fork\ollama.exe npu setup --provider qnn   # the fork's QNN runtime (docs/npu_qnn.md)
+npu-model setup --target qnn-x-elite                  # adds the compile and verify toolchains
+npu-model convert Qwen/Qwen2.5-0.5B-Instruct --target qnn-x-elite --install --host http://127.0.0.1:11434
+ollama run qwen2.5-0.5b-instruct:npu-qnn
 ```
 
-For Qwen2.5-1.5B that took under a minute (plus the shared toolchain setup) against 55
-minutes for the QNN bundle. Through the fork it decodes at 28.7 tok/s and prefills at
-1,229 tok/s on the NPU, against 20.2 and 772 for the QNN bundle. Q4_0 costs about 9%
-perplexity, Q4_K_M about 5% and Q8_0 nothing measurable. The CPU decodes about twice as
-fast as the NPU, so the NPU's gains are prefill, power and a free CPU.
+`NPU_MODEL_TARGET=qnn-x-elite` makes it the default. It is slower all round: Qwen2.5-0.5B
+took 22 minutes on the CPU (plus about 18 for the three toolchains) and Qwen2.5-1.5B 55,
+against under a minute for its GGUF; through the fork the 1.5B bundle decoded at 20.2 tok/s
+and prefilled 772 tok/s, against 28.7 and 1,229 for its GGUF on the NPU. Its quality is high
+(8-bit weights: 1.02–1.15x the source model's perplexity). Quantizing on the CPU needs RAM
+of about 8x the parameter count in bytes, which limits 16 GB laptops to about 1.5B
+parameters; larger models need an x64 machine with an NVIDIA GPU, a path that is
+implemented but not yet tested.
 
-Models whose source is too large to run on the machine (the 3.8B Phi models on 16 GB) are
-still checked against its tokenizer and chat template, and the verdict says what was not
-compared. When the converter recognizes the chat format, the bundle's Modelfile carries an
-Ollama template checked against the model's own, so the fork does not swap in a built-in
-one; `npu-model install` reports it if the fork does.
+- **Maintained recipes:** Qwen2.5 (0.5B–7B, Coder), Qwen3 (0.6B–8B), DeepSeek-R1-Distill-Qwen,
+  Llama 3.1/3.2, Phi-3/3.5/4 (vendored from `microsoft/olive-recipes`); other models of
+  those families (`model_type` qwen2, qwen3, llama, phi3) use their family's recipe.
+- **Quality modes:** `standard` (default on the CPU) uses rotated 8-bit round-to-nearest
+  weights; `recipe` (default on CUDA) uses the recipe's own GPTQ settings, usually 4-bit.
 
 ## Commands
 
 | Command | Purpose |
 |---|---|
-| `npu-model convert MODEL` | Plan, convert, assemble and verify. `--plan` stops after the plan; `--yes` skips the prompt; `--install` installs into the fork; `--context N`, `--verify quick\|standard\|full\|none`, `--out DIR`, `--template FILE --stop S`, `--target gguf-hexagon --quant TYPE` |
-| `npu-model setup` | Create or check (`--check`) the toolchains |
-| `npu-model doctor` | Target (and the `OLLAMA_HEXAGON` switch), NPU, quantization device, memory, disk, toolchain health |
-| `npu-model models` | Verified conversions, maintained recipes, supported families |
-| `npu-model verify BUNDLE` | Re-run verification on this machine's NPU |
-| `npu-model inspect --input BUNDLE` | Structural and declaration report (never runs the model) |
-| `npu-model install --input BUNDLE --name TAG --ollama-exe FORK` | Plan, then `--execute --expect-fingerprint FP` a local `ollama create` (GGUF bundles: `--execute` alone) |
+| `npu-model convert MODEL` | Plan, convert and verify. `--install` installs into the fork; `--plan` stops after the plan; `--yes` skips the prompt; `--quant Q4_0\|Q4_K_M\|Q8_0`, `--context N`, `--verify quick\|standard\|full\|none`, `--out DIR`, `--target qnn-x-elite` (QNN only: `--quality`, `--device`, `--template FILE --stop S`) |
+| `npu-model setup` | Create or check (`--check`) what conversions need; `--target qnn-x-elite` adds the QNN toolchains |
+| `npu-model doctor` | Target, the fork's NPU runtime and switch, memory, disk, toolchain health |
+| `npu-model models` | Conversions verified on hardware, the GGUF route, QNN recipes and families |
+| `npu-model verify BUNDLE` | Re-run verification on this machine's NPU (with the fork's current runtime) |
+| `npu-model inspect --input BUNDLE` | Structural and declaration report for a QNN bundle (never runs the model) |
+| `npu-model install --input BUNDLE --name TAG` | Install a bundle into the fork: GGUF with `--execute`; QNN as a reviewed plan, then `--execute --expect-fingerprint FP` |
 
-Everything lives under `%LOCALAPPDATA%\npu-model` (toolchains, source snapshots, jobs,
-bundles); set `NPU_MODEL_HOME` to a short path if Windows long paths are disabled and your
-profile path is long. A conversion is a resumable job: rerunning the same command
-continues where it stopped, and `jobs/<id>/job.json` records every stage.
+Settings: `NPU_MODEL_OLLAMA_EXE` (the fork), `NPU_MODEL_TARGET` (default target),
+`OLLAMA_HOST` (the fork's endpoint for installs), `HF_TOKEN` (gated models) and
+`NPU_MODEL_HOME`. Everything lives under `%LOCALAPPDATA%\npu-model` (toolchains, source
+snapshots, jobs, bundles); set `NPU_MODEL_HOME` to a short path if Windows long paths are
+disabled and your profile path is long. A conversion is a resumable job: rerunning the same
+command continues where it stopped, and `jobs/<id>/job.json` records every stage.
 
 ## How it works
 
-- `recipes/`: the vendored olive-recipes (pinned commit, hashes) and a renderer that adapts
-  them (CPU overlay, target SoC, calibration loader without `datasets`, split sizing).
-- `toolchains/`: lock files per runtime, role and platform; a uv-managed native Python
-  (the default Python on Windows on Arm is often an emulated x64 build); packages through
-  your pip configuration, torch from the PyTorch index.
-- `olive_run.py`, `assemble.py`, `verify.py`, `convert.py`: the pipeline. Rules learned in
-  the M0 spike are enforced there, such as a pad token that never appears in prompts,
-  automatic retries for an intermittent QNN compiler crash, and NPU graph splits that keep
-  each compiled context near 1 GB (a single 2.65 GB context fails to load).
-- `gguf.py`, `gguf_verify.py`, `toolchains/llama_cpp.py`: the GGUF target.
+- `gguf.py`, `gguf_verify.py`, `toolchains/llama_cpp.py`: the GGUF target (llama.cpp's
+  converter fetched at a pinned commit and checked file by file; the fork's `llama-quantize`,
+  `llama-server` and `llama-perplexity`).
+- `templates.py`: recognizes the model's chat format and writes an Ollama template that
+  verification compares with the model's own rendering.
+- `install/`: local `ollama create` through a running fork, then a placement check.
+- QNN: `recipes/` (vendored olive-recipes at a pinned commit and a renderer that adapts them),
+  `toolchains/` (lock files per runtime, role and platform; a uv-managed native Python;
+  packages through your pip configuration, torch from the PyTorch index), and
+  `olive_run.py`, `assemble.py`, `verify.py`, `convert.py`, which enforce rules learned in the
+  M0 spike (a pad token that never appears in prompts, retries for an intermittent QNN
+  compiler crash, graph splits that keep each compiled context near 1 GB).
 
-Background and measurements: [spike/m0/RESULTS.md](spike/m0/RESULTS.md).
+Background and measurements: [docs/models.md](docs/models.md),
+[spike/m0/RESULTS.md](spike/m0/RESULTS.md).
 
 ## Development
 

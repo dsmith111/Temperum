@@ -6,10 +6,10 @@ the [Ollama NPU fork](https://github.com/dsmith111/ollama-npu). Every row is one
 `npu-model convert MODEL` run with default settings, then installed into the fork and asked
 two chat turns; nothing was tuned per model.
 
-## GGUF on the Hexagon NPU
+## GGUF on the Hexagon NPU (the default)
 
-`npu-model convert MODEL --target gguf-hexagon --install` (or `--target auto` with
-`OLLAMA_HEXAGON=1`): Q4_0, standard verification. The runtime is the fork's portable package
+`npu-model convert MODEL --install` (the runs used `--target gguf-hexagon`, now the
+default): Q4_0, standard verification. The runtime is the fork's portable package
 (branch `npu/hexagon-spike`, llama.cpp b11644) with Qualcomm's signed HTP libraries from
 `ollama npu setup --provider hexagon`. Measured 2026-10-19.
 
@@ -77,16 +77,20 @@ How to read it:
   the former 3,000 MiB the fork split them with the CPU, which was slower (Phi-4-mini: 384
   tok/s prefill, 9.0 decode).
 
-The NPU processes prompts 1.4 to 3.1 times faster than the CPU and reaches the first token
-in 35 to 75% of the CPU's time; the CPU decodes two to three times as fast. So the NPU's
-case is prompt processing, power and leaving the CPU free, not single-stream decode speed.
-(These CPU figures are the package's CPU backend with dotprod and i8mm kernels; the earlier
-generic ARMv8 build prefilled 3 to 7 times slower.)
+The NPU's main gain is leaving the CPU to you: generating with Qwen2.5-1.5B through the fork
+(a prompt of 540 tokens and 256 new tokens), the server used 0.1 of a CPU core on the NPU
+and 5.3 cores on the CPU. That is what lets an agent work alongside you without slowing your
+own work; power matters mostly for chat use. On speed, the NPU processes prompts 1.4 to 3.1
+times faster than the CPU and reaches the first token in 35 to 75% of the CPU's time, while
+the CPU decodes two to three times as fast. (These CPU figures are the package's CPU backend
+with dotprod and i8mm kernels; the earlier generic ARMv8 build prefilled 3 to 7 times
+slower.)
 
 ## QNN bundles (8-bit)
 
-The default target, `npu-model convert MODEL` (Olive recipes, CPU quantization with rotated
-8-bit round-to-nearest weights, QNN context binaries for HTP v73). Measured 2026-10-17/18,
+`npu-model convert MODEL --target qnn-x-elite` (the default target until 2026-10-19; Olive
+recipes, CPU quantization with rotated 8-bit round-to-nearest weights, QNN context binaries
+for HTP v73). Measured 2026-10-17/18,
 verification at the standard level:
 
 | Model | Time | Perplexity | Greedy exact | Long prompts | Template | Verdict |
