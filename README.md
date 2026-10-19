@@ -41,9 +41,38 @@ CPU, covering model download, quantization, compilation and verification. The on
 toolchain setup adds about 18 minutes. The result measured 1.04× the source model's
 perplexity, and the fork loaded it as `declared` and served it on the NPU.
 
+## Install
+
+You need a Snapdragon X laptop with Windows 11, Python 3.10 or newer, and Git.
+
+1. **The Ollama NPU fork.** It has no published release yet: build its portable package with
+   `scripts\build_npu_windows.ps1` (the fork's `docs/development.md`; add `-HexagonSDKRoot` for
+   the GGUF route below). Set up the NPU runtime its server uses, then start the server:
+
+   ```powershell
+   C:\path\to\fork\ollama.exe npu setup --provider qnn   # see the fork's docs/npu_qnn.md
+   C:\path\to\fork\ollama.exe serve
+   ```
+
+2. **`npu-model`:**
+
+   ```powershell
+   git clone https://github.com/dsmith111/ollama-npu-model-converter
+   cd ollama-npu-model-converter
+   python -m pip install .
+   npu-model doctor
+   ```
+
+   The CLI itself stays small. The conversion tools go into separate environments that it
+   creates on first use, each with its own native ARM64 Python, so the x64 Python that
+   Windows on Arm machines often have works too.
+
 ## What converts today
 
-`npu-model models` lists everything. In short:
+[docs/models.md](docs/models.md) has the models converted and served on a Snapdragon X Elite
+so far, with times, quality and speed: nine on the GGUF route (0.36B to 3.8B; Qwen2.5,
+Qwen3, SmolLM2, TinyLlama, DeepSeek-R1-Distill-Qwen, Phi-3.5-mini, Phi-4-mini) and four
+QNN bundles. `npu-model models` lists everything. In short:
 
 - **Maintained recipes**: Qwen2.5 (0.5B–7B, Coder), Qwen3 (0.6B–8B), DeepSeek-R1-Distill-Qwen,
   Llama 3.1/3.2, Phi-3/3.5/4 (vendored from `microsoft/olive-recipes`).
@@ -91,8 +120,14 @@ npu-model convert Qwen/Qwen2.5-1.5B-Instruct `
 For Qwen2.5-1.5B that took under a minute (plus the shared toolchain setup) against 55
 minutes for the QNN bundle. Through the fork it decodes at 28.7 tok/s and prefills at
 1,229 tok/s on the NPU, against 20.2 and 772 for the QNN bundle. Q4_0 costs about 9%
-perplexity, Q4_K_M about 5% and Q8_0 nothing measurable. The CPU decodes faster than the
-NPU (55 tok/s), so the NPU's gains are prefill, power and a free CPU.
+perplexity, Q4_K_M about 5% and Q8_0 nothing measurable. The CPU decodes about twice as
+fast as the NPU, so the NPU's gains are prefill, power and a free CPU.
+
+Models whose source is too large to run on the machine (the 3.8B Phi models on 16 GB) are
+still checked against its tokenizer and chat template, and the verdict says what was not
+compared. When the converter recognizes the chat format, the bundle's Modelfile carries an
+Ollama template checked against the model's own, so the fork does not swap in a built-in
+one; `npu-model install` reports it if the fork does.
 
 ## Commands
 
