@@ -20,8 +20,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Callable
 
-from npu_model import paths
-from npu_model.core.errors import NpuModelError
+from temperum import paths
+from temperum.core.errors import TemperumError
 
 MANIFESTS = Path(__file__).resolve().parent / "llama_cpp_pins"
 Opener = Callable[[str], IO[bytes]]
@@ -51,7 +51,7 @@ class ConverterSource:
     def load(cls, tag: str) -> ConverterSource:
         path = MANIFESTS / f"{tag}.json"
         if not path.is_file():
-            raise NpuModelError("toolchain", "UNKNOWN_LLAMA_CPP", f"No pinned llama.cpp converter for {tag}")
+            raise TemperumError("toolchain", "UNKNOWN_LLAMA_CPP", f"No pinned llama.cpp converter for {tag}")
         data = json.loads(path.read_text(encoding="utf-8"))
         return cls(data["tag"], data["commit"], data["archive"], dict(data["files"]))
 
@@ -91,12 +91,12 @@ class ConverterSource:
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_bytes(data.read())
         except (OSError, tarfile.TarError) as exc:
-            raise NpuModelError("toolchain", "LLAMA_CPP_FETCH_FAILED",
+            raise TemperumError("toolchain", "LLAMA_CPP_FETCH_FAILED",
                                 f"Could not fetch llama.cpp {self.tag} from {self.archive}: {exc}",
                                 hint="Check the network connection to github.com and retry.") from exc
         bad = self.problems(staging)
         if bad:
-            raise NpuModelError("toolchain", "LLAMA_CPP_MISMATCH",
+            raise TemperumError("toolchain", "LLAMA_CPP_MISMATCH",
                                 f"llama.cpp {self.tag} archive does not match the pinned files: "
                                 f"{', '.join(bad[:5])}{' ...' if len(bad) > 5 else ''}",
                                 hint=f"Partial download left at {staging}")

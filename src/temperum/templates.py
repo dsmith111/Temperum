@@ -18,7 +18,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from npu_model.core.errors import NpuModelError
+from temperum.core.errors import TemperumError
 
 
 @dataclass(frozen=True)
@@ -181,7 +181,7 @@ def from_jinja(jinja: str | None) -> ChatTemplate:
         newline = bool(re.search(r"\|>'\s*\+\s*'\\n'|\|>\\n|\|>\n", jinja))
         return ChatTemplate("phi3", _phi3(newline), ("<|end|>", "<|user|>", "<|assistant|>", "<|endoftext|>"),
                             None, verified=False, variant="newline" if newline else "compact")
-    raise NpuModelError("template", "TEMPLATE_UNKNOWN",
+    raise TemperumError("template", "TEMPLATE_UNKNOWN",
                         "The model's chat template is not a recognized prompt format.",
                         hint="Pass --template FILE with an Ollama Go template (and --stop for its end markers).")
 
@@ -194,6 +194,6 @@ def own() -> ChatTemplate:
 
 def custom(template_text: str, stops: list[str]) -> ChatTemplate:
     if "{%" in template_text or '"""' in template_text or not re.search(r"\{\{[^{}]*\.(Prompt|Messages)\b", template_text):
-        raise NpuModelError("template", "BAD_TEMPLATE",
+        raise TemperumError("template", "BAD_TEMPLATE",
                             "--template must be an Ollama Go template using .Messages or .Prompt (not Jinja).")
     return ChatTemplate("custom", template_text, tuple(stops), None, verified=False)

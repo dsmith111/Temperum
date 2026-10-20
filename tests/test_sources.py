@@ -7,8 +7,8 @@ from typing import Any
 
 import pytest
 
-from npu_model.core.errors import NpuModelError
-from npu_model.sources import ModelRef, ResolvedModel, fetch, parse_ref, resolve
+from temperum.core.errors import TemperumError
+from temperum.sources import ModelRef, ResolvedModel, fetch, parse_ref, resolve
 
 COMMIT = "7ae557604adf67be50417f59c2c2f167def9a775"
 CONFIG = {"architectures": ["Qwen2ForCausalLM"], "model_type": "qwen2", "num_hidden_layers": 24}
@@ -49,7 +49,7 @@ def test_parse_hf_refs(text: str, repo: str, revision: str | None) -> None:
 
 
 def test_parse_local_folder_requires_config(tmp_path: Path) -> None:
-    with pytest.raises(NpuModelError) as exc:
+    with pytest.raises(TemperumError) as exc:
         parse_ref(str(tmp_path))
     assert exc.value.reason_code == "LOCAL_MISSING_CONFIG"
     (tmp_path / "config.json").write_text("{}", encoding="utf-8")
@@ -59,7 +59,7 @@ def test_parse_local_folder_requires_config(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("text", ["not a model", "https://huggingface.co/Qwen/x", "justname"])
 def test_parse_rejects_non_refs(text: str) -> None:
-    with pytest.raises(NpuModelError) as exc:
+    with pytest.raises(TemperumError) as exc:
         parse_ref(text)
     assert exc.value.reason_code == "BAD_MODEL_REF"
 
@@ -75,7 +75,7 @@ def test_resolve_pins_commit_and_reads_config_without_weights(tmp_path: Path) ->
 
 def test_resolve_rejects_repos_without_safetensors(tmp_path: Path) -> None:
     api = FakeApi(files=("config.json", "pytorch_model.bin"))
-    with pytest.raises(NpuModelError) as exc:
+    with pytest.raises(TemperumError) as exc:
         resolve(parse_ref("org/model"), api=api, download=_download_to(tmp_path))
     assert exc.value.reason_code == "NO_SAFETENSORS"
 
@@ -86,7 +86,7 @@ def test_gated_repo_error_explains_how_to_get_access(tmp_path: Path) -> None:
 
     url = "https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct/resolve/main/config.json"
     gated = errors.GatedRepoError("403 gated", response=httpx.Response(403, request=httpx.Request("GET", url)))
-    with pytest.raises(NpuModelError) as exc:
+    with pytest.raises(TemperumError) as exc:
         resolve(parse_ref("meta-llama/Llama-3.2-1B-Instruct"), api=FakeApi(error=gated),
                 download=_download_to(tmp_path))
     assert exc.value.reason_code == "HF_GATED"

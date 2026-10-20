@@ -1,11 +1,11 @@
-# npu-model
+# Temperum
 
 Convert a Hugging Face model to run on this machine's NPU through the
 [Ollama NPU fork](https://github.com/dsmith111/ollama-npu). One command converts it, checks
 the result on the NPU against the source model, and can install it into the fork:
 
 ```powershell
-npu-model convert Qwen/Qwen2.5-1.5B-Instruct --install --host http://127.0.0.1:11434
+temperum convert Qwen/Qwen2.5-1.5B-Instruct --install --host http://127.0.0.1:11434
 ollama run qwen2.5-1.5b-instruct:npu
 ```
 
@@ -59,23 +59,23 @@ You need a Snapdragon X laptop with Windows 11, Python 3.10 or newer, and Git.
    C:\path\to\fork\ollama.exe serve
    ```
 
-3. **`npu-model`, pointed at the fork once** (this version is on branch
+3. **`temperum`, pointed at the fork once** (this version is on branch
    `restore-hf-conversion`; `main` still has the original converter):
 
    ```powershell
-   git clone -b restore-hf-conversion https://github.com/dsmith111/ollama-npu-model-converter
-   cd ollama-npu-model-converter
+   git clone -b restore-hf-conversion https://github.com/dsmith111/temperum
+   cd temperum
    python -m pip install .
-   setx NPU_MODEL_OLLAMA_EXE C:\path\to\fork\ollama.exe
-   npu-model setup      # in a new terminal: the conversion toolchain, ~1 GB
-   npu-model doctor     # checks the fork, its NPU libraries and the switch
+   setx TEMPERUM_OLLAMA_EXE C:\path\to\fork\ollama.exe
+   temperum setup      # in a new terminal: the conversion toolchain, ~1 GB
+   temperum doctor     # checks the fork, its NPU libraries and the switch
    ```
 
    The CLI itself stays small. The conversion tools go into separate environments that it
    creates, each with its own native ARM64 Python, so the x64 Python that Windows on Arm
    machines often have works too.
 
-`--install` needs the fork's endpoint (`--host` or `OLLAMA_HOST`): `npu-model` never picks
+`--install` needs the fork's endpoint (`--host` or `OLLAMA_HOST`): `temperum` never picks
 or starts a server itself. If the fork's server runs without the switch, install says the
 model runs on the CPU and how to fix it.
 
@@ -83,7 +83,7 @@ model runs on the CPU and how to fix it.
 
 - **GGUF (the default):** whatever llama.cpp's converter handles, about 300 architectures;
   verification on the NPU decides whether the result is usable. Ten models are checked so
-  far ([docs/models.md](docs/models.md), or `npu-model models`). Models up to 5 GiB on the
+  far ([docs/models.md](docs/models.md), or `temperum models`). Models up to 5 GiB on the
   NPU (Qwen2.5-7B at Q4_0 with up to a 16K context) load whole; larger ones are split with
   the CPU, which is slower.
 - **Gated models** (for example Llama) work with your Hugging Face access: request access
@@ -96,7 +96,7 @@ model runs on the CPU and how to fix it.
 ## QNN bundles (`--target qnn-x-elite`)
 
 The fork also runs ONNX models compiled for the NPU with Qualcomm's QNN, through ONNX
-Runtime GenAI. `npu-model` builds them from Microsoft's maintained
+Runtime GenAI. `temperum` builds them from Microsoft's maintained
 [Olive](https://github.com/microsoft/Olive) recipes: it picks the recipe, adapts it to the
 machine, quantizes, exports and compiles the NPU context binaries, and writes a bundle with
 a compatibility declaration (`ollama_npu.json`). Use it where the GGUF route cannot run, for
@@ -104,12 +104,12 @@ example without accepting Qualcomm's terms for the Hexagon libraries:
 
 ```powershell
 C:\path\to\fork\ollama.exe npu setup --provider qnn   # the fork's QNN runtime (docs/npu_qnn.md)
-npu-model setup --target qnn-x-elite                  # adds the compile and verify toolchains
-npu-model convert Qwen/Qwen2.5-0.5B-Instruct --target qnn-x-elite --install --host http://127.0.0.1:11434
+temperum setup --target qnn-x-elite                  # adds the compile and verify toolchains
+temperum convert Qwen/Qwen2.5-0.5B-Instruct --target qnn-x-elite --install --host http://127.0.0.1:11434
 ollama run qwen2.5-0.5b-instruct:npu-qnn
 ```
 
-`NPU_MODEL_TARGET=qnn-x-elite` makes it the default. It is slower all round: Qwen2.5-0.5B
+`TEMPERUM_TARGET=qnn-x-elite` makes it the default. It is slower all round: Qwen2.5-0.5B
 took 22 minutes on the CPU (plus about 18 for the three toolchains) and Qwen2.5-1.5B 55,
 against under a minute for its GGUF; through the fork the 1.5B bundle decoded at 20.2 tok/s
 and prefilled 772 tok/s, against 28.7 and 1,229 for its GGUF on the NPU. Its quality is high
@@ -131,18 +131,18 @@ implemented but not yet tested.
 
 | Command | Purpose |
 |---|---|
-| `npu-model convert MODEL` | Plan, convert and verify. `--install` installs into the fork; `--plan` stops after the plan; `--yes` skips the prompt; `--quant Q4_0\|Q4_K_M\|Q8_0`, `--context N`, `--verify quick\|standard\|full\|none`, `--out DIR`, `--target qnn-x-elite` (QNN only: `--quality`, `--device`, `--template FILE --stop S`) |
-| `npu-model setup` | Create or check (`--check`) what conversions need; `--target qnn-x-elite` adds the QNN toolchains |
-| `npu-model doctor` | Target, the fork's NPU runtime and switch, memory, disk, toolchain health |
-| `npu-model models` | Conversions verified on hardware, the GGUF route, QNN recipes and families |
-| `npu-model verify BUNDLE` | Re-run verification on this machine's NPU (with the fork's current runtime) |
-| `npu-model inspect --input BUNDLE` | Structural and declaration report for a QNN bundle (never runs the model) |
-| `npu-model install --input BUNDLE --name TAG` | Install a bundle into the fork: GGUF with `--execute`; QNN as a reviewed plan, then `--execute --expect-fingerprint FP` |
+| `temperum convert MODEL` | Plan, convert and verify. `--install` installs into the fork; `--plan` stops after the plan; `--yes` skips the prompt; `--quant Q4_0\|Q4_K_M\|Q8_0`, `--context N`, `--verify quick\|standard\|full\|none`, `--out DIR`, `--target qnn-x-elite` (QNN only: `--quality`, `--device`, `--template FILE --stop S`) |
+| `temperum setup` | Create or check (`--check`) what conversions need; `--target qnn-x-elite` adds the QNN toolchains |
+| `temperum doctor` | Target, the fork's NPU runtime and switch, memory, disk, toolchain health |
+| `temperum models` | Conversions verified on hardware, the GGUF route, QNN recipes and families |
+| `temperum verify BUNDLE` | Re-run verification on this machine's NPU (with the fork's current runtime) |
+| `temperum inspect --input BUNDLE` | Structural and declaration report for a QNN bundle (never runs the model) |
+| `temperum install --input BUNDLE --name TAG` | Install a bundle into the fork: GGUF with `--execute`; QNN as a reviewed plan, then `--execute --expect-fingerprint FP` |
 
-Settings: `NPU_MODEL_OLLAMA_EXE` (the fork), `NPU_MODEL_TARGET` (default target),
+Settings: `TEMPERUM_OLLAMA_EXE` (the fork), `TEMPERUM_TARGET` (default target),
 `OLLAMA_HOST` (the fork's endpoint for installs), `HF_TOKEN` (gated models) and
-`NPU_MODEL_HOME`. Everything lives under `%LOCALAPPDATA%\npu-model` (toolchains, source
-snapshots, jobs, bundles); set `NPU_MODEL_HOME` to a short path if Windows long paths are
+`TEMPERUM_HOME`. Everything lives under `%LOCALAPPDATA%\temperum` (toolchains, source
+snapshots, jobs, bundles); set `TEMPERUM_HOME` to a short path if Windows long paths are
 disabled and your profile path is long. A conversion is a resumable job: rerunning the same
 command continues where it stopped, and `jobs/<id>/job.json` records every stage.
 

@@ -20,24 +20,24 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from npu_model import __version__, calib, paths
-from npu_model.assemble import MIN_CONTEXT, AssembleInputs, assemble
-from npu_model.bundle.inspect import inspect_prebuilt
-from npu_model.checkpoint import read_checkpoint
-from npu_model.core.errors import NpuModelError
-from npu_model.host import HostInfo, detect_host, resolve_target
-from npu_model.olive_run import output_complete, run_olive
-from npu_model.profiles import DEFAULT_RUNTIME, RuntimeProfile, TargetProfile, get_runtime
-from npu_model.recipes import RecipeChoice, RenderOptions, choose, precision_label, render, resolve_quality
-from npu_model.sources import ResolvedModel, fetch, parse_ref, resolve
-from npu_model.templates import ChatTemplate, custom, from_jinja, load_jinja, own
-from npu_model.toolchains import ENV_SIZE_GB, PYTHON_SIZE_GB, EnvStatus, Toolchains
-from npu_model.verify import verify
+from temperum import __version__, calib, paths
+from temperum.assemble import MIN_CONTEXT, AssembleInputs, assemble
+from temperum.bundle.inspect import inspect_prebuilt
+from temperum.checkpoint import read_checkpoint
+from temperum.core.errors import TemperumError
+from temperum.host import HostInfo, detect_host, resolve_target
+from temperum.olive_run import output_complete, run_olive
+from temperum.profiles import DEFAULT_RUNTIME, RuntimeProfile, TargetProfile, get_runtime
+from temperum.recipes import RecipeChoice, RenderOptions, choose, precision_label, render, resolve_quality
+from temperum.sources import ResolvedModel, fetch, parse_ref, resolve
+from temperum.templates import ChatTemplate, custom, from_jinja, load_jinja, own
+from temperum.toolchains import ENV_SIZE_GB, PYTHON_SIZE_GB, EnvStatus, Toolchains
+from temperum.verify import verify
 
 Progress = Callable[[str], None]
 
 PERMISSIVE_LICENSES = {"apache-2.0", "mit", "bsd-2-clause", "bsd-3-clause", "cc-by-4.0", "cc0-1.0", "unlicense"}
-VERIFICATION_FILE = "npu_model_verification.json"
+VERIFICATION_FILE = "temperum_verification.json"
 
 
 @dataclass
@@ -92,9 +92,9 @@ class ConvertPlan:
 
 def _device(requested: str, host: HostInfo) -> str:
     if requested not in ("auto", "cpu", "cuda"):
-        raise NpuModelError("plan", "UNKNOWN_DEVICE", f"Unknown device {requested}", hint="Use auto, cpu or cuda.")
+        raise TemperumError("plan", "UNKNOWN_DEVICE", f"Unknown device {requested}", hint="Use auto, cpu or cuda.")
     if requested == "cuda" and not host.cuda_gpus:
-        raise NpuModelError("plan", "NO_CUDA", "--device cuda was requested but no NVIDIA GPU was found.")
+        raise TemperumError("plan", "NO_CUDA", "--device cuda was requested but no NVIDIA GPU was found.")
     if requested == "auto":
         return "cuda" if host.cuda_gpus else "cpu"
     return requested
@@ -145,8 +145,8 @@ def plan(options: ConvertOptions, host: HostInfo | None = None, *, resolver: Cal
     host = host or detect_host()
     target = resolve_target(host, options.target, fmt="qnn")
     if target.format != "qnn":
-        raise NpuModelError("plan", "WRONG_TARGET_FORMAT", f"{target.id} is a {target.format} target",
-                            hint="GGUF targets are converted by npu_model.gguf (the CLI routes them there).")
+        raise TemperumError("plan", "WRONG_TARGET_FORMAT", f"{target.id} is a {target.format} target",
+                            hint="GGUF targets are converted by temperum.gguf (the CLI routes them there).")
     runtime = get_runtime(options.runtime)
     model = resolver(parse_ref(options.model))
     recipe = choose(model.ref.repo, model.model_type, model.architecture)
@@ -159,13 +159,13 @@ def plan(options: ConvertOptions, host: HostInfo | None = None, *, resolver: Cal
     # Checks that would otherwise fail only after the long quantize/compile stage.
     if destination.exists() and not options.overwrite and not _resumable_bundle(paths.jobs_dir() / job_id,
                                                                                   destination):
-        raise NpuModelError("plan", "DESTINATION_EXISTS", f"{destination} already exists.",
+        raise TemperumError("plan", "DESTINATION_EXISTS", f"{destination} already exists.",
                             hint="Pass --overwrite to rebuild it, --out to write elsewhere, or "
-                                 "`npu-model verify` to re-check the existing bundle.")
+                                 "`temperum verify` to re-check the existing bundle.")
     maximum = model.config.get("max_position_embeddings")
     if options.context is not None and (options.context < MIN_CONTEXT
                                         or (isinstance(maximum, int) and options.context > maximum)):
-        raise NpuModelError("plan", "BAD_CONTEXT",
+        raise TemperumError("plan", "BAD_CONTEXT",
                             f"--context {options.context} is outside {MIN_CONTEXT}..{maximum or 'the model maximum'}.")
     chains = chains_factory(host, runtime, device, python=options.python)
     roles = ["quantize", "compile"] + (["verify"] if level != "none" else [])
@@ -199,14 +199,14 @@ def plan(options: ConvertOptions, host: HostInfo | None = None, *, resolver: Cal
 def _resource_checks(est: dict[str, float], host: HostInfo) -> list[str]:
     """Fail now on memory or disk the conversion cannot get; warn when memory is tight."""
     if host.total_ram_gb and est["ram_gb"] > host.total_ram_gb * 0.9:
-        raise NpuModelError("plan", "NOT_ENOUGH_MEMORY",
+        raise TemperumError("plan", "NOT_ENOUGH_MEMORY",
                             f"Converting needs about {est['ram_gb']} GB of RAM; this machine has {host.total_ram_gb} GB.",
                             hint="Use a smaller model, or convert on a machine with more memory (--target).")
     free_gb = disk_free_gb(paths.home())
     if free_gb is not None and est["disk_gb"] > free_gb:
-        raise NpuModelError("plan", "NOT_ENOUGH_DISK",
+        raise TemperumError("plan", "NOT_ENOUGH_DISK",
                             f"Converting needs about {est['disk_gb']} GB of disk; {free_gb:.1f} GB is free at "
-                            f"{paths.home()}.", hint="Free some space or set NPU_MODEL_HOME to another drive.")
+                            f"{paths.home()}.", hint="Free some space or set TEMPERUM_HOME to another drive.")
     if host.available_commit_gb is not None and est["ram_gb"] > host.available_commit_gb:
         return [f"Windows can commit only {host.available_commit_gb} GB more memory right now and the conversion "
                 f"needs about {est['ram_gb']} GB: close applications first, or the conversion may fail and other "
@@ -294,8 +294,8 @@ class Job:
             except (OSError, ValueError):
                 owner = 0
             if owner != os.getpid() and _pid_alive(owner):
-                raise NpuModelError("convert", "JOB_RUNNING",
-                                    f"Another npu-model process (pid {owner}) is running this conversion.",
+                raise TemperumError("convert", "JOB_RUNNING",
+                                    f"Another temperum process (pid {owner}) is running this conversion.",
                                     hint="Wait for it to finish; rerunning afterwards resumes.") from None
             self.lock.unlink(missing_ok=True)  # left by a killed run
             fd = os.open(self.lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -326,7 +326,7 @@ def _chat_template(options: ConvertOptions, snapshot: Path) -> ChatTemplate:
         return custom(options.template.read_text(encoding="utf-8"), options.stops)
     try:
         return from_jinja(load_jinja(snapshot))
-    except NpuModelError as exc:
+    except TemperumError as exc:
         if exc.reason_code != "TEMPLATE_UNKNOWN":
             raise
         return own()  # the fork renders the model's own template; verification compares it
@@ -395,7 +395,7 @@ def _run(conversion: ConvertPlan, job: Job, say: Progress, chains_factory: Calla
         olive = result.to_dict()
         if not result.ok:
             job.record("olive", "failed", result=olive)
-            raise NpuModelError("convert", "OLIVE_FAILED",
+            raise TemperumError("convert", "OLIVE_FAILED",
                                 f"Olive failed in {result.failed_pass or 'an unknown pass'}: {result.error}",
                                 hint=f"Logs: {', '.join(result.logs)}. Rerunning the same command resumes from "
                                      "the last completed pass.")

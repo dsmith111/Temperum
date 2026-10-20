@@ -16,7 +16,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from npu_model.core.errors import NpuModelError
+from temperum.core.errors import TemperumError
 
 Progress = Callable[[str], None]
 Popen = Callable[..., "subprocess.Popen[str]"]
@@ -114,7 +114,7 @@ def run_olive(python: Path, config: dict[str, Any], work_dir: Path, *, attempts:
             proc = popen(cmd, cwd=str(work_dir), env=olive_env(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                          text=True, encoding="utf-8", errors="replace")
         except OSError as exc:
-            raise NpuModelError("convert", "OLIVE_START_FAILED", f"Could not start Olive: {exc}") from exc
+            raise TemperumError("convert", "OLIVE_START_FAILED", f"Could not start Olive: {exc}") from exc
         summary: dict[str, Any] = {}
         assert proc.stdout is not None
         for line in proc.stdout:

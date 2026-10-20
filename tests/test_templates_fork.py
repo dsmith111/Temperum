@@ -1,6 +1,6 @@
 """Generated templates executed by the Ollama fork's own template engine (opt-in integration test).
 
-Set NPU_MODEL_FORK_DIR to a checkout of the fork; needs Go. The checker program is mapped into
+Set TEMPERUM_FORK_DIR to a checkout of the fork; needs Go. The checker program is mapped into
 the fork module with `go run -overlay`, so the checkout is never modified.
 """
 
@@ -14,11 +14,11 @@ from pathlib import Path
 
 import pytest
 
-from npu_model.templates import from_jinja
+from temperum.templates import from_jinja
 
-FORK = os.environ.get("NPU_MODEL_FORK_DIR")
+FORK = os.environ.get("TEMPERUM_FORK_DIR")
 FIXTURES = Path(__file__).parent / "fixtures"
-pytestmark = pytest.mark.skipif(not FORK or not shutil.which("go"), reason="set NPU_MODEL_FORK_DIR; needs Go")
+pytestmark = pytest.mark.skipif(not FORK or not shutil.which("go"), reason="set TEMPERUM_FORK_DIR; needs Go")
 
 JINJAS = {
     "qwen2.5": (FIXTURES / "templates" / "qwen2.5-instruct.jinja").read_text(encoding="utf-8"),

@@ -7,9 +7,9 @@ from typing import Any
 
 import pytest
 
-from npu_model.core.errors import NpuModelError
-from npu_model.profiles import get_target
-from npu_model.recipes import (
+from temperum.core.errors import TemperumError
+from temperum.profiles import get_target
+from temperum.recipes import (
     FAMILY_TEMPLATES,
     RenderOptions,
     catalog,
@@ -132,7 +132,7 @@ def test_choose_matches_repo_ids_case_insensitively() -> None:
 @pytest.mark.parametrize("model_type,arch", [("gpt2", "GPT2LMHeadModel"), ("llama", "LlamaForSequenceClassification"),
                                              (None, None)])
 def test_unsupported_models_are_rejected(model_type: str | None, arch: str | None) -> None:
-    with pytest.raises(NpuModelError) as exc:
+    with pytest.raises(TemperumError) as exc:
         choose("org/model", model_type, arch)
     assert exc.value.reason_code == "UNSUPPORTED_ARCHITECTURE"
 
@@ -145,9 +145,9 @@ def test_quality_resolution(quality: str, device: str, expected: str) -> None:
 
 
 def test_recipe_quality_needs_cuda() -> None:
-    with pytest.raises(NpuModelError) as exc:
+    with pytest.raises(TemperumError) as exc:
         resolve_quality("recipe", "cpu")
     assert exc.value.reason_code == "QUALITY_NEEDS_CUDA"
-    with pytest.raises(NpuModelError) as exc:
+    with pytest.raises(TemperumError) as exc:
         resolve_quality("best", "cpu")
     assert exc.value.reason_code == "UNKNOWN_QUALITY"

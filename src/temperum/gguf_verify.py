@@ -23,10 +23,10 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from npu_model import calib, paths
-from npu_model.gguf import GgufPlan, LlamaPayload, _exe
-from npu_model.templates import ChatTemplate
-from npu_model.verify import (CONVERSATIONS, NEEDLE, PPL_PASS, PROMPTS, SETTINGS, reference_dtype, run_script,
+from temperum import calib, paths
+from temperum.gguf import GgufPlan, LlamaPayload, _exe
+from temperum.templates import ChatTemplate
+from temperum.verify import (CONVERSATIONS, NEEDLE, PPL_PASS, PROMPTS, SETTINGS, reference_dtype, run_script,
                               template_check, verdict)
 
 Progress = Callable[[str], None]

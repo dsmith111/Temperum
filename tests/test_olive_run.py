@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from npu_model.olive_run import diagnose, olive_env, output_complete, run_olive
+from temperum.olive_run import diagnose, olive_env, output_complete, run_olive
 
 CRASH_LOG = """[INFO] [engine.py:665:_run_pass] Running pass st:staticllm
 [INFO] [engine.py:665:_run_pass] Running pass cb:epcontextbinarygenerator

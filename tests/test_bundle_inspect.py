@@ -11,9 +11,9 @@ from unittest.mock import MagicMock
 import pytest
 from typer.testing import CliRunner
 
-from npu_model.cli.main import app
-from npu_model.core.errors import NpuModelError
-from npu_model.bundle import inspect as prebuilt
+from temperum.cli.main import app
+from temperum.core.errors import TemperumError
+from temperum.bundle import inspect as prebuilt
 
 
 class Proto(SimpleNamespace):
@@ -294,7 +294,7 @@ def test_reparse_point_rejected(bundle: Path, monkeypatch: pytest.MonkeyPatch) -
             return SimpleNamespace(st_mode=stat.S_IFLNK, st_file_attributes=0x400)
         return original(path)
     monkeypatch.setattr(Path, "lstat", lstat)
-    with pytest.raises(NpuModelError, match="Symlink"):
+    with pytest.raises(TemperumError, match="Symlink"):
         prebuilt.regular_path(bundle / "context.qnn")
 
 

@@ -6,7 +6,7 @@ Next to the GenAI pipeline the bundle gets:
   ollama_npu.json          the fork's compatibility declaration (schema 1)
   Modelfile                FROM . plus the generated Go template and stop sequences
   LICENSE / NOTICE / ...   the source model's licence files and card, unchanged
-  npu_model_manifest.json  provenance and per-file hashes
+  temperum_manifest.json  provenance and per-file hashes
 """
 
 from __future__ import annotations
@@ -20,17 +20,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from npu_model import __version__
-from npu_model.bundle.inspect import Inspection, inspect_prebuilt
-from npu_model.core.errors import NpuModelError
-from npu_model.olive_run import pipeline_files
-from npu_model.profiles import RuntimeProfile, TargetProfile
-from npu_model.templates import ChatTemplate, load_jinja
+from temperum import __version__
+from temperum.bundle.inspect import Inspection, inspect_prebuilt
+from temperum.core.errors import TemperumError
+from temperum.olive_run import pipeline_files
+from temperum.profiles import RuntimeProfile, TargetProfile
+from temperum.templates import ChatTemplate, load_jinja
 
 LICENSE_PREFIXES = ("license", "notice", "use_policy", "readme")
 # Olive copies the source config/tokenizer files; weights or caches never belong in a bundle.
 SKIP_SUFFIXES = {".safetensors", ".bin.index.json", ".pt", ".pth", ".ckpt"}
-MANIFEST = "npu_model_manifest.json"
+MANIFEST = "temperum_manifest.json"
 MIN_CONTEXT = 128
 
 
@@ -56,7 +56,7 @@ DEFAULT_CONTEXT = 4096  # long-prompt retrieval was verified to ~3.5K tokens in 
 def _read_json(path: Path) -> dict[str, Any]:
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
-        raise NpuModelError("assemble", "BAD_JSON", f"{path.name} is not a JSON object")
+        raise TemperumError("assemble", "BAD_JSON", f"{path.name} is not a JSON object")
     return data
 
 
@@ -104,7 +104,7 @@ def safe_pad_token(current: int | None, tokenizer_config: dict[str, Any], jinja:
         rank = 0 if "pad" in content else 1 if "endoftext" in content else 2 if "unk" in content else 3
         candidates.append((rank, int(key)))
     if not candidates:
-        raise NpuModelError("assemble", "PAD_TOKEN_CONFLICT",
+        raise TemperumError("assemble", "PAD_TOKEN_CONFLICT",
                             f"pad_token_id {current} occurs in chat prompts and no unused special token exists.")
     return min(candidates)[1]
 
@@ -158,10 +158,10 @@ def _sha256(path: Path) -> str:
 def assemble(inputs: AssembleInputs) -> tuple[Path, Inspection]:
     out = inputs.olive_output
     if not pipeline_files(out):
-        raise NpuModelError("assemble", "OLIVE_OUTPUT_MISSING", f"No GenAI pipeline in {out}")
+        raise TemperumError("assemble", "OLIVE_OUTPUT_MISSING", f"No GenAI pipeline in {out}")
     final = inputs.destination
     if final.exists() and not inputs.overwrite:
-        raise NpuModelError("assemble", "DESTINATION_EXISTS", f"{final} already exists.",
+        raise TemperumError("assemble", "DESTINATION_EXISTS", f"{final} already exists.",
                             hint="Pass --overwrite to replace it, or --out to choose another folder.")
     staging = final.with_name(final.name + ".partial")
     if staging.exists():
@@ -179,7 +179,7 @@ def assemble(inputs: AssembleInputs) -> tuple[Path, Inspection]:
     context = inputs.context or min(maximum, DEFAULT_CONTEXT)
     context -= context % window  # whole prefill windows only
     if not MIN_CONTEXT <= context <= maximum:
-        raise NpuModelError("assemble", "BAD_CONTEXT", f"Context {context} is outside {MIN_CONTEXT}..{maximum}.")
+        raise TemperumError("assemble", "BAD_CONTEXT", f"Context {context} is outside {MIN_CONTEXT}..{maximum}.")
     model["context_length"] = context
     cfg.setdefault("search", {})["max_length"] = context
     tokenizer_config = _read_json(inputs.snapshot / "tokenizer_config.json") if (
@@ -206,7 +206,7 @@ def assemble(inputs: AssembleInputs) -> tuple[Path, Inspection]:
     manifest = {
         "schema_version": 1,
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "converter": {"name": "npu-model", "version": __version__},
+        "converter": {"name": "temperum", "version": __version__},
         "source": inputs.source,
         "target": {"id": inputs.target.id, "soc_model": inputs.target.soc_model, "htp_arch": inputs.target.htp_arch},
         "runtime": {"id": inputs.runtime.id, "genai": inputs.runtime.genai_version, "ort": inputs.runtime.ort_version,
@@ -226,7 +226,7 @@ def assemble(inputs: AssembleInputs) -> tuple[Path, Inspection]:
     inspection = inspect_prebuilt(staging, processor_name=inputs.processor_name)
     if not inspection.importable:
         codes = ", ".join(f"{e['code']}: {e['message']}" for e in inspection.errors) or inspection.target["status"]
-        raise NpuModelError("assemble", "BUNDLE_INVALID", f"The assembled bundle failed inspection ({codes}).",
+        raise TemperumError("assemble", "BUNDLE_INVALID", f"The assembled bundle failed inspection ({codes}).",
                             hint=f"Partial bundle left at {staging}")
     if final.exists():
         shutil.rmtree(final)

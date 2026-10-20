@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from npu_model.bundle.genai_config import validate_genai_config
+from temperum.bundle.genai_config import validate_genai_config
 
 
 class TestValidateGenaiConfig:

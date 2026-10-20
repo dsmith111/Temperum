@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from npu_model.core.manifest import sha256_file, collect_files, write_manifest
+from temperum.core.manifest import sha256_file, collect_files, write_manifest
 
 
 def test_sha256_file(tmp_path: Path) -> None:

@@ -17,8 +17,8 @@ import sysconfig
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Mapping
 
-from npu_model.core.errors import NpuModelError
-from npu_model.profiles import DEFAULT_FORMAT, TARGETS, TargetProfile, get_target
+from temperum.core.errors import TemperumError
+from temperum.profiles import DEFAULT_FORMAT, TARGETS, TargetProfile, get_target
 
 Runner = Callable[..., "subprocess.CompletedProcess[str]"]
 
@@ -205,7 +205,7 @@ def resolve_target(host: HostInfo, requested: str | None = None, fmt: str | None
     fmt = fmt or DEFAULT_FORMAT
     matches = [t for t in TARGETS.values() if t.format == fmt and t.matches(host.processor_name)]
     if not matches:
-        raise NpuModelError(
+        raise TemperumError(
             "target", "NO_MATCHING_TARGET",
             f"No NPU target profile matches this machine ({host.processor_name or 'unknown processor'}).",
             hint="Pass --target explicitly to build for another device "

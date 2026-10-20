@@ -7,8 +7,8 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-from npu_model.cli.main import app
-from npu_model.core.errors import NpuModelError
+from temperum.cli.main import app
+from temperum.core.errors import TemperumError
 
 runner = CliRunner()
 
@@ -25,9 +25,9 @@ def test_models_lists_recipes_families_and_verified_conversions() -> None:
 
 def test_convert_plan_errors_are_actionable(monkeypatch: pytest.MonkeyPatch) -> None:
     def gated(_options: Any) -> Any:
-        raise NpuModelError("source", "HF_GATED", "org/model is gated", hint="Request access at https://hf.co/org/model")
+        raise TemperumError("source", "HF_GATED", "org/model is gated", hint="Request access at https://hf.co/org/model")
 
-    monkeypatch.setattr("npu_model.convert.plan", gated)
+    monkeypatch.setattr("temperum.convert.plan", gated)
     result = runner.invoke(app, ["convert", "org/model", "--plan", "--target", "qnn-x-elite"])
     assert result.exit_code == 2
     assert "HF_GATED" in result.output and "Request access" in result.output
@@ -35,9 +35,9 @@ def test_convert_plan_errors_are_actionable(monkeypatch: pytest.MonkeyPatch) -> 
 
 def test_install_options_are_checked_before_converting(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     planned: list[str] = []
-    monkeypatch.setattr("npu_model.convert.plan", lambda options: planned.append("plan"))
+    monkeypatch.setattr("temperum.convert.plan", lambda options: planned.append("plan"))
     monkeypatch.delenv("OLLAMA_HOST", raising=False)
-    monkeypatch.delenv("NPU_MODEL_OLLAMA_EXE", raising=False)
+    monkeypatch.delenv("TEMPERUM_OLLAMA_EXE", raising=False)
     result = runner.invoke(app, ["convert", "org/model", "--install"])
     assert result.exit_code == 2 and "HOST_REQUIRED" in result.output
     result = runner.invoke(app, ["convert", "org/model", "--install", "--host", "http://127.0.0.1:11434",
@@ -47,7 +47,7 @@ def test_install_options_are_checked_before_converting(monkeypatch: pytest.Monke
 
 
 def test_auto_target_takes_the_gguf_route_and_qnn_is_asked_for(monkeypatch: pytest.MonkeyPatch) -> None:
-    from npu_model.host import HostInfo
+    from temperum.host import HostInfo
 
     machine = HostInfo(system="Windows", native_arch="arm64", python_platform="win-arm64",
                        processor_name="Snapdragon(R) X Elite - X1E78100 - Qualcomm(R) Oryon(TM) CPU")
@@ -55,24 +55,24 @@ def test_auto_target_takes_the_gguf_route_and_qnn_is_asked_for(monkeypatch: pyte
 
     def qnn_plan(options: Any) -> Any:
         routes.append(("qnn", options.target))
-        raise NpuModelError("plan", "STOP", "stop here")
+        raise TemperumError("plan", "STOP", "stop here")
 
-    monkeypatch.setattr("npu_model.host.detect_host", lambda: machine)
-    monkeypatch.setattr("npu_model.cli.main._convert_gguf",
+    monkeypatch.setattr("temperum.host.detect_host", lambda: machine)
+    monkeypatch.setattr("temperum.cli.main._convert_gguf",
                         lambda model, target, **kwargs: routes.append((target, kwargs["machine"])))
-    monkeypatch.setattr("npu_model.convert.plan", qnn_plan)
+    monkeypatch.setattr("temperum.convert.plan", qnn_plan)
     for switch in ("1", "0"):  # the server switch no longer picks the target (D14)
         monkeypatch.setenv("OLLAMA_HEXAGON", switch)
         assert runner.invoke(app, ["convert", "org/model", "--plan"]).exit_code == 0
     assert runner.invoke(app, ["convert", "org/model", "--plan", "--target", "qnn-x-elite"]).exit_code == 2
-    monkeypatch.setenv("NPU_MODEL_TARGET", "qnn-x-elite")  # or set once
+    monkeypatch.setenv("TEMPERUM_TARGET", "qnn-x-elite")  # or set once
     assert runner.invoke(app, ["convert", "org/model", "--plan"]).exit_code == 2
     assert routes == [("gguf-hexagon", machine), ("gguf-hexagon", machine), ("qnn", "qnn-x-elite"),
                       ("qnn", "qnn-x-elite")]
 
 
 def test_convert_requires_confirmation(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    from npu_model import convert
+    from temperum import convert
 
     calls: list[str] = []
     monkeypatch.setattr(convert, "plan", lambda options: _FakePlan(tmp_path))
@@ -84,7 +84,7 @@ def test_convert_requires_confirmation(monkeypatch: pytest.MonkeyPatch, tmp_path
 def test_json_mode_streams_events_and_prints_the_result(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from types import SimpleNamespace
 
-    from npu_model import convert
+    from temperum import convert
 
     def fake_run(plan: Any, progress: Any) -> Any:
         progress("pass sq:onnxstaticquantization")
@@ -105,9 +105,9 @@ def test_json_mode_streams_events_and_prints_the_result(monkeypatch: pytest.Monk
 
 class _FakePlan:
     def __init__(self, tmp_path: Path) -> None:
-        from npu_model.profiles import get_runtime, get_target
-        from npu_model.recipes import catalog, choose
-        from npu_model.sources import ModelRef, ResolvedModel
+        from temperum.profiles import get_runtime, get_target
+        from temperum.recipes import catalog, choose
+        from temperum.sources import ModelRef, ResolvedModel
 
         self.model = ResolvedModel(ModelRef("hf", repo="org/model"), commit="a" * 40, gated=False,
                                    license="apache-2.0", config={"model_type": "qwen2"}, weight_bytes=1)
@@ -126,7 +126,7 @@ class _FakePlan:
 def test_setup_prepares_what_the_target_needs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from types import SimpleNamespace
 
-    from npu_model.host import HostInfo
+    from temperum.host import HostInfo
 
     machine = HostInfo(system="Windows", native_arch="arm64", python_platform="win-arm64",
                        processor_name="Snapdragon(R) X Elite - X1E78100 - Qualcomm(R) Oryon(TM) CPU")
@@ -148,9 +148,9 @@ def test_setup_prepares_what_the_target_needs(monkeypatch: pytest.MonkeyPatch, t
             return self.directory
         def problems(self) -> list[str]: return []
 
-    monkeypatch.setattr("npu_model.host.detect_host", lambda: machine)
-    monkeypatch.setattr("npu_model.toolchains.Toolchains", FakeChains)
-    monkeypatch.setattr("npu_model.toolchains.llama_cpp.ConverterSource", FakeSource)
+    monkeypatch.setattr("temperum.host.detect_host", lambda: machine)
+    monkeypatch.setattr("temperum.toolchains.Toolchains", FakeChains)
+    monkeypatch.setattr("temperum.toolchains.llama_cpp.ConverterSource", FakeSource)
     # The default (a GGUF) needs the conversion toolchain and llama.cpp's converter, not the QNN toolchains.
     assert runner.invoke(app, ["setup"]).exit_code == 0
     assert built == ["quantize"] and fetched == ["b11644"]
@@ -160,9 +160,9 @@ def test_setup_prepares_what_the_target_needs(monkeypatch: pytest.MonkeyPatch, t
 
 
 def test_doctor_names_the_missing_fork_setting(monkeypatch: pytest.MonkeyPatch) -> None:
-    from npu_model.cli.main import _fork_status
+    from temperum.cli.main import _fork_status
 
-    monkeypatch.delenv("NPU_MODEL_OLLAMA_EXE", raising=False)
-    assert _fork_status()["state"] == "not set" and "NPU_MODEL_OLLAMA_EXE" in _fork_status()["hint"]
-    monkeypatch.setenv("NPU_MODEL_OLLAMA_EXE", "C:/nowhere/ollama.exe")
+    monkeypatch.delenv("TEMPERUM_OLLAMA_EXE", raising=False)
+    assert _fork_status()["state"] == "not set" and "TEMPERUM_OLLAMA_EXE" in _fork_status()["hint"]
+    monkeypatch.setenv("TEMPERUM_OLLAMA_EXE", "C:/nowhere/ollama.exe")
     assert _fork_status()["state"] == "missing"

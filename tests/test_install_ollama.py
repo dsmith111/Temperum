@@ -11,10 +11,10 @@ import pytest
 from typer.testing import CliRunner
 
 from test_bundle_inspect import bundle as bundle, fake_onnx as fake_onnx
-from npu_model.cli.main import app
-from npu_model.core.errors import NpuModelError
-from npu_model.bundle.inspect import inventory
-from npu_model.install import ollama_import as local
+from temperum.cli.main import app
+from temperum.core.errors import TemperumError
+from temperum.bundle.inspect import inventory
+from temperum.install import ollama_import as local
 
 
 @pytest.fixture
@@ -40,7 +40,7 @@ def make_plan(bundle: Path, modelfile: Path, **kwargs: object) -> local.ImportPl
                                  "http://secret@127.0.0.1:1234", "http://127.0.0.1:1234/path",
                                  "http://127.0.0.1:1234?token=secret", "http://127.0.0.1:1234#fragment"])
 def test_endpoint_guards(host: str | None) -> None:
-    with pytest.raises(NpuModelError):
+    with pytest.raises(TemperumError):
         local.local_endpoint(host)
 
 
@@ -67,7 +67,7 @@ def test_cli_plan_and_environment_choices(
     bundle: Path, modelfile: Path, fake_onnx: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("OLLAMA_HOST", "http://127.0.0.1:18999")
-    monkeypatch.setenv("NPU_MODEL_OLLAMA_EXE", sys.executable)
+    monkeypatch.setenv("TEMPERUM_OLLAMA_EXE", sys.executable)
     result = CliRunner().invoke(app, ["install", "--input", str(bundle), "--name", "local/test:c1"])
     assert result.exit_code == 0, result.output
     value = json.loads(result.output)
@@ -80,7 +80,7 @@ def test_local_from_guards(
     bundle: Path, modelfile: Path, fake_onnx: SimpleNamespace, source: str,
 ) -> None:
     modelfile.write_text(f'FROM {source}\nTEMPLATE "{{{{ .Prompt }}}}"\n')
-    with pytest.raises(NpuModelError) as error:
+    with pytest.raises(TemperumError) as error:
         make_plan(bundle, modelfile)
     assert error.value.reason_code == "LOCAL_FROM_REQUIRED"
 
@@ -99,7 +99,7 @@ def test_modelfile_guards(
     bundle: Path, modelfile: Path, fake_onnx: SimpleNamespace, text: str, code: str,
 ) -> None:
     modelfile.write_text(text)
-    with pytest.raises(NpuModelError) as error:
+    with pytest.raises(TemperumError) as error:
         make_plan(bundle, modelfile)
     assert error.value.reason_code == code
 
@@ -110,7 +110,7 @@ def test_modelfile_without_template_relies_on_the_bundles_chat_template(
     modelfile.write_text("FROM .\n")
     make_plan(bundle, modelfile)  # the fork renders chat_template.jinja
     (bundle / "chat_template.jinja").unlink()
-    with pytest.raises(NpuModelError) as error:
+    with pytest.raises(TemperumError) as error:
         make_plan(bundle, modelfile)
     assert error.value.reason_code == "OLLAMA_TEMPLATE_REQUIRED"
 
@@ -121,7 +121,7 @@ def test_source_substitution_rejected(
     other = tmp_path / "other"
     other.mkdir()
     modelfile.write_text(f'FROM "{other}"\nTEMPLATE "{{{{ .Prompt }}}}"')
-    with pytest.raises(NpuModelError) as error:
+    with pytest.raises(TemperumError) as error:
         make_plan(bundle, modelfile)
     assert error.value.reason_code == "SOURCE_SUBSTITUTION"
 
@@ -144,7 +144,7 @@ def test_execution_requires_reviewed_fingerprint(
     plan = make_plan(bundle, modelfile)
     tags = MagicMock(side_effect=AssertionError("no network without reviewed plan"))
     monkeypatch.setattr(local, "_tags", tags)
-    with pytest.raises(NpuModelError) as error:
+    with pytest.raises(TemperumError) as error:
         local.execute_import(plan, expected_fingerprint=None, work_dir=tmp_path)
     assert error.value.reason_code == "PLAN_CHANGED"
     tags.assert_not_called()
@@ -179,7 +179,7 @@ def test_existing_tag_guard_before_staging(
     monkeypatch.setattr(local, "_tags", lambda *args: {"local/fixture:c1"})
     create = MagicMock()
     monkeypatch.setattr(local, "_run_create", create)
-    with pytest.raises(NpuModelError) as error:
+    with pytest.raises(TemperumError) as error:
         local.execute_import(plan, expected_fingerprint=plan.fingerprint, work_dir=tmp_path)
     assert error.value.reason_code == "TAG_EXISTS"
     create.assert_not_called()
@@ -194,7 +194,7 @@ def test_post_plan_tamper_never_calls_create(
     monkeypatch.setattr(local, "_tags", lambda *args: set())
     create = MagicMock()
     monkeypatch.setattr(local, "_run_create", create)
-    with pytest.raises(NpuModelError) as error:
+    with pytest.raises(TemperumError) as error:
         local.execute_import(plan, expected_fingerprint=plan.fingerprint, work_dir=tmp_path)
     assert error.value.reason_code == "ASSET_CHANGED"
     create.assert_not_called()
@@ -242,7 +242,7 @@ def test_subprocess_failures_explicit(monkeypatch: pytest.MonkeyPatch, tmp_path:
     elif failure == "launch":
         mock.side_effect = OSError("cannot execute")
     monkeypatch.setattr(local.subprocess, "run", mock)
-    with pytest.raises(NpuModelError) as error:
+    with pytest.raises(TemperumError) as error:
         local._run_create(["fake", "create"], tmp_path, {}, 1)
     assert error.value.reason_code == code
     assert mock.call_args.kwargs["shell"] is False
@@ -254,7 +254,7 @@ def test_create_failure_quotes_the_end_of_its_output(monkeypatch: pytest.MonkeyP
     output = f"{spinner}\r\nparsing GGUF \x1b[K\r\nError: unsupported architecture\r\n".encode()
     run = MagicMock(return_value=SimpleNamespace(returncode=1, stdout=output))
     monkeypatch.setattr(local.subprocess, "run", run)
-    with pytest.raises(NpuModelError) as error:
+    with pytest.raises(TemperumError) as error:
         local._run_create(["fake", "create"], tmp_path, {}, 1)
     assert error.value.message.endswith("Its output ended:\n  parsing GGUF\n  Error: unsupported architecture")
     assert run.call_args.kwargs["stdout"] is local.subprocess.PIPE
@@ -267,7 +267,7 @@ def test_create_zero_without_tag_is_not_success(
     monkeypatch.setattr(local, "_tags", lambda *args: set())
     create = MagicMock()
     monkeypatch.setattr(local, "_run_create", create)
-    with pytest.raises(NpuModelError) as error:
+    with pytest.raises(TemperumError) as error:
         local.execute_import(plan, expected_fingerprint=plan.fingerprint, work_dir=tmp_path)
     assert error.value.reason_code == "CREATE_NOT_CONFIRMED"
     create.assert_called_once()
@@ -298,9 +298,9 @@ def test_confirmation_error_warns_about_existing_tag(
 ) -> None:
     plan = make_plan(bundle, modelfile)
     monkeypatch.setattr(local, "_tags", MagicMock(side_effect=[
-        set(), set(), NpuModelError("import", "LOCAL_SERVER_UNAVAILABLE", "timed out")]))
+        set(), set(), TemperumError("import", "LOCAL_SERVER_UNAVAILABLE", "timed out")]))
     monkeypatch.setattr(local, "_run_create", MagicMock())
-    with pytest.raises(NpuModelError) as caught:
+    with pytest.raises(TemperumError) as caught:
         local.execute_import(plan, expected_fingerprint=plan.fingerprint, work_dir=tmp_path)
     assert caught.value.reason_code == "CREATE_NOT_CONFIRMED"
     assert "may already exist" in str(caught.value)
@@ -315,7 +315,7 @@ def test_app_executable_guard(
     exe = standalone / "ollama.exe"
     exe.write_bytes(b"fake-executable")
     (standalone / "ollama app.exe").write_bytes(b"fake-app")
-    with pytest.raises(NpuModelError) as error:
+    with pytest.raises(TemperumError) as error:
         make_plan(bundle, modelfile, executable=exe)
     assert error.value.reason_code == "AUTO_START_RISK"
 
@@ -325,7 +325,7 @@ def test_input_work_directory_rejected(
 ) -> None:
     plan = make_plan(bundle, modelfile)
     monkeypatch.setattr(local, "_tags", lambda *args: set())
-    with pytest.raises(NpuModelError) as error:
+    with pytest.raises(TemperumError) as error:
         local.execute_import(plan, expected_fingerprint=plan.fingerprint, work_dir=bundle)
     assert error.value.reason_code == "INVALID_WORK_PATH"
     assert not list(bundle.glob("local-import-*"))
@@ -335,11 +335,11 @@ def test_cleanup_failure_does_not_mask_create_failure(
 ) -> None:
     plan = make_plan(bundle, modelfile)
     monkeypatch.setattr(local, "_tags", lambda *args: set())
-    monkeypatch.setattr(local, "_run_create", MagicMock(side_effect=NpuModelError("import", "CREATE_FAILED", "failed")))
+    monkeypatch.setattr(local, "_run_create", MagicMock(side_effect=TemperumError("import", "CREATE_FAILED", "failed")))
     cleanup = local.shutil.rmtree
     monkeypatch.setattr(local.shutil, "rmtree", MagicMock(side_effect=PermissionError("fixture cleanup denied")))
     try:
-        with pytest.raises(NpuModelError) as error:
+        with pytest.raises(TemperumError) as error:
             local.execute_import(plan, expected_fingerprint=plan.fingerprint, work_dir=tmp_path)
         assert error.value.reason_code == "CREATE_FAILED"
         assert "Remove it manually" in error.value.hint
@@ -363,7 +363,7 @@ def test_api_no_redirect_auth_proxy_and_bounded_response(monkeypatch: pytest.Mon
     connection.getresponse.return_value.read.return_value = b'{"models":[]}'
     constructor = MagicMock(return_value=connection)
     monkeypatch.setattr(local.http.client, "HTTPConnection", constructor)
-    with pytest.raises(NpuModelError) as error:
+    with pytest.raises(TemperumError) as error:
         local._api("http://127.0.0.1:18999", "/api/tags", 1)
     assert error.value.reason_code == "LOCAL_SERVER_ERROR"
     constructor.assert_called_once_with("127.0.0.1", 18999, timeout=1)

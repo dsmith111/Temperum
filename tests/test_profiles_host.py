@@ -4,9 +4,9 @@ import subprocess
 
 import pytest
 
-from npu_model.core.errors import NpuModelError
-from npu_model.host import HostInfo, detect_host, hexagon_opted_in, resolve_target
-from npu_model.profiles import DEFAULT_RUNTIME, RUNTIMES, TARGETS, get_runtime, get_target
+from temperum.core.errors import TemperumError
+from temperum.host import HostInfo, detect_host, hexagon_opted_in, resolve_target
+from temperum.profiles import DEFAULT_RUNTIME, RUNTIMES, TARGETS, get_runtime, get_target
 
 X1E = "Snapdragon(R) X Elite - X1E78100 - Qualcomm(R) Oryon(TM) CPU"
 
@@ -37,7 +37,7 @@ def test_x2_elite_resolves_to_its_own_profile() -> None:
 
 @pytest.mark.parametrize("name", [None, "Intel(R) Core(TM) Ultra 7 155H", "AMD Ryzen AI 9 HX 370"])
 def test_unmatched_machine_requires_explicit_target(name: str | None) -> None:
-    with pytest.raises(NpuModelError) as exc:
+    with pytest.raises(TemperumError) as exc:
         resolve_target(_host(name))
     assert exc.value.reason_code == "NO_MATCHING_TARGET"
     assert "--target" in (exc.value.hint or "")
@@ -55,10 +55,10 @@ def test_hexagon_switch_reads_like_the_forks_envconfig(value: str, on: bool) -> 
 
 
 def test_unknown_profile_ids_fail_with_known_list() -> None:
-    with pytest.raises(NpuModelError) as exc:
+    with pytest.raises(TemperumError) as exc:
         get_target("qnn-nope")
     assert "qnn-x-elite" in (exc.value.hint or "")
-    with pytest.raises(NpuModelError):
+    with pytest.raises(TemperumError):
         get_runtime("nope")
 
 

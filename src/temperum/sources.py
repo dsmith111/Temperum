@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from npu_model.core.errors import NpuModelError
+from temperum.core.errors import TemperumError
 
 # Weights, configs, tokenizers and licence/card files; never pickles or remote code.
 SNAPSHOT_PATTERNS = [
@@ -77,32 +77,32 @@ def parse_ref(text: str) -> ModelRef:
         local = Path(raw).expanduser()
         if local.is_dir():
             if not (local / "config.json").is_file():
-                raise NpuModelError("source", "LOCAL_MISSING_CONFIG", f"No config.json in {local}",
+                raise TemperumError("source", "LOCAL_MISSING_CONFIG", f"No config.json in {local}",
                                     hint="Point at a Hugging Face-style model folder (config.json + weights).")
             return ModelRef("local", path=local.resolve())
     body = raw[3:] if raw.startswith("hf:") else raw
     repo, _, revision = body.partition("@")
     if not _REPO_RE.match(repo):
-        raise NpuModelError("source", "BAD_MODEL_REF", f"Not a Hugging Face repo id or local folder: {text}",
+        raise TemperumError("source", "BAD_MODEL_REF", f"Not a Hugging Face repo id or local folder: {text}",
                             hint="Use org/name (optionally @revision) or a path to a local model folder.")
     return ModelRef("hf", repo=repo, revision=revision or None)
 
 
-def _hf_error(exc: Exception, ref: ModelRef) -> NpuModelError:
+def _hf_error(exc: Exception, ref: ModelRef) -> TemperumError:
     from huggingface_hub import errors
 
     url = f"https://huggingface.co/{ref.repo}"
     if isinstance(exc, errors.GatedRepoError):
-        return NpuModelError("source", "HF_GATED", f"{ref.repo} is gated and this account has not been granted access.",
+        return TemperumError("source", "HF_GATED", f"{ref.repo} is gated and this account has not been granted access.",
                              hint=f"Request access at {url}, then sign in (`hf auth login`) or set HF_TOKEN.",
                              cause=exc)
     if isinstance(exc, errors.RevisionNotFoundError):
-        return NpuModelError("source", "HF_REVISION_NOT_FOUND", f"Revision {ref.revision!r} not found in {ref.repo}.",
+        return TemperumError("source", "HF_REVISION_NOT_FOUND", f"Revision {ref.revision!r} not found in {ref.repo}.",
                              cause=exc)
     if isinstance(exc, errors.RepositoryNotFoundError):
-        return NpuModelError("source", "HF_NOT_FOUND", f"Model repository not found: {ref.repo}",
+        return TemperumError("source", "HF_NOT_FOUND", f"Model repository not found: {ref.repo}",
                              hint="Check the id; private repositories also need `hf auth login`.", cause=exc)
-    return NpuModelError("source", "HF_UNAVAILABLE", f"Could not reach Hugging Face for {ref.repo}: {exc}",
+    return TemperumError("source", "HF_UNAVAILABLE", f"Could not reach Hugging Face for {ref.repo}: {exc}",
                          hint="Check the network or proxy settings and retry.", cause=exc)
 
 
@@ -130,7 +130,7 @@ def resolve(ref: ModelRef, api: Any = None, download: Callable[..., str] | None 
     card = getattr(info, "card_data", None)
     license_id = card.get("license") if card is not None and hasattr(card, "get") else None
     if not any(name.endswith(".safetensors") for name in files):
-        raise NpuModelError("source", "NO_SAFETENSORS", f"{ref.repo} has no .safetensors weights.",
+        raise TemperumError("source", "NO_SAFETENSORS", f"{ref.repo} has no .safetensors weights.",
                             hint="Only safetensors checkpoints are converted (pickled weights are never loaded).")
     config = json.loads(Path(config_path).read_text(encoding="utf-8"))
     return ResolvedModel(ref, commit=info.sha, gated=bool(getattr(info, "gated", False)),

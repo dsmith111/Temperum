@@ -1,14 +1,14 @@
 # Model coverage
 
-What `npu-model` has converted on a Snapdragon X Elite laptop (X1E78100, 16 GB, Windows 11),
+What `temperum` has converted on a Snapdragon X Elite laptop (X1E78100, 16 GB, Windows 11),
 how long it took, how the result compares with the source model, and how fast it runs through
 the [Ollama NPU fork](https://github.com/dsmith111/ollama-npu). Every row is one
-`npu-model convert MODEL` run with default settings, then installed into the fork and asked
+`temperum convert MODEL` run with default settings, then installed into the fork and asked
 two chat turns; nothing was tuned per model.
 
 ## GGUF on the Hexagon NPU (the default)
 
-`npu-model convert MODEL --install` (the runs used `--target gguf-hexagon`, now the
+`temperum convert MODEL --install` (the runs used `--target gguf-hexagon`, now the
 default): Q4_0, standard verification. The runtime is the fork's portable package
 (branch `npu/hexagon-spike`, llama.cpp b11644) with Qualcomm's signed HTP libraries from
 `ollama npu setup --provider hexagon`. Measured 2026-10-19.
@@ -70,7 +70,7 @@ How to read it:
   "checked" is the Ollama template the converter derived and compared with the model's own,
   which the bundle carries; "built-in" is a template the fork substituted at
   `ollama create` because it resembles the model's. TinyLlama's Zephyr format is not one the
-  converter recognizes, and `npu-model install` reports the substitution as unchecked.
+  converter recognizes, and `temperum install` reports the substitution as unchecked.
   SmolLM2 shows why the bundle carries a template: before it did, the fork substituted its
   built-in ChatML, which drops SmolLM2's default system prompt. Its row is from a rerun with
   the template (the first run's verification gave 1.12x).
@@ -95,7 +95,7 @@ i8mm kernels; the earlier generic ARMv8 build prefilled 3 to 7 times slower.)
 
 ## QNN bundles (8-bit)
 
-`npu-model convert MODEL --target qnn-x-elite` (the default target until 2026-10-19; Olive
+`temperum convert MODEL --target qnn-x-elite` (the default target until 2026-10-19; Olive
 recipes, CPU quantization with rotated 8-bit round-to-nearest weights, QNN context binaries
 for HTP v73). Measured 2026-10-17/18,
 verification at the standard level:
@@ -114,7 +114,7 @@ GGUF on the NPU (same harness, 556-token prompt).
 
 ## Not covered yet
 
-- **Llama 3.2** needs access to Meta's gated repository; `npu-model` stops at the plan with
+- **Llama 3.2** needs access to Meta's gated repository; `temperum` stops at the plan with
   the access link until the account has it. (SmolLM2 and TinyLlama use the Llama
   architecture.)
 - **One unreproduced failure:** in one of about 19 two-turn chats, Phi-4-mini (then split

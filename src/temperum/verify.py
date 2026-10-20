@@ -18,8 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from npu_model.core.errors import NpuModelError
-from npu_model.templates import ChatTemplate
+from temperum.core.errors import TemperumError
+from temperum.templates import ChatTemplate
 
 Progress = Callable[[str], None]
 Popen = Callable[..., "subprocess.Popen[str]"]
@@ -172,7 +172,7 @@ def verify(bundle: Path, snapshot: Path, chat: ChatTemplate, level: str, *, quan
            available_gb: float | None, total_gb: float | None = None, progress: Progress | None = None,
            popen: Popen = subprocess.Popen) -> dict[str, Any]:
     if level not in LEVELS:
-        raise NpuModelError("verify", "UNKNOWN_LEVEL", f"Unknown verification level {level}",
+        raise TemperumError("verify", "UNKNOWN_LEVEL", f"Unknown verification level {level}",
                             hint=f"Use one of: {', '.join(LEVELS)}")
     say = progress or (lambda _msg: None)
     if level == "none":

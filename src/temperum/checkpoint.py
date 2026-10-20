@@ -9,7 +9,7 @@ import struct
 from dataclasses import dataclass
 from pathlib import Path
 
-from npu_model.core.errors import NpuModelError
+from temperum.core.errors import TemperumError
 
 # Repeated transformer blocks: model.layers.N (Llama/Qwen/Phi/Gemma), transformer.h.N (GPT-2
 # style), *.blocks.N.
@@ -53,13 +53,13 @@ def _read_header(path: Path) -> dict[str, object]:
 def read_checkpoint(model_dir: Path) -> CheckpointInfo:
     files = sorted(model_dir.glob("*.safetensors"))
     if not files:
-        raise NpuModelError("source", "NO_SAFETENSORS", f"No .safetensors weights in {model_dir}")
+        raise TemperumError("source", "NO_SAFETENSORS", f"No .safetensors weights in {model_dir}")
     tensors: dict[str, int] = {}
     for path in files:
         try:
             header = _read_header(path)
         except (OSError, ValueError) as exc:
-            raise NpuModelError("source", "BAD_SAFETENSORS", f"Cannot read {path.name}: {exc}",
+            raise TemperumError("source", "BAD_SAFETENSORS", f"Cannot read {path.name}: {exc}",
                                 hint="Delete the cached snapshot and fetch it again.") from exc
         for name, meta in header.items():
             if name == "__metadata__" or not isinstance(meta, dict):

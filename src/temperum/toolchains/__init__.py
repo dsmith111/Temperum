@@ -34,17 +34,17 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
-from npu_model import paths
-from npu_model.core.errors import NpuModelError
-from npu_model.host import HostInfo, long_paths_enabled
-from npu_model.profiles import RuntimeProfile
+from temperum import paths
+from temperum.core.errors import TemperumError
+from temperum.host import HostInfo, long_paths_enabled
+from temperum.profiles import RuntimeProfile
 
 Runner = Callable[..., "subprocess.CompletedProcess[str]"]
 Progress = Callable[[str], None]
 
 ROLES = ("quantize", "compile", "verify")
 LOCKS = Path(__file__).resolve().parent / "locks"
-STATE_FILE = "npu-model-env.json"
+STATE_FILE = "temperum-env.json"
 PIP_FLAGS = ["--disable-pip-version-check", "--no-input", "--progress-bar", "off"]
 PIP_ATTEMPTS = 3  # feeds that proxy PyPI on demand can 404 a wheel on its first request
 MAX_PATH = 259
@@ -116,7 +116,7 @@ def parse_lock(path: Path) -> Lock:
         line = raw.strip()
         if not line:
             continue
-        if line.startswith("# npu-model toolchain lock:"):
+        if line.startswith(("# temperum toolchain lock:", "# npu-model toolchain lock:")):  # older locks
             for item in line.split(":", 1)[1].split():
                 key, _, value = item.partition("=")
                 fields[key] = value
@@ -135,7 +135,7 @@ def parse_lock(path: Path) -> Lock:
                     no_deps=frozenset(_dist_name(n) for n in fields.get("no-deps", "").split(",") if n.strip()),
                     pins=tuple(pins), tested=fields.get("tested", "no"))
     except (KeyError, ValueError) as exc:
-        raise NpuModelError("toolchain", "BAD_LOCK", f"Malformed toolchain lock {path.name}: {exc}") from exc
+        raise TemperumError("toolchain", "BAD_LOCK", f"Malformed toolchain lock {path.name}: {exc}") from exc
 
 
 def platform_tag(host: HostInfo) -> str:
@@ -159,7 +159,7 @@ def find_lock(runtime_id: str, role: str, platform: str, device: str | None = No
     if not path.is_file():
         available = sorted(p.stem for p in (LOCKS / runtime_id).glob(f"{role}-*.txt"))
         where = f"{platform} ({device})" if role == "quantize" else platform
-        raise NpuModelError("toolchain", "NO_TOOLCHAIN",
+        raise TemperumError("toolchain", "NO_TOOLCHAIN",
                             f"No {role} toolchain for {where} with runtime {runtime_id}.",
                             hint=f"Available {role} toolchains: {', '.join(available) or 'none'}.")
     return parse_lock(path)
@@ -285,7 +285,7 @@ class Toolchains:
         if torch and lock.torch_index:
             self._progress(f"{role}: installing {torch} from {_host_of(lock.torch_index)}")
             self._pip(pip + ["--no-deps", torch, "--index-url", lock.torch_index], log)
-        requirements = path / "npu-model-requirements.txt"
+        requirements = path / "temperum-requirements.txt"
         requirements.write_text("\n".join(p for p in lock.pins if _dist_name(p) not in lock.no_deps) + "\n",
                                 encoding="utf-8")
         count = len(lock.pins)
@@ -298,7 +298,7 @@ class Toolchains:
         probe = self._probe(role)
         problems = self._problems(role, lock, probe)
         if problems:
-            raise NpuModelError("toolchain", "ENV_BROKEN", f"The {role} environment failed its check: "
+            raise TemperumError("toolchain", "ENV_BROKEN", f"The {role} environment failed its check: "
                                 f"{'; '.join(problems)}", hint=f"Setup log: {log}")
         state = {"role": role, "runtime": self.runtime.id, "lock": lock.path.name, "lock_sha256": lock.sha256,
                  "python": str(python), "platform": lock.platform, "device": lock.device, "probe": probe,
@@ -318,13 +318,13 @@ class Toolchains:
         self._progress(f"Installing Python {version} for {self.platform} (uv: {request})")
         proc = self._run([self._uv_bin(), "python", "install", request], env=self._uv_env())
         if proc.returncode != 0:
-            raise NpuModelError("toolchain", "PYTHON_UNAVAILABLE", f"uv could not install {request}: "
+            raise TemperumError("toolchain", "PYTHON_UNAVAILABLE", f"uv could not install {request}: "
                                 f"{(proc.stderr or proc.stdout or '').strip()[-400:]}",
                                 hint="Check network access to GitHub, or pass --python with a native "
                                      f"Python {version} interpreter.")
         found = self._managed_python(request)
         if not found:
-            raise NpuModelError("toolchain", "PYTHON_UNAVAILABLE", f"uv installed {request} but it was not found.")
+            raise TemperumError("toolchain", "PYTHON_UNAVAILABLE", f"uv installed {request} but it was not found.")
         return found
 
     def _managed_python(self, request: str) -> Path | None:
@@ -351,7 +351,7 @@ class Toolchains:
                           "print('%d.%d' % sys.version_info[:2], sysconfig.get_platform())"])
         found = (proc.stdout or "").split()
         if proc.returncode != 0 or found != [version, self.platform]:
-            raise NpuModelError("toolchain", "WRONG_PYTHON",
+            raise TemperumError("toolchain", "WRONG_PYTHON",
                                 f"{python} is {' '.join(found) or 'not runnable'}; need Python {version} "
                                 f"for {self.platform}.",
                                 hint="An emulated or different-version interpreter cannot use the locked "
@@ -362,12 +362,12 @@ class Toolchains:
             return self._uv
         found = shutil.which("uv")
         if not found:
-            try:  # the `uv` package (a dependency of npu-model) ships the binary
+            try:  # the `uv` package (a dependency of temperum) ships the binary
                 found = str(importlib.import_module("uv").find_uv_bin())
             except (ImportError, FileNotFoundError):
                 found = None
         if not found:
-            raise NpuModelError("toolchain", "UV_MISSING", "uv is needed to install a native Python.",
+            raise TemperumError("toolchain", "UV_MISSING", "uv is needed to install a native Python.",
                                 hint="pip install uv, or pass --python with a native Python interpreter.")
         self._uv = found
         return found
@@ -388,16 +388,16 @@ class Toolchains:
     def _check_path_length(self, path: Path) -> None:
         if (self.host.system.lower() == "windows" and len(str(path)) + 1 + DEEPEST_ENV_FILE > MAX_PATH
                 and not long_paths_enabled()):
-            raise NpuModelError("toolchain", "PATH_TOO_LONG",
+            raise TemperumError("toolchain", "PATH_TOO_LONG",
                                 f"{path} leaves too little room for package files under Windows' "
                                 "260-character path limit.",
-                                hint="Set NPU_MODEL_HOME to a short folder (for example C:\\npu) or enable "
+                                hint="Set TEMPERUM_HOME to a short folder (for example C:\\npu) or enable "
                                      "Windows long paths.")
 
     def _remove(self, path: Path) -> None:
         root = (self.home / "envs").resolve()
         if root not in path.resolve().parents:
-            raise NpuModelError("toolchain", "UNSAFE_DELETE", f"Refusing to delete {path} outside {root}")
+            raise TemperumError("toolchain", "UNSAFE_DELETE", f"Refusing to delete {path} outside {root}")
 
         def _retry_writable(func: Callable[..., Any], target: str, _exc: Any) -> None:
             os.chmod(target, stat.S_IWRITE)
@@ -419,7 +419,7 @@ class Toolchains:
         proc = self._run(cmd)
         self._append(log, cmd, proc)
         if proc.returncode != 0:
-            raise NpuModelError("toolchain", code, f"Command failed ({proc.returncode}): {' '.join(cmd[:4])} ...",
+            raise TemperumError("toolchain", code, f"Command failed ({proc.returncode}): {' '.join(cmd[:4])} ...",
                                 hint=f"Setup log: {log}")
 
     def _pip(self, cmd: list[str], log: Path) -> None:
@@ -432,7 +432,7 @@ class Toolchains:
                 self._progress(f"pip failed (attempt {attempt}/{PIP_ATTEMPTS}); retrying")
                 self._sleep(5.0 * attempt)
         tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-3:]
-        raise NpuModelError("toolchain", "PIP_FAILED", "Package installation failed: " + " | ".join(tail),
+        raise TemperumError("toolchain", "PIP_FAILED", "Package installation failed: " + " | ".join(tail),
                             hint=f"Full log: {log}. Packages come from your pip configuration "
                                  "(index, proxy); check it can reach the pinned versions.")
 

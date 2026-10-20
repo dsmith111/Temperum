@@ -1,6 +1,6 @@
 """Vendor the maintained olive-recipes QNN NPU recipes at a pinned commit (maintainer tool).
 
-Writes src/npu_model/recipes/upstream/<org>--<name>.json and upstream/index.json (source
+Writes src/temperum/recipes/upstream/<org>--<name>.json and upstream/index.json (source
 path + sha256 per recipe). Preference per model: QNN/x_elite_config.json, QNN/config.json,
 then the AI Toolkit (aitk/) QNN config. GPU-only and docker variants are skipped.
 
@@ -16,11 +16,11 @@ import urllib.request
 from pathlib import Path
 
 REPO = "microsoft/olive-recipes"
-DEST = Path(__file__).resolve().parents[1] / "src" / "npu_model" / "recipes" / "upstream"
+DEST = Path(__file__).resolve().parents[1] / "src" / "temperum" / "recipes" / "upstream"
 
 
 def _get(url: str) -> bytes:
-    request = urllib.request.Request(url, headers={"User-Agent": "npu-model-vendor"})
+    request = urllib.request.Request(url, headers={"User-Agent": "temperum-vendor"})
     with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310
         return bytes(response.read())
 

@@ -16,7 +16,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from npu_model.core.errors import NpuModelError
+from temperum.core.errors import TemperumError
 
 ROWS_API = "https://datasets-server.huggingface.co/rows"
 DATASETS_API = "https://huggingface.co/api/datasets"
@@ -51,7 +51,7 @@ class Corpus:
 
 
 def _get_json(url: str, timeout: float = 60) -> Any:
-    request = urllib.request.Request(url, headers={"User-Agent": "npu-model"})
+    request = urllib.request.Request(url, headers={"User-Agent": "temperum"})
     with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - fixed https hosts
         return json.loads(response.read().decode("utf-8"))
 
@@ -61,7 +61,7 @@ def ensure_corpus(spec: CorpusSpec, root: Path, get_json: Callable[[str], Any] =
     try:
         revision = str(get_json(f"{DATASETS_API}/{spec.dataset}")["sha"])
     except Exception as exc:  # noqa: BLE001
-        raise NpuModelError("calibration", "CORPUS_UNAVAILABLE", f"Could not reach the dataset API: {exc}",
+        raise TemperumError("calibration", "CORPUS_UNAVAILABLE", f"Could not reach the dataset API: {exc}",
                             hint="Calibration text is fetched once and cached; check the network.") from exc
     stem = f"{spec.dataset.replace('/', '--')}--{spec.config}--{spec.split}-{spec.rows}-{revision[:12]}"
     path = root / f"{stem}.jsonl"
@@ -82,7 +82,7 @@ def ensure_corpus(spec: CorpusSpec, root: Path, get_json: Callable[[str], Any] =
                 break
             except Exception as exc:  # noqa: BLE001
                 if attempt == 2:
-                    raise NpuModelError("calibration", "CORPUS_UNAVAILABLE",
+                    raise TemperumError("calibration", "CORPUS_UNAVAILABLE",
                                         f"Fetching calibration rows failed: {exc}") from exc
                 time.sleep(2 * (attempt + 1))
         assert page is not None
@@ -91,7 +91,7 @@ def ensure_corpus(spec: CorpusSpec, root: Path, get_json: Callable[[str], Any] =
             lines.append(line)
             digest.update(line.encode("utf-8") + b"\n")
     if not lines:
-        raise NpuModelError("calibration", "CORPUS_EMPTY", f"No rows returned for {spec.dataset}")
+        raise TemperumError("calibration", "CORPUS_EMPTY", f"No rows returned for {spec.dataset}")
     tmp = path.with_suffix(".tmp")
     tmp.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
     tmp.replace(path)

@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from npu_model.core.errors import NpuModelError
-from npu_model.install.ollama_import import read_modelfile
-from npu_model.templates import custom, from_jinja, load_jinja
+from temperum.core.errors import TemperumError
+from temperum.install.ollama_import import read_modelfile
+from temperum.templates import custom, from_jinja, load_jinja
 
 FIXTURES = Path(__file__).parent / "fixtures" / "templates"
 
@@ -81,13 +81,13 @@ def test_base_models_without_a_chat_template_use_the_raw_prompt() -> None:
 
 
 def test_unknown_formats_need_an_explicit_template() -> None:
-    with pytest.raises(NpuModelError) as exc:
+    with pytest.raises(TemperumError) as exc:
         from_jinja("{% for m in messages %}### {{ m.role }}: {{ m.content }}{% endfor %}")
     assert exc.value.reason_code == "TEMPLATE_UNKNOWN"
 
 
 def test_qnn_bundles_keep_an_unknown_format_for_the_fork_to_render(tmp_path: Path) -> None:
-    from npu_model.convert import ConvertOptions, _chat_template
+    from temperum.convert import ConvertOptions, _chat_template
 
     snapshot = tmp_path / "snapshot"
     snapshot.mkdir()
@@ -109,7 +109,7 @@ def test_qnn_bundles_keep_an_unknown_format_for_the_fork_to_render(tmp_path: Pat
 
 def test_custom_templates_must_be_go_templates() -> None:
     assert custom("{{ .Prompt }}", ["</s>"]).stops == ("</s>",)
-    with pytest.raises(NpuModelError):
+    with pytest.raises(TemperumError):
         custom("{% for m in messages %}{{ m }}{% endfor %}", [])
 
 

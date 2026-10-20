@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from npu_model.checkpoint import read_checkpoint
-from npu_model.core.errors import NpuModelError
+from temperum.checkpoint import read_checkpoint
+from temperum.core.errors import TemperumError
 
 
 def _write_safetensors(path: Path, tensors: dict[str, list[int]]) -> None:
@@ -35,10 +35,10 @@ def test_reads_names_and_sizes_across_shards(tmp_path: Path) -> None:
 
 
 def test_missing_or_corrupt_weights_are_reported(tmp_path: Path) -> None:
-    with pytest.raises(NpuModelError) as exc:
+    with pytest.raises(TemperumError) as exc:
         read_checkpoint(tmp_path)
     assert exc.value.reason_code == "NO_SAFETENSORS"
     (tmp_path / "model.safetensors").write_bytes(b"\x00\x01")
-    with pytest.raises(NpuModelError) as exc:
+    with pytest.raises(TemperumError) as exc:
         read_checkpoint(tmp_path)
     assert exc.value.reason_code == "BAD_SAFETENSORS"

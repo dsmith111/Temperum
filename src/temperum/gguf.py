@@ -27,15 +27,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from npu_model import __version__, paths
-from npu_model.core.errors import NpuModelError
-from npu_model.host import HEXAGON_OPT_IN, HostInfo, hexagon_opted_in
-from npu_model.profiles import (DEFAULT_LLAMA_RUNTIME, DEFAULT_RUNTIME, LLAMA_RUNTIMES, LlamaRuntimeProfile,
+from temperum import __version__, paths
+from temperum.core.errors import TemperumError
+from temperum.host import HEXAGON_OPT_IN, HostInfo, hexagon_opted_in
+from temperum.profiles import (DEFAULT_LLAMA_RUNTIME, DEFAULT_RUNTIME, LLAMA_RUNTIMES, LlamaRuntimeProfile,
                                 TargetProfile, get_runtime)
-from npu_model.sources import ResolvedModel, fetch
-from npu_model.templates import ChatTemplate, from_jinja, load_jinja
-from npu_model.toolchains import ENV_SIZE_GB, Toolchains
-from npu_model.toolchains.llama_cpp import ConverterSource
+from temperum.sources import ResolvedModel, fetch
+from temperum.templates import ChatTemplate, from_jinja, load_jinja
+from temperum.toolchains import ENV_SIZE_GB, Toolchains
+from temperum.toolchains.llama_cpp import ConverterSource
 
 Progress = Callable[[str], None]
 Runner = Callable[..., "subprocess.CompletedProcess[str]"]
@@ -43,7 +43,7 @@ Runner = Callable[..., "subprocess.CompletedProcess[str]"]
 QUANT_TYPES = ("Q4_0", "Q8_0", "Q4_K_M")  # all run on the Hexagon backend; Q4_0 is its best-supported type
 DEFAULT_QUANT = "Q4_0"
 DEFAULT_CONTEXT = 4096
-MANIFEST = "npu_model_manifest.json"
+MANIFEST = "temperum_manifest.json"
 LICENSE_PREFIXES = ("license", "notice", "use_policy", "readme")
 HTP_LIBRARIES = ("libggml-htp-v73.so", "libggml-htp-v75.so", "libggml-htp-v79.so", "libggml-htp-v81.so",
                  "libggml-htp.cat")
@@ -200,19 +200,19 @@ def plan(model: ResolvedModel, host: HostInfo, target: TargetProfile, *, ollama_
          overwrite: bool = False, python: Path | None = None, runtime_id: str = DEFAULT_LLAMA_RUNTIME,
          run: Runner = subprocess.run, chains_factory: Callable[..., Toolchains] = Toolchains) -> GgufPlan:
     if target.format != "gguf":
-        raise NpuModelError("plan", "WRONG_TARGET_FORMAT", f"{target.id} is not a GGUF target")
+        raise TemperumError("plan", "WRONG_TARGET_FORMAT", f"{target.id} is not a GGUF target")
     if quant not in QUANT_TYPES:
-        raise NpuModelError("plan", "UNKNOWN_QUANT", f"Unknown GGUF type {quant}", hint=f"Use {', '.join(QUANT_TYPES)}.")
+        raise TemperumError("plan", "UNKNOWN_QUANT", f"Unknown GGUF type {quant}", hint=f"Use {', '.join(QUANT_TYPES)}.")
     runtime = LLAMA_RUNTIMES[runtime_id]
     if ollama_exe is None:
-        raise NpuModelError("plan", "NEEDS_RUNTIME",
+        raise TemperumError("plan", "NEEDS_RUNTIME",
                             "The GGUF target quantizes and verifies with the Ollama fork's own llama.cpp build.",
-                            hint="Set NPU_MODEL_OLLAMA_EXE to the fork's ollama.exe once (or pass --ollama-exe); "
+                            hint="Set TEMPERUM_OLLAMA_EXE to the fork's ollama.exe once (or pass --ollama-exe); "
                                  "--target qnn-x-elite builds a QNN bundle instead.")
     payload = LlamaPayload.from_executable(ollama_exe, run)
     missing = payload.problems()
     if missing:
-        raise NpuModelError("plan", "RUNTIME_INCOMPLETE",
+        raise TemperumError("plan", "RUNTIME_INCOMPLETE",
                             f"{payload.root} lacks the llama.cpp Hexagon runtime: {', '.join(missing)}",
                             hint=f"Use a fork package built with -HexagonSDKRoot; get Qualcomm's signed NPU libraries "
                                  f"with `{SETUP_COMMAND}`. --target qnn-x-elite builds a QNN bundle instead.")
@@ -226,10 +226,10 @@ def plan(model: ResolvedModel, host: HostInfo, target: TargetProfile, *, ollama_
     maximum = model.config.get("max_position_embeddings")
     ctx = context or min(int(maximum) if isinstance(maximum, int) else DEFAULT_CONTEXT, DEFAULT_CONTEXT)
     if isinstance(maximum, int) and not 128 <= ctx <= maximum:
-        raise NpuModelError("plan", "BAD_CONTEXT", f"--context {ctx} is outside 128..{maximum}.")
+        raise TemperumError("plan", "BAD_CONTEXT", f"--context {ctx} is outside 128..{maximum}.")
     destination = out or paths.models_dir() / f"{model.name}-{target.id}"
     if destination.exists() and not overwrite:
-        raise NpuModelError("plan", "DESTINATION_EXISTS", f"{destination} already exists.",
+        raise TemperumError("plan", "DESTINATION_EXISTS", f"{destination} already exists.",
                             hint="Pass --overwrite to rebuild it or --out to write elsewhere.")
     on_target = target.matches(host.processor_name)
     if not on_target:
@@ -241,8 +241,8 @@ def plan(model: ResolvedModel, host: HostInfo, target: TargetProfile, *, ollama_
     cached = model.ref.kind == "local" or (
         model.ref.repo is not None and model.commit is not None
         and (paths.sources_dir() / model.ref.repo.replace("/", "--") / model.commit / "_source.json").is_file())
-    from npu_model.convert import _resource_checks  # the QNN target's memory and disk checks
-    from npu_model.verify import reference_dtype
+    from temperum.convert import _resource_checks  # the QNN target's memory and disk checks
+    from temperum.verify import reference_dtype
 
     level = verify if on_target else "none"
     params = estimates(model, quant)["params_billions"] * 1e9
@@ -300,7 +300,7 @@ def convert(python: Path, source: ConverterSource, snapshot: Path, out: Path, lo
                           "--outtype", "q8_0"], source.environment(), log, say,
                          lambda line: "Model successfully exported" in line, popen)
     if code != 0 or not partial.is_file():
-        raise NpuModelError("convert", "GGUF_CONVERT_FAILED", f"llama.cpp's converter failed (exit {code}).",
+        raise TemperumError("convert", "GGUF_CONVERT_FAILED", f"llama.cpp's converter failed (exit {code}).",
                             hint=f"Log: {log}\n{tail[-800:]}")
     partial.replace(out)
     return out
@@ -315,7 +315,7 @@ def quantize(payload: LlamaPayload, src: Path, out: Path, quant: str, log: Path,
                          lambda line: line.startswith(("llama_model_quantize_impl: model size",
                                                        "llama_model_quantize_impl: quant size")), popen)
     if code != 0 or not partial.is_file():
-        raise NpuModelError("convert", "GGUF_QUANTIZE_FAILED", f"llama-quantize failed (exit {code}).",
+        raise TemperumError("convert", "GGUF_QUANTIZE_FAILED", f"llama-quantize failed (exit {code}).",
                             hint=f"Log: {log}\n{tail[-800:]}")
     partial.replace(out)
     return out
@@ -325,7 +325,7 @@ def derived_template(snapshot: Path) -> ChatTemplate | None:
     """The converter's Ollama template for the model's chat format (None if the format is not recognized)."""
     try:
         chat = from_jinja(load_jinja(snapshot))
-    except NpuModelError:
+    except TemperumError:
         return None
     return None if chat.family == "raw" else chat
 
@@ -376,7 +376,7 @@ def assemble(gguf: Path, snapshot: Path, plan: GgufPlan, provenance: dict[str, A
     manifest = {
         "schema_version": 1,
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "converter": {"name": "npu-model", "version": __version__},
+        "converter": {"name": "temperum", "version": __version__},
         "format": "gguf",
         "source": {"repo": plan.model.ref.repo, "commit": plan.model.commit, "license": plan.model.license,
                    "architecture": plan.model.architecture},
@@ -406,7 +406,7 @@ class GgufResult:
 def run(gguf_plan: GgufPlan, progress: Progress | None = None,
         chains_factory: Callable[..., Toolchains] = Toolchains,
         verifier: Callable[..., dict[str, Any]] | None = None) -> GgufResult:
-    from npu_model.convert import Job  # the same receipt and single-writer lock as the QNN target
+    from temperum.convert import Job  # the same receipt and single-writer lock as the QNN target
 
     say = progress or (lambda _msg: None)
     job = Job(gguf_plan.job_dir, gguf_plan.to_dict())
@@ -422,7 +422,7 @@ def run(gguf_plan: GgufPlan, progress: Progress | None = None,
         source.ensure(progress=say)
         architecture = gguf_plan.model.architecture
         if architecture and architecture not in supported_architectures(source.directory):
-            raise NpuModelError("convert", "UNSUPPORTED_ARCHITECTURE",
+            raise TemperumError("convert", "UNSUPPORTED_ARCHITECTURE",
                                 f"llama.cpp {source.tag} cannot convert {architecture}.",
                                 hint="Try the QNN target, or a model with a supported architecture.")
         job.record("converter", "done", tag=source.tag, commit=source.commit)
@@ -453,7 +453,7 @@ def run(gguf_plan: GgufPlan, progress: Progress | None = None,
             set_template(bundle, chat, gguf_plan.context)
             report["template"]["modelfile"] = chat.family
         report["created"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        (bundle / "npu_model_verification.json").write_text(json.dumps(report, indent=2, ensure_ascii=False),
+        (bundle / "temperum_verification.json").write_text(json.dumps(report, indent=2, ensure_ascii=False),
                                                             encoding="utf-8")
         job.record("verify", "done", verdict=report["verdict"], reasons=report.get("reasons", []))
         if report["verdict"] != "failed" and gguf_plan.quant != "Q8_0":

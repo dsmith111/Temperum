@@ -5,11 +5,11 @@ from typing import Any
 
 import pytest
 
-from npu_model.convert import ConvertOptions, Job, estimates, plan
-from npu_model.core.errors import NpuModelError
-from npu_model.host import HostInfo
-from npu_model.sources import ModelRef, ResolvedModel
-from npu_model.toolchains import EnvStatus
+from temperum.convert import ConvertOptions, Job, estimates, plan
+from temperum.core.errors import TemperumError
+from temperum.host import HostInfo
+from temperum.sources import ModelRef, ResolvedModel
+from temperum.toolchains import EnvStatus
 
 X_ELITE = HostInfo(system="Windows", native_arch="arm64", python_platform="win-amd64",
                    processor_name="Snapdragon(R) X Elite - X1E78100 - Qualcomm(R) Oryon(TM) CPU",
@@ -34,7 +34,7 @@ class FakeChains:
 
 @pytest.fixture(autouse=True)
 def _home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("NPU_MODEL_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("TEMPERUM_HOME", str(tmp_path / "home"))
 
 
 def _plan(options: ConvertOptions, host: HostInfo = X_ELITE, model: ResolvedModel | None = None) -> Any:
@@ -71,7 +71,7 @@ def test_family_model_and_licence_are_flagged() -> None:
 def test_other_machines_build_unverified_undeclared_bundles() -> None:
     x64 = HostInfo(system="Windows", native_arch="x64", python_platform="win-amd64", processor_name="Intel(R) Core",
                    total_ram_gb=64.0, available_ram_gb=40.0)
-    with pytest.raises(NpuModelError) as exc:
+    with pytest.raises(TemperumError) as exc:
         _plan(ConvertOptions(model="org/x"), host=x64)
     assert exc.value.reason_code == "NO_MATCHING_TARGET"
     result = _plan(ConvertOptions(model="org/x", target="qnn-x-elite"), host=x64)
@@ -81,13 +81,13 @@ def test_other_machines_build_unverified_undeclared_bundles() -> None:
 
 def test_memory_and_device_checks() -> None:
     big = _model(weight_bytes=16_000_000_000)  # ~8B params
-    with pytest.raises(NpuModelError) as exc:
+    with pytest.raises(TemperumError) as exc:
         _plan(ConvertOptions(model="org/x"), model=big)
     assert exc.value.reason_code == "NOT_ENOUGH_MEMORY"
-    with pytest.raises(NpuModelError) as exc:
+    with pytest.raises(TemperumError) as exc:
         _plan(ConvertOptions(model="org/x", device="cuda"))
     assert exc.value.reason_code == "NO_CUDA"
-    with pytest.raises(NpuModelError) as exc:
+    with pytest.raises(TemperumError) as exc:
         _plan(ConvertOptions(model="org/x", quality="recipe"))
     assert exc.value.reason_code == "QUALITY_NEEDS_CUDA"
 
@@ -95,18 +95,18 @@ def test_memory_and_device_checks() -> None:
 def test_problems_that_would_surface_late_fail_the_plan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     out = tmp_path / "existing"
     out.mkdir()
-    with pytest.raises(NpuModelError) as exc:
+    with pytest.raises(TemperumError) as exc:
         _plan(ConvertOptions(model="org/x", out=out))
     assert exc.value.reason_code == "DESTINATION_EXISTS"
     assert _plan(ConvertOptions(model="org/x", out=out, overwrite=True)).destination == out
     model = _model()
     model.config["max_position_embeddings"] = 32768
     for context in (64, 65536):
-        with pytest.raises(NpuModelError) as exc:
+        with pytest.raises(TemperumError) as exc:
             _plan(ConvertOptions(model="org/x", context=context), model=model)
         assert exc.value.reason_code == "BAD_CONTEXT"
-    monkeypatch.setattr("npu_model.convert.disk_free_gb", lambda _path: 1.0)
-    with pytest.raises(NpuModelError) as exc:
+    monkeypatch.setattr("temperum.convert.disk_free_gb", lambda _path: 1.0)
+    with pytest.raises(TemperumError) as exc:
         _plan(ConvertOptions(model="org/x"))
     assert exc.value.reason_code == "NOT_ENOUGH_DISK"
 
@@ -114,7 +114,7 @@ def test_problems_that_would_surface_late_fail_the_plan(tmp_path: Path, monkeypa
 def test_an_interrupted_job_resumes_into_its_own_bundle() -> None:
     first = _plan(ConvertOptions(model="org/x"))
     first.destination.mkdir(parents=True)
-    with pytest.raises(NpuModelError):  # a folder this job did not assemble
+    with pytest.raises(TemperumError):  # a folder this job did not assemble
         _plan(ConvertOptions(model="org/x"))
     job = Job(first.job_dir, {"model": "org/x"})
     job.record("assemble", "done", bundle=str(first.destination), fingerprint="abc")
@@ -123,7 +123,7 @@ def test_an_interrupted_job_resumes_into_its_own_bundle() -> None:
     job = Job(first.job_dir, {"model": "org/x"})
     job.record("verify", "done", verdict="passed")
     job.release()
-    with pytest.raises(NpuModelError) as exc:  # finished: nothing left to resume
+    with pytest.raises(TemperumError) as exc:  # finished: nothing left to resume
         _plan(ConvertOptions(model="org/x"))
     assert exc.value.reason_code == "DESTINATION_EXISTS"
 
@@ -137,7 +137,7 @@ def test_a_resumed_plan_skips_resource_checks_for_finished_heavy_stages(monkeypa
     job = Job(first.job_dir, {"model": "org/x"})
     job.record("olive", "done")
     job.release()
-    monkeypatch.setattr("npu_model.convert.disk_free_gb", lambda _path: 1.0)  # the cache already uses the disk
+    monkeypatch.setattr("temperum.convert.disk_free_gb", lambda _path: 1.0)  # the cache already uses the disk
     again = _plan(ConvertOptions(model="org/x"), host=tight)
     assert again.resumed == ["olive"] and not any("commit" in w for w in again.warnings)
 
@@ -177,7 +177,7 @@ def test_job_lock_blocks_a_live_owner_and_takes_over_a_dead_one(tmp_path: Path) 
     owner = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     try:
         (directory / "job.lock").write_text(str(owner.pid), encoding="utf-8")
-        with pytest.raises(NpuModelError) as exc:
+        with pytest.raises(TemperumError) as exc:
             Job(directory, {})
         assert exc.value.reason_code == "JOB_RUNNING"
     finally:

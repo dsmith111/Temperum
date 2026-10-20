@@ -9,13 +9,13 @@ from typing import Any
 
 import pytest
 
-from npu_model import gguf
-from npu_model.core.errors import NpuModelError
-from npu_model.gguf_verify import runtime_env
-from npu_model.host import HostInfo, resolve_target
-from npu_model.profiles import get_target
-from npu_model.sources import ModelRef, ResolvedModel
-from npu_model.toolchains.llama_cpp import ConverterSource
+from temperum import gguf
+from temperum.core.errors import TemperumError
+from temperum.gguf_verify import runtime_env
+from temperum.host import HostInfo, resolve_target
+from temperum.profiles import get_target
+from temperum.sources import ModelRef, ResolvedModel
+from temperum.toolchains.llama_cpp import ConverterSource
 
 X_ELITE = HostInfo(system="Windows", native_arch="arm64", python_platform="win-amd64",
                    processor_name="Snapdragon(R) X Elite - X1E78100 - Qualcomm(R) Oryon(TM) CPU",
@@ -24,7 +24,7 @@ X_ELITE = HostInfo(system="Windows", native_arch="arm64", python_platform="win-a
 
 @pytest.fixture(autouse=True)
 def _home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("NPU_MODEL_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("TEMPERUM_HOME", str(tmp_path / "home"))
 
 
 def _model(weight_bytes: int = 3_087_467_144) -> ResolvedModel:
@@ -64,11 +64,11 @@ def test_auto_target_is_a_gguf_for_the_npu(monkeypatch: pytest.MonkeyPatch) -> N
 
 def test_plan_needs_a_complete_runtime(tmp_path: Path) -> None:
     target = get_target("gguf-hexagon")
-    with pytest.raises(NpuModelError) as exc:
+    with pytest.raises(TemperumError) as exc:
         gguf.plan(_model(), X_ELITE, target, ollama_exe=None)
     assert exc.value.reason_code == "NEEDS_RUNTIME"
     partial = _payload(tmp_path / "partial", complete=False)
-    with pytest.raises(NpuModelError) as exc:
+    with pytest.raises(TemperumError) as exc:
         gguf.plan(_model(), X_ELITE, target, ollama_exe=partial, run=_version(""))
     assert exc.value.reason_code == "RUNTIME_INCOMPLETE" and "npu setup --provider hexagon" in str(exc.value)
 
@@ -114,7 +114,7 @@ def test_plan_checks_the_runtime_commit_and_defaults(tmp_path: Path, monkeypatch
     assert any("b42b7e6" in w and "pins e467e5b5e" in w for w in other.warnings)
     assert other.job_id == plan.job_id and gguf.plan(_model(), X_ELITE, target, ollama_exe=exe, quant="Q8_0",
                                                      run=_version("")).job_id != plan.job_id
-    with pytest.raises(NpuModelError) as exc:
+    with pytest.raises(TemperumError) as exc:
         gguf.plan(_model(), X_ELITE, get_target("qnn-x-elite"), ollama_exe=exe)
     assert exc.value.reason_code == "WRONG_TARGET_FORMAT"
 
@@ -200,7 +200,7 @@ def test_assemble_writes_model_modelfile_licence_and_manifest(tmp_path: Path) ->
     ("FROM ./model.gguf\n", None, "unknown"),
 ])
 def test_install_reports_which_chat_template_the_fork_kept(modelfile: str, shown: str | None, expected: str) -> None:
-    from npu_model.install.ollama_import import template_source
+    from temperum.install.ollama_import import template_source
 
     assert template_source(modelfile, shown) == expected
 
@@ -223,7 +223,7 @@ def test_converter_source_is_fetched_and_checked_file_by_file(tmp_path: Path) ->
         buffer.seek(0)
         return lambda _url: buffer
 
-    with pytest.raises(NpuModelError) as exc:
+    with pytest.raises(TemperumError) as exc:
         small.ensure(opener=archive(b"print(2)\n"))
     assert exc.value.reason_code == "LLAMA_CPP_MISMATCH"
     assert small.ensure(opener=archive(b"print(1)\n")) == small.directory
@@ -235,7 +235,7 @@ def test_quick_verification_generates_with_the_bundles_own_chat_format(tmp_path:
                                                                         monkeypatch: pytest.MonkeyPatch) -> None:
     from types import SimpleNamespace
 
-    from npu_model import gguf_verify
+    from temperum import gguf_verify
 
     sent: list[Any] = []
 
@@ -277,8 +277,8 @@ def test_a_model_too_large_to_run_here_is_still_checked_with_its_tokenizer(tmp_p
                                                                            monkeypatch: pytest.MonkeyPatch) -> None:
     from types import SimpleNamespace
 
-    from npu_model import gguf_verify
-    from npu_model.verify import CONVERSATIONS
+    from temperum import gguf_verify
+    from temperum.verify import CONVERSATIONS
 
     heldout = tmp_path / "heldout.jsonl"
     heldout.write_text(json.dumps({"text": "Some held-out text."}) + "\n", encoding="utf-8")
@@ -337,6 +337,6 @@ def test_a_model_too_large_to_run_here_is_still_checked_with_its_tokenizer(tmp_p
 @pytest.mark.parametrize("size,on_device,where", [(1079 << 20, 1079 << 20, "npu"), (3762 << 20, 1887 << 20, "split"),
                                                    (1253 << 20, 0, "cpu"), (0, 0, "unknown")])
 def test_install_reads_where_the_fork_put_the_model(size: int, on_device: int, where: str) -> None:
-    from npu_model.install.ollama_import import placement_of
+    from temperum.install.ollama_import import placement_of
 
     assert placement_of(size, on_device)["where"] == where

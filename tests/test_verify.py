@@ -6,9 +6,9 @@ from typing import Any
 
 import pytest
 
-from npu_model.core.errors import NpuModelError
-from npu_model.templates import from_jinja, own
-from npu_model.verify import CONVERSATIONS, reference_dtype, template_check, verdict, verify
+from temperum.core.errors import TemperumError
+from temperum.templates import from_jinja, own
+from temperum.verify import CONVERSATIONS, reference_dtype, template_check, verdict, verify
 
 CHATML = from_jinja("<|im_start|>system\nYou are helpful.<|im_end|>\n<|im_start|>")
 
@@ -167,6 +167,6 @@ def test_none_level_and_unknown_levels(tmp_path: Path) -> None:
     report = verify(_bundle(tmp_path), tmp_path, CHATML, "none", quantize_python=None, verify_python=Path(),
                     work=tmp_path, heldout=None, params=None, available_gb=None)
     assert report["verdict"] == "not-verified"
-    with pytest.raises(NpuModelError):
+    with pytest.raises(TemperumError):
         verify(_bundle(tmp_path / "x"), tmp_path, CHATML, "thorough", quantize_python=None, verify_python=Path(),
                work=tmp_path, heldout=None, params=None, available_gb=None)

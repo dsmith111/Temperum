@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "npu-model"
+name = "temperum"
 version = "0.2.0.dev0"
-description = "Convert Hugging Face models into NPU-ready bundles for the Ollama NPU fork."
+description = "Convert Hugging Face models to run on your machine's NPU, with Ollama integration."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -28,7 +28,7 @@ dev = [
 ]
 
 [project.scripts]
-npu-model = "npu_model.cli.main:app"
+temperum = "temperum.cli.main:app"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -37,8 +37,8 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-"npu_model.recipes" = ["upstream/*.json", "verified.json"]
-"npu_model.toolchains" = ["locks/*/*.txt", "llama_cpp_pins/*.json"]
+"temperum.recipes" = ["upstream/*.json", "verified.json"]
+"temperum.toolchains" = ["locks/*/*.txt", "llama_cpp_pins/*.json"]
 
 [tool.ruff]
 line-length = 110

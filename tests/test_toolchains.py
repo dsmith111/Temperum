@@ -7,10 +7,10 @@ from typing import Any
 
 import pytest
 
-from npu_model.core.errors import NpuModelError
-from npu_model.host import HostInfo
-from npu_model.profiles import get_runtime
-from npu_model.toolchains import LOCKS, STATE_FILE, Toolchains, parse_lock, platform_tag, python_request
+from temperum.core.errors import TemperumError
+from temperum.host import HostInfo
+from temperum.profiles import get_runtime
+from temperum.toolchains import LOCKS, STATE_FILE, Toolchains, parse_lock, platform_tag, python_request
 
 RUNTIME = get_runtime("fork-qnn-1.24.1")
 ARM64 = HostInfo(system="Windows", native_arch="arm64", python_platform="win-amd64",
@@ -67,7 +67,7 @@ class FakeSystem:
 
 @pytest.fixture(autouse=True)
 def _long_paths(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("npu_model.toolchains.long_paths_enabled", lambda: True)  # pytest temp dirs are deep
+    monkeypatch.setattr("temperum.toolchains.long_paths_enabled", lambda: True)  # pytest temp dirs are deep
 
 
 def _toolchains(tmp_path: Path, system: FakeSystem, host: HostInfo = ARM64, device: str = "cpu",
@@ -141,7 +141,7 @@ def test_pip_is_retried_when_the_feed_hiccups(tmp_path: Path) -> None:
 
 def test_pip_failure_points_to_the_log(tmp_path: Path) -> None:
     chains = _toolchains(tmp_path, FakeSystem(tmp_path, pip_failures=99))
-    with pytest.raises(NpuModelError) as exc:
+    with pytest.raises(TemperumError) as exc:
         chains.ensure("verify")
     assert exc.value.reason_code == "PIP_FAILED" and "setup-fork-qnn-1.24.1-verify.log" in (exc.value.hint or "")
 
@@ -150,7 +150,7 @@ def test_environment_with_the_wrong_runtime_fails_its_check(tmp_path: Path) -> N
     probe = {"platform": "win-arm64", "versions": {"onnxruntime": "1.31.0"}, "providers": ["CPUExecutionProvider"],
              "error": None}
     chains = _toolchains(tmp_path, FakeSystem(tmp_path, probe=probe))
-    with pytest.raises(NpuModelError) as exc:
+    with pytest.raises(TemperumError) as exc:
         chains.ensure("compile")
     assert exc.value.reason_code == "ENV_BROKEN"
     assert "1.31.0" in exc.value.message and "QNNExecutionProvider" in exc.value.message
@@ -161,7 +161,7 @@ def test_emulated_python_is_rejected(tmp_path: Path) -> None:
     python.parent.mkdir()
     python.write_text("", encoding="utf-8")
     chains = _toolchains(tmp_path, FakeSystem(tmp_path, platform="win-amd64"), python=python)
-    with pytest.raises(NpuModelError) as exc:
+    with pytest.raises(TemperumError) as exc:
         chains.ensure("verify")
     assert exc.value.reason_code == "WRONG_PYTHON"
 
@@ -180,14 +180,14 @@ def test_cuda_resolve_lock_installs_genai_without_dependencies(tmp_path: Path) -
 
 def test_unsupported_platform_has_no_toolchain(tmp_path: Path) -> None:
     linux = HostInfo(system="Linux", native_arch="x64", python_platform="linux-x86_64", processor_name=None)
-    with pytest.raises(NpuModelError) as exc:
+    with pytest.raises(TemperumError) as exc:
         _toolchains(tmp_path, FakeSystem(tmp_path), host=linux).status("compile")
     assert exc.value.reason_code == "NO_TOOLCHAIN"
 
 
 def test_deep_env_roots_are_refused_without_long_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("npu_model.toolchains.long_paths_enabled", lambda: False)
+    monkeypatch.setattr("temperum.toolchains.long_paths_enabled", lambda: False)
     deep = tmp_path / ("x" * 120)
-    with pytest.raises(NpuModelError) as exc:
+    with pytest.raises(TemperumError) as exc:
         _toolchains(deep, FakeSystem(deep)).ensure("verify")
     assert exc.value.reason_code == "PATH_TOO_LONG"

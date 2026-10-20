@@ -17,9 +17,9 @@ from collections.abc import Callable
 from typing import Any, NoReturn, cast
 from urllib.parse import urlsplit
 
-from npu_model.core.errors import NpuModelError
-from npu_model.core.manifest import sha256_file
-from npu_model.bundle.inspect import Inspection, inspect_prebuilt, inventory, regular_path
+from temperum.core.errors import TemperumError
+from temperum.core.manifest import sha256_file
+from temperum.bundle.inspect import Inspection, inspect_prebuilt, inventory, regular_path
 
 MAX_MODELFILE = 1 << 20
 MAX_RESPONSE = 4 << 20
@@ -27,7 +27,7 @@ TAGS_TIMEOUT = 180.0
 
 
 def _fail(code: str, message: str) -> NoReturn:
-    raise NpuModelError(stage="import", reason_code=code, message=message)
+    raise TemperumError(stage="import", reason_code=code, message=message)
 
 
 def local_endpoint(host: str | None) -> str:
@@ -137,7 +137,7 @@ def read_modelfile(path: Path, bundle: Path, context_length: int | None) -> Mode
         resolved = path.parent / resolved
     try:
         resolved = regular_path(resolved, directory=True)
-    except (OSError, NpuModelError) as exc:
+    except (OSError, TemperumError) as exc:
         _fail("LOCAL_FROM_REQUIRED", f"FROM must exist locally and equal the inspected folder: {exc}")
     if resolved != bundle:
         _fail("SOURCE_SUBSTITUTION", "Modelfile FROM does not point to the inspected local folder.")
@@ -191,9 +191,9 @@ def plan_import(
     endpoint = local_endpoint(host or os.environ.get("OLLAMA_HOST"))
     name = _model_name(name)
     if executable is None:
-        setting = os.environ.get("NPU_MODEL_OLLAMA_EXE")
+        setting = os.environ.get("TEMPERUM_OLLAMA_EXE")
         if not setting:
-            _fail("EXE_REQUIRED", "Specify --ollama-exe or NPU_MODEL_OLLAMA_EXE (compatible fork); no PATH default.")
+            _fail("EXE_REQUIRED", "Specify --ollama-exe or TEMPERUM_OLLAMA_EXE (compatible fork); no PATH default.")
         executable = Path(setting)
     try:
         executable = regular_path(executable)
@@ -274,7 +274,7 @@ def _child_env(executable: Path, workspace: Path, endpoint: str) -> dict[str, st
 
 def _run_create(command: list[str], cwd: Path, env: dict[str, str], timeout: float) -> None:
     # Captured rather than streamed: the CLI redraws a progress spinner, which is noise inside
-    # npu-model's own output and in logs. The output is small; its end explains a failure.
+    # temperum's own output and in logs. The output is small; its end explains a failure.
     try:
         result = subprocess.run(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, timeout=timeout, check=False, shell=False)
@@ -359,8 +359,8 @@ def execute_import(plan: ImportPlan, *, expected_fingerprint: str | None, work_d
                     _child_env(Path(plan.executable), workspace, plan.endpoint), remaining())
         try:
             installed = _tags(plan.endpoint, remaining())
-        except NpuModelError as exc:
-            raise NpuModelError("import", "CREATE_NOT_CONFIRMED",
+        except TemperumError as exc:
+            raise TemperumError("import", "CREATE_NOT_CONFIRMED",
                                 "CLI returned zero but local tag confirmation failed. The tag may already exist; "
                                 "inspect the dedicated endpoint before retrying. No automatic overwrite or success.",
                                 cause=exc) from exc
@@ -374,7 +374,7 @@ def execute_import(plan: ImportPlan, *, expected_fingerprint: str | None, work_d
             shutil.rmtree(workspace)
         except OSError as exc:
             message = f"Cannot remove owned staging folder {workspace}: {exc}. Remove it manually; no ACL changes made."
-            if isinstance(active_error, NpuModelError):
+            if isinstance(active_error, TemperumError):
                 active_error.hint = message
             else:
                 _fail("STAGING_CLEANUP_FAILED", message + " Check the local server's tag state before retrying.")
@@ -413,7 +413,7 @@ def install_gguf(bundle: Path, name: str, *, executable: Path, host: str | None,
     result: dict[str, Any] = {"name": tag, "endpoint": endpoint, "warnings": []}
     try:
         shown = str(_api(endpoint, "/api/show", TAGS_TIMEOUT, {"model": tag}).get("template") or "")
-    except NpuModelError:
+    except TemperumError:
         shown = None
     result["template"] = template_source(modelfile.read_text(encoding="utf-8"), shown)
     if result["template"] == "fork built-in":
@@ -422,7 +422,7 @@ def install_gguf(bundle: Path, name: str, *, executable: Path, host: str | None,
     say("loading it once to see where the fork runs it")
     try:
         result["placement"] = npu_placement(endpoint, tag)
-    except NpuModelError as exc:
+    except TemperumError as exc:
         result["placement"] = {"where": "unknown", "error": str(exc)[:300]}
     where = result["placement"]["where"]
     if where == "cpu":

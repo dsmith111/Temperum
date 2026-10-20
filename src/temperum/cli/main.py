@@ -12,22 +12,22 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from npu_model.core.errors import NpuModelError
+from temperum.core.errors import TemperumError
 
 if TYPE_CHECKING:
-    from npu_model.host import HostInfo
+    from temperum.host import HostInfo
 
 # The hub's cache works without symlinks on Windows; its warning about that is just noise here.
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
 app = typer.Typer(no_args_is_help=True, add_completion=False,
-                  help="Convert Hugging Face models into NPU-ready bundles for the Ollama fork.")
+                  help="Convert Hugging Face models to run on your machine's NPU, with Ollama integration.")
 out = Console()
 err = Console(stderr=True)
 
 
 def _handle_err(e: Exception) -> None:
-    if isinstance(e, NpuModelError):
+    if isinstance(e, TemperumError):
         code = escape(f"[{e.stage}/{e.reason_code}]")
         err.print(f"[bold red]Error[/bold red] {code}: {escape(str(e))}")
         if e.hint:
@@ -72,13 +72,13 @@ def _print_plan(plan: Any) -> None:
 @app.command("convert")
 def convert_command(
     model: str = typer.Argument(..., help="Hugging Face id (org/name[@revision]) or a local model folder"),
-    target: str = typer.Option("auto", "--target", envvar="NPU_MODEL_TARGET",
+    target: str = typer.Option("auto", "--target", envvar="TEMPERUM_TARGET",
                                help="NPU target profile (auto = a GGUF for this machine's NPU; qnn-x-elite for a "
                                     "QNN bundle)"),
     quality: str = typer.Option("auto", "--quality", help="QNN: auto | standard (8-bit RTN) | recipe (GPTQ, CUDA)"),
     device: str = typer.Option("auto", "--device", help="QNN quantization device: auto | cpu | cuda"),
     context: Optional[int] = typer.Option(None, "--context", help="Declared context length (default: min(model, 4096))"),
-    out_dir: Optional[Path] = typer.Option(None, "--out", help="Bundle folder (default under the npu-model home)"),
+    out_dir: Optional[Path] = typer.Option(None, "--out", help="Bundle folder (default under the temperum home)"),
     verify_level: str = typer.Option("standard", "--verify", help="none | quick | standard | full"),
     template: Optional[Path] = typer.Option(None, "--template", help="Ollama Go template file (overrides detection)"),
     stop: list[str] = typer.Option([], "--stop", help="Stop sequence for --template (repeatable)"),
@@ -98,9 +98,9 @@ def convert_command(
     quant: str = typer.Option("Q4_0", "--quant", help="GGUF type for --target gguf-hexagon: Q4_0 | Q8_0 | Q4_K_M"),
 ) -> None:
     """Convert a model for this machine's NPU (resolve, convert, quantize, verify, optionally install)."""
-    from npu_model import convert
-    from npu_model.host import detect_host, resolve_target
-    from npu_model.profiles import get_target
+    from temperum import convert
+    from temperum.host import detect_host, resolve_target
+    from temperum.profiles import get_target
 
     start = time.time()
     try:
@@ -167,7 +167,7 @@ def convert_command(
                 err.print(f"  installed as {escape(str(summary['install'].get('name')))}: "
                           f"ollama run {escape(str(summary['install'].get('name')))}")
             elif summary["verdict"] != "failed":
-                err.print(f"  install: npu-model install --input {escape(str(result.bundle))} "
+                err.print(f"  install: temperum install --input {escape(str(result.bundle))} "
                           f"--name {escape(plan.model.name)}:npu-qnn --ollama-exe FORK_EXE --host http://127.0.0.1:11434 "
                           "(review the plan, then add --execute --expect-fingerprint FP)")
             else:
@@ -175,7 +175,7 @@ def convert_command(
                           "(for example with --num-splits) reuses the quantization")
         if summary["verdict"] == "failed":
             raise typer.Exit(code=3)
-    except NpuModelError as exc:
+    except TemperumError as exc:
         _handle_err(exc)
 
 
@@ -184,14 +184,14 @@ def _convert_gguf(model: str, target_id: str, *, quant: str, context: Optional[i
                   as_json: bool, install: bool, name: Optional[str], ollama_exe: Optional[Path],
                   host: Optional[str], start: float, machine: Optional[HostInfo] = None) -> None:
     """The GGUF target: llama.cpp's converter, the fork's llama-quantize, verified on the NPU."""
-    from npu_model import gguf
-    from npu_model.gguf_verify import verify_gguf
-    from npu_model.host import detect_host
-    from npu_model.install.ollama_import import install_gguf
-    from npu_model.profiles import get_target
-    from npu_model.sources import parse_ref, resolve
+    from temperum import gguf
+    from temperum.gguf_verify import verify_gguf
+    from temperum.host import detect_host
+    from temperum.install.ollama_import import install_gguf
+    from temperum.profiles import get_target
+    from temperum.sources import parse_ref, resolve
 
-    exe = ollama_exe or (Path(os.environ["NPU_MODEL_OLLAMA_EXE"]) if os.environ.get("NPU_MODEL_OLLAMA_EXE") else None)
+    exe = ollama_exe or (Path(os.environ["TEMPERUM_OLLAMA_EXE"]) if os.environ.get("TEMPERUM_OLLAMA_EXE") else None)
     plan = gguf.plan(resolve(parse_ref(model)), machine or detect_host(), get_target(target_id), ollama_exe=exe,
                      quant=quant, context=context, out=out_dir, verify=verify_level, overwrite=overwrite,
                      python=python)
@@ -270,18 +270,18 @@ def _convert_gguf(model: str, target_id: str, *, quant: str, context: Optional[i
 
 
 def _check_install_options(ollama_exe: Optional[Path], host: Optional[str]) -> None:
-    from npu_model.install.ollama_import import local_endpoint
+    from temperum.install.ollama_import import local_endpoint
 
     local_endpoint(host or os.environ.get("OLLAMA_HOST"))
-    exe = ollama_exe or (Path(os.environ["NPU_MODEL_OLLAMA_EXE"]) if os.environ.get("NPU_MODEL_OLLAMA_EXE") else None)
+    exe = ollama_exe or (Path(os.environ["TEMPERUM_OLLAMA_EXE"]) if os.environ.get("TEMPERUM_OLLAMA_EXE") else None)
     if exe is None or not exe.is_file():
-        raise NpuModelError("import", "EXE_REQUIRED", "--install needs the fork executable.",
-                            hint="Pass --ollama-exe PATH or set NPU_MODEL_OLLAMA_EXE.")
+        raise TemperumError("import", "EXE_REQUIRED", "--install needs the fork executable.",
+                            hint="Pass --ollama-exe PATH or set TEMPERUM_OLLAMA_EXE.")
 
 
 def _install(bundle: Path, name: str, ollama_exe: Optional[Path], host: Optional[str], job_dir: Path,
              processor_name: Optional[str]) -> dict[str, Any]:
-    from npu_model.install.ollama_import import execute_import, plan_import
+    from temperum.install.ollama_import import execute_import, plan_import
 
     plan = plan_import(bundle, name, executable=ollama_exe, host=host, processor_name=processor_name)
     work = job_dir / "install"
@@ -291,7 +291,7 @@ def _install(bundle: Path, name: str, ollama_exe: Optional[Path], host: Optional
 
 @app.command("setup")
 def setup_command(
-    target: str = typer.Option("auto", "--target", envvar="NPU_MODEL_TARGET",
+    target: str = typer.Option("auto", "--target", envvar="TEMPERUM_TARGET",
                                help="What to prepare for: auto (a GGUF for this machine's NPU) or a target id such "
                                     "as qnn-x-elite"),
     device: str = typer.Option("auto", "--device", help="QNN: quantization device the quantize toolchain targets"),
@@ -301,10 +301,10 @@ def setup_command(
 ) -> None:
     """Create (or check) what conversions need: for a GGUF the conversion toolchain and llama.cpp's converter;
     for QNN bundles also the compile and verify toolchains."""
-    from npu_model.host import detect_host, resolve_target
-    from npu_model.profiles import DEFAULT_LLAMA_RUNTIME, DEFAULT_RUNTIME, LLAMA_RUNTIMES, get_runtime
-    from npu_model.toolchains import Toolchains
-    from npu_model.toolchains.llama_cpp import ConverterSource
+    from temperum.host import detect_host, resolve_target
+    from temperum.profiles import DEFAULT_LLAMA_RUNTIME, DEFAULT_RUNTIME, LLAMA_RUNTIMES, get_runtime
+    from temperum.toolchains import Toolchains
+    from temperum.toolchains.llama_cpp import ConverterSource
 
     try:
         host = detect_host()
@@ -327,20 +327,20 @@ def setup_command(
             table.add_row("llama.cpp converter", "ready" if not problems else f"missing ({len(problems)} files)",
                           str(source.directory), source.tag)
         out.print(table)
-    except NpuModelError as exc:
+    except TemperumError as exc:
         _handle_err(exc)
 
 
 def _fork_status() -> dict[str, Any]:
-    """The fork executable conversions use (NPU_MODEL_OLLAMA_EXE) and what its NPU runtime is missing."""
-    from npu_model.gguf import SETUP_COMMAND, LlamaPayload
+    """The fork executable conversions use (TEMPERUM_OLLAMA_EXE) and what its NPU runtime is missing."""
+    from temperum.gguf import SETUP_COMMAND, LlamaPayload
 
-    setting = os.environ.get("NPU_MODEL_OLLAMA_EXE")
+    setting = os.environ.get("TEMPERUM_OLLAMA_EXE")
     if not setting:
-        return {"exe": None, "state": "not set", "hint": "set NPU_MODEL_OLLAMA_EXE to the fork's ollama.exe"}
+        return {"exe": None, "state": "not set", "hint": "set TEMPERUM_OLLAMA_EXE to the fork's ollama.exe"}
     exe = Path(setting)
     if not exe.is_file():
-        return {"exe": setting, "state": "missing", "hint": "NPU_MODEL_OLLAMA_EXE does not name a file"}
+        return {"exe": setting, "state": "missing", "hint": "TEMPERUM_OLLAMA_EXE does not name a file"}
     payload = LlamaPayload.from_executable(exe)
     missing = payload.problems()
     status: dict[str, Any] = {"exe": str(exe), "state": "ready" if not missing else "incomplete", "missing": missing,
@@ -354,18 +354,18 @@ def _fork_status() -> dict[str, Any]:
 @app.command("doctor")
 def doctor_command(as_json: bool = typer.Option(False, "--json", help="Print JSON")) -> None:
     """Report this machine's NPU target, the fork's NPU runtime, toolchains, paths and resources."""
-    from npu_model import paths
-    from npu_model.host import HEXAGON_OPT_IN, detect_host, hexagon_opted_in, long_paths_enabled, resolve_target
-    from npu_model.profiles import DEFAULT_LLAMA_RUNTIME, DEFAULT_RUNTIME, LLAMA_RUNTIMES, get_runtime
-    from npu_model.toolchains import Toolchains
-    from npu_model.toolchains.llama_cpp import ConverterSource
+    from temperum import paths
+    from temperum.host import HEXAGON_OPT_IN, detect_host, hexagon_opted_in, long_paths_enabled, resolve_target
+    from temperum.profiles import DEFAULT_LLAMA_RUNTIME, DEFAULT_RUNTIME, LLAMA_RUNTIMES, get_runtime
+    from temperum.toolchains import Toolchains
+    from temperum.toolchains.llama_cpp import ConverterSource
 
     host = detect_host()
     report: dict[str, Any] = {"host": host.to_dict(), "home": str(paths.home()),
                               "long_paths_enabled": long_paths_enabled(), "hexagon_opt_in": hexagon_opted_in()}
     try:
-        report["target"] = resolve_target(host, os.environ.get("NPU_MODEL_TARGET")).id
-    except NpuModelError as exc:
+        report["target"] = resolve_target(host, os.environ.get("TEMPERUM_TARGET")).id
+    except TemperumError as exc:
         report["target"] = None
         report["target_error"] = str(exc)
     report["fork"] = _fork_status()
@@ -377,7 +377,7 @@ def doctor_command(as_json: bool = typer.Option(False, "--json", help="Print JSO
         chains = Toolchains(host, get_runtime(DEFAULT_RUNTIME), device)
         roles = ["quantize", "compile"] + (["verify"] if host.native_arch == "arm64" else [])
         report["toolchains"] = [chains.status(role, deep=True).to_dict() for role in roles]
-    except NpuModelError as exc:
+    except TemperumError as exc:
         report["toolchains_error"] = str(exc)
     source = ConverterSource.load(LLAMA_RUNTIMES[DEFAULT_LLAMA_RUNTIME].llama_cpp_tag)
     report["llama_cpp_converter"] = {"tag": source.tag, "ready": not source.problems()}
@@ -391,7 +391,7 @@ def doctor_command(as_json: bool = typer.Option(False, "--json", help="Print JSO
     table.add_row("NPU", escape(", ".join(host.npu_devices) or "none found"))
     table.add_row("Target", escape(report["target"] or report.get("target_error", "")) +
                   (" (default; --target qnn-x-elite for a QNN bundle)" if report["target"] == "gguf-hexagon" else ""))
-    table.add_row("Fork", escape(f"{fork['exe'] or 'NPU_MODEL_OLLAMA_EXE'}: {fork['state']}"
+    table.add_row("Fork", escape(f"{fork['exe'] or 'TEMPERUM_OLLAMA_EXE'}: {fork['state']}"
                                  + (f" (llama.cpp {fork['llama_cpp']}, NPU libraries in {fork['htp']})"
                                     if fork["state"] == "ready" else "")
                                  + (f"; missing {', '.join(fork['missing'])}" if fork.get("missing") else "")
@@ -411,7 +411,7 @@ def doctor_command(as_json: bool = typer.Option(False, "--json", help="Print JSO
     if "toolchains_error" in report:
         table.add_row("Toolchains", escape(report["toolchains_error"]))
     table.add_row("llama.cpp converter", escape(f"{source.tag}: " + ("ready" if report["llama_cpp_converter"]["ready"]
-                                                                     else "not fetched yet (npu-model setup)")))
+                                                                     else "not fetched yet (temperum setup)")))
     table.add_row("QNN quantization", f"{device}" + (f" ({escape(', '.join(host.cuda_gpus))})" if host.cuda_gpus
                                                       else ""))
     out.print(table)
@@ -420,22 +420,22 @@ def doctor_command(as_json: bool = typer.Option(False, "--json", help="Print JSO
 def _verify_gguf_bundle(bundle: Path, manifest: dict[str, Any], snapshot: Path, level: str,
                         ollama_exe: Optional[Path], host: HostInfo, say: Any) -> dict[str, Any]:
     """Re-run a GGUF bundle's verification with the fork's current runtime."""
-    from npu_model import gguf, paths
-    from npu_model.checkpoint import read_checkpoint
-    from npu_model.gguf_verify import verify_gguf
-    from npu_model.profiles import DEFAULT_LLAMA_RUNTIME, DEFAULT_RUNTIME, LLAMA_RUNTIMES, get_runtime, get_target
-    from npu_model.sources import ModelRef, ResolvedModel
-    from npu_model.toolchains import Toolchains
-    from npu_model.toolchains.llama_cpp import ConverterSource
+    from temperum import gguf, paths
+    from temperum.checkpoint import read_checkpoint
+    from temperum.gguf_verify import verify_gguf
+    from temperum.profiles import DEFAULT_LLAMA_RUNTIME, DEFAULT_RUNTIME, LLAMA_RUNTIMES, get_runtime, get_target
+    from temperum.sources import ModelRef, ResolvedModel
+    from temperum.toolchains import Toolchains
+    from temperum.toolchains.llama_cpp import ConverterSource
 
-    exe = ollama_exe or (Path(os.environ["NPU_MODEL_OLLAMA_EXE"]) if os.environ.get("NPU_MODEL_OLLAMA_EXE") else None)
+    exe = ollama_exe or (Path(os.environ["TEMPERUM_OLLAMA_EXE"]) if os.environ.get("TEMPERUM_OLLAMA_EXE") else None)
     if exe is None:
-        raise NpuModelError("verify", "NEEDS_RUNTIME", "A GGUF bundle is verified with the fork's llama.cpp build.",
-                            hint="Set NPU_MODEL_OLLAMA_EXE to the fork's ollama.exe (or pass --ollama-exe).")
+        raise TemperumError("verify", "NEEDS_RUNTIME", "A GGUF bundle is verified with the fork's llama.cpp build.",
+                            hint="Set TEMPERUM_OLLAMA_EXE to the fork's ollama.exe (or pass --ollama-exe).")
     payload = gguf.LlamaPayload.from_executable(exe)
     missing = payload.problems()
     if missing:
-        raise NpuModelError("verify", "RUNTIME_INCOMPLETE", f"{payload.root} lacks: {', '.join(missing)}",
+        raise TemperumError("verify", "RUNTIME_INCOMPLETE", f"{payload.root} lacks: {', '.join(missing)}",
                             hint=f"Get Qualcomm's signed NPU libraries with `{gguf.SETUP_COMMAND}`.")
     src = manifest.get("source", {})
     model = ResolvedModel(ModelRef("hf", repo=src["repo"]) if src.get("repo") else ModelRef("local", path=snapshot),
@@ -468,7 +468,7 @@ def _verify_gguf_bundle(bundle: Path, manifest: dict[str, Any], snapshot: Path, 
 @app.command("models")
 def models_command(as_json: bool = typer.Option(False, "--json", help="Print JSON")) -> None:
     """List maintained recipes, supported families and conversions verified on hardware."""
-    from npu_model.recipes import FAMILY_TEMPLATES, catalog, catalog_index, verified_conversions
+    from temperum.recipes import FAMILY_TEMPLATES, catalog, catalog_index, verified_conversions
 
     recipes = catalog()
     data = {"recipes_commit": catalog_index()["commit"], "curated": sorted(recipes),
@@ -491,7 +491,7 @@ def models_command(as_json: bool = typer.Option(False, "--json", help="Print JSO
     for family, repo in sorted(FAMILY_TEMPLATES.items()):
         out.print(f"  model_type {family}: {escape(repo)} recipe")
     out.print("  Converting a QNN bundle on the CPU needs RAM roughly 8x the parameter count in bytes; "
-              "`npu-model convert MODEL --plan` shows estimates.")
+              "`temperum convert MODEL --plan` shows estimates.")
 
 
 @app.command("verify")
@@ -500,25 +500,27 @@ def verify_command(
     level: str = typer.Option("standard", "--level", help="quick | standard | full"),
     source: Optional[Path] = typer.Option(None, "--source", help="Source model folder (default: pinned snapshot)"),
     ollama_exe: Optional[Path] = typer.Option(None, "--ollama-exe", help="GGUF: fork executable (or "
-                                                                          "NPU_MODEL_OLLAMA_EXE)"),
+                                                                          "TEMPERUM_OLLAMA_EXE)"),
     as_json: bool = typer.Option(False, "--json", help="Print the full report"),
 ) -> None:
     """Re-run verification of a bundle on this machine's NPU."""
-    from npu_model import calib, paths
-    from npu_model.checkpoint import read_checkpoint
-    from npu_model.convert import VERIFICATION_FILE
-    from npu_model.host import detect_host
-    from npu_model.profiles import DEFAULT_RUNTIME, get_runtime
-    from npu_model.templates import from_jinja, load_jinja, own
-    from npu_model.toolchains import Toolchains
-    from npu_model.verify import verify
+    from temperum import calib, paths
+    from temperum.checkpoint import read_checkpoint
+    from temperum.convert import VERIFICATION_FILE
+    from temperum.host import detect_host
+    from temperum.profiles import DEFAULT_RUNTIME, get_runtime
+    from temperum.templates import from_jinja, load_jinja, own
+    from temperum.toolchains import Toolchains
+    from temperum.verify import verify
 
     try:
-        manifest = json.loads((bundle / "npu_model_manifest.json").read_text(encoding="utf-8"))
+        manifest_file = next((p for p in (bundle / "temperum_manifest.json", bundle / "npu_model_manifest.json")
+                              if p.is_file()), bundle / "temperum_manifest.json")  # older bundles keep the old name
+        manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
         src = manifest.get("source", {})
         snapshot = source or (paths.sources_dir() / str(src.get("repo", "")).replace("/", "--") / str(src.get("commit")))
         if not (snapshot / "config.json").is_file():
-            raise NpuModelError("verify", "SOURCE_MISSING", f"Source model not found at {snapshot}",
+            raise TemperumError("verify", "SOURCE_MISSING", f"Source model not found at {snapshot}",
                                 hint="Pass --source with the original model folder.")
         host = detect_host()
         if manifest.get("format") == "gguf":
@@ -544,7 +546,7 @@ def verify_command(
             err.print(str(report["verdict"]) + (f": {reasons}" if reasons else ""))
         if report["verdict"] == "failed":
             raise typer.Exit(code=3)
-    except NpuModelError as exc:
+    except TemperumError as exc:
         _handle_err(exc)
 
 
@@ -554,7 +556,7 @@ def inspect_command(
     processor_name: Optional[str] = typer.Option(None, "--processor-name", help="Compare an exact declared target"),
 ) -> None:
     """Emit JSON hashes and structural/declaration/target evidence levels; never executes the model."""
-    from npu_model.bundle.inspect import inspect_prebuilt
+    from temperum.bundle.inspect import inspect_prebuilt
 
     report = inspect_prebuilt(input, processor_name=processor_name)
     typer.echo(json.dumps(report.to_dict(), indent=2))
@@ -577,22 +579,22 @@ def install_command(
     timeout: float = typer.Option(300, "--timeout", min=1, max=3600, help="Execution time budget in seconds"),
 ) -> None:
     """Plan (default) or execute a local `ollama create` of a bundle; never downloads or uploads."""
-    from npu_model.install.ollama_import import execute_import, install_gguf, plan_import
+    from temperum.install.ollama_import import execute_import, install_gguf, plan_import
 
     try:
         if (input / "model.gguf").is_file():  # GGUF bundle: FROM + parameters; the GGUF carries its template
-            exe = ollama_exe or (Path(os.environ["NPU_MODEL_OLLAMA_EXE"])
-                                 if os.environ.get("NPU_MODEL_OLLAMA_EXE") else None)
+            exe = ollama_exe or (Path(os.environ["TEMPERUM_OLLAMA_EXE"])
+                                 if os.environ.get("TEMPERUM_OLLAMA_EXE") else None)
             if exe is None:
-                raise NpuModelError("import", "EXE_REQUIRED", "Installing needs the fork executable.",
-                                    hint="Pass --ollama-exe PATH or set NPU_MODEL_OLLAMA_EXE.")
+                raise TemperumError("import", "EXE_REQUIRED", "Installing needs the fork executable.",
+                                    hint="Pass --ollama-exe PATH or set TEMPERUM_OLLAMA_EXE.")
             if not execute:
                 typer.echo(json.dumps({"action": "local-create", "format": "gguf", "bundle": str(input), "name": name,
                                        "executable": str(exe), "executed": False,
                                        "next": "Repeat with --execute to run `ollama create` on the fork."}, indent=2))
                 return
             result = install_gguf(input, name, executable=exe, host=host or os.environ.get("OLLAMA_HOST"),
-                                  work_dir=work_dir / "npu-model-install", overwrite=overwrite, timeout=timeout)
+                                  work_dir=work_dir / "temperum-install", overwrite=overwrite, timeout=timeout)
             typer.echo(json.dumps({"action": "local-create", "format": "gguf", "executed": True, "installed": True,
                                    **result}, indent=2))
             return
@@ -601,5 +603,5 @@ def install_command(
         result = (execute_import(plan, expected_fingerprint=expect_fingerprint, work_dir=work_dir,
                                  timeout=timeout) if execute else plan.to_dict())
         typer.echo(json.dumps(result, indent=2))
-    except NpuModelError as exc:
+    except TemperumError as exc:
         _handle_err(exc)

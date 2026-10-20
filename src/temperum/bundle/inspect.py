@@ -12,9 +12,9 @@ from pathlib import Path, PurePosixPath
 from typing import Any, NoReturn, cast
 from urllib.parse import urlsplit
 
-from npu_model.core.errors import NpuModelError
-from npu_model.core.manifest import sha256_file
-from npu_model.bundle.genai_config import validate_genai_config
+from temperum.core.errors import TemperumError
+from temperum.core.manifest import sha256_file
+from temperum.bundle.genai_config import validate_genai_config
 
 MAX_FILES = 4096
 MAX_DEPTH = 32
@@ -25,7 +25,7 @@ CONSUMER = {"platform": "windows/arm64", "genai_version": "0.12.2", "ort_version
 
 
 def fail(code: str, message: str) -> NoReturn:
-    raise NpuModelError(stage="prebuilt", reason_code=code, message=message)
+    raise TemperumError(stage="prebuilt", reason_code=code, message=message)
 
 
 def regular_path(path: Path, *, directory: bool = False) -> Path:
@@ -516,7 +516,7 @@ class Inspection:
 def inspect_prebuilt(root: Path, *, processor_name: str | None = None) -> Inspection:
     report = Inspection(input=str(root.absolute()))
 
-    def error(level: str, exc: NpuModelError) -> None:
+    def error(level: str, exc: TemperumError) -> None:
         report.errors.append({"level": level, "code": exc.reason_code, "message": str(exc)})
 
     try:
@@ -544,11 +544,11 @@ def inspect_prebuilt(root: Path, *, processor_name: str | None = None) -> Inspec
         for name in ("tokenizer_config.json", "config.json", "generation_config.json", "special_tokens_map.json"):
             if name in assets:
                 read_object(root / name)
-    except NpuModelError as exc:
+    except TemperumError as exc:
         error("structural", exc)
         return report
     except (OSError, ValueError) as exc:
-        error("structural", NpuModelError("prebuilt", "READ_FAILED", str(exc)))
+        error("structural", TemperumError("prebuilt", "READ_FAILED", str(exc)))
         return report
     try:
         # Check all ONNX assets, not just referenced graph names.
@@ -558,20 +558,20 @@ def inspect_prebuilt(root: Path, *, processor_name: str | None = None) -> Inspec
             fail("UNREFERENCED_GRAPH", f"Unreferenced ONNX assets: {extra}")
         report.graphs = _graphs(root, assets, stages)
         report.structural = "passed"
-    except NpuModelError as exc:
+    except TemperumError as exc:
         error("structural", exc)
     except OSError as exc:
-        error("structural", NpuModelError("prebuilt", "READ_FAILED", str(exc)))
+        error("structural", TemperumError("prebuilt", "READ_FAILED", str(exc)))
     report.declaration_status = "absent"
     if "ollama_npu.json" in assets:
         report.declaration_status = "invalid"
         try:
             report.declaration = _declaration(root, cfg, stages)
             report.declaration_status = "consistent"
-        except NpuModelError as exc:
+        except TemperumError as exc:
             error("declaration", exc)
         except (OSError, ValueError) as exc:
-            error("declaration", NpuModelError("prebuilt", "INVALID_DECLARATION", str(exc)))
+            error("declaration", TemperumError("prebuilt", "INVALID_DECLARATION", str(exc)))
     if report.declaration is not None:
         mismatches = [key for key, value in CONSUMER.items() if report.declaration[key] != value]
         if processor_name is not None and processor_name.strip().lower() not in {

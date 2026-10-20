@@ -8,10 +8,10 @@ from typing import Any
 import pytest
 from test_bundle_inspect import fake_onnx as fake_onnx
 
-from npu_model.assemble import AssembleInputs, assemble, prompt_token_ids, safe_pad_token
-from npu_model.core.errors import NpuModelError
-from npu_model.profiles import get_runtime, get_target
-from npu_model.templates import from_jinja
+from temperum.assemble import AssembleInputs, assemble, prompt_token_ids, safe_pad_token
+from temperum.core.errors import TemperumError
+from temperum.profiles import get_runtime, get_target
+from temperum.templates import from_jinja
 
 FIXTURES = Path(__file__).parent / "fixtures" / "templates"
 CPU = "Snapdragon(R) X Elite - X1E78100 - Qualcomm(R) Oryon(TM) CPU"
@@ -72,7 +72,7 @@ def test_bundle_gets_declaration_template_manifest_and_safe_pad(tmp_path: Path, 
                               "revision": "c" * 40}
     assert (final / "Modelfile").read_text(encoding="utf-8").startswith("FROM .\nTEMPLATE")
     assert (final / "LICENSE").is_file() and not (final / "model.safetensors").exists()
-    manifest = json.loads((final / "npu_model_manifest.json").read_text(encoding="utf-8"))
+    manifest = json.loads((final / "temperum_manifest.json").read_text(encoding="utf-8"))
     assert manifest["genai_config_changes"]["pad_token_id"] == 0
     assert manifest["chat_template"]["family"] == "chatml" and "genai_config.json" in manifest["files"]
     assert not (tmp_path / "bundle.partial").exists()
@@ -84,7 +84,7 @@ def test_existing_destination_needs_overwrite(tmp_path: Path, fake_onnx: SimpleN
     _olive_output(tmp_path / "olive")
     _snapshot(tmp_path / "snapshot")
     (tmp_path / "bundle").mkdir()
-    with pytest.raises(NpuModelError) as exc:
+    with pytest.raises(TemperumError) as exc:
         assemble(_inputs(tmp_path))
     assert exc.value.reason_code == "DESTINATION_EXISTS"
     final, inspection = assemble(_inputs(tmp_path, overwrite=True))
@@ -97,7 +97,7 @@ def test_context_is_whole_windows_within_the_model_maximum(tmp_path: Path, fake_
     final, _ = assemble(_inputs(tmp_path, context=1000))
     assert json.loads((final / "genai_config.json").read_text(encoding="utf-8"))["model"]["context_length"] == 960
     for bad in (100, 4096):
-        with pytest.raises(NpuModelError) as exc:
+        with pytest.raises(TemperumError) as exc:
             assemble(_inputs(tmp_path, context=bad, overwrite=True))
         assert exc.value.reason_code == "BAD_CONTEXT"
 
@@ -120,6 +120,6 @@ def test_pad_token_rules() -> None:
     assert safe_pad_token(128009, config, jinja) == 128004  # a dedicated pad token wins
     assert safe_pad_token(128001, config, jinja) == 128001  # unused in prompts: kept
     assert safe_pad_token(5, {}, None) == 5  # no chat template: nothing to protect
-    with pytest.raises(NpuModelError) as exc:
+    with pytest.raises(TemperumError) as exc:
         safe_pad_token(2, {"added_tokens_decoder": {"2": {"content": "<|im_end|>"}}}, "<|im_end|>")
     assert exc.value.reason_code == "PAD_TOKEN_CONFLICT"

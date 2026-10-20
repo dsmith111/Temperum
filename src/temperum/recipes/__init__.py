@@ -24,8 +24,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from npu_model.core.errors import NpuModelError
-from npu_model.profiles import TargetProfile
+from temperum.core.errors import TemperumError
+from temperum.profiles import TargetProfile
 
 UPSTREAM = Path(__file__).resolve().parent / "upstream"
 
@@ -104,7 +104,7 @@ def choose(repo: str | None, model_type: str | None, architecture: str | None) -
         return RecipeChoice(template, "family",
                             f"no recipe for this exact model; using the {family} family recipe "
                             f"({template.repo}); verification decides whether the result is usable")
-    raise NpuModelError(
+    raise TemperumError(
         "recipe", "UNSUPPORTED_ARCHITECTURE",
         f"No NPU recipe for {architecture or model_type or 'this model'}.",
         hint=f"Supported causal-LM families: {', '.join(sorted(FAMILY_TEMPLATES))}.")
@@ -112,12 +112,12 @@ def choose(repo: str | None, model_type: str | None, architecture: str | None) -
 
 def resolve_quality(quality: str, device: str) -> str:
     if quality not in QUALITIES:
-        raise NpuModelError("recipe", "UNKNOWN_QUALITY", f"Unknown quality mode: {quality}",
+        raise TemperumError("recipe", "UNKNOWN_QUALITY", f"Unknown quality mode: {quality}",
                             hint=f"Use one of: {', '.join(QUALITIES)}")
     if quality == "auto":
         return "recipe" if device == "cuda" else "standard"
     if quality == "recipe" and device != "cuda":
-        raise NpuModelError("recipe", "QUALITY_NEEDS_CUDA",
+        raise TemperumError("recipe", "QUALITY_NEEDS_CUDA",
                             "--quality recipe runs GPTQ, which needs an NVIDIA GPU.",
                             hint="Use --quality standard (8-bit weights) on this machine.")
     return quality
@@ -140,8 +140,8 @@ class RenderOptions:
     num_splits: int | None = None  # explicit override
 
 
-def _unsupported(recipe: Recipe, detail: str) -> NpuModelError:
-    return NpuModelError("recipe", "UNSUPPORTED_RECIPE", f"Recipe for {recipe.repo} uses {detail}.",
+def _unsupported(recipe: Recipe, detail: str) -> TemperumError:
+    return TemperumError("recipe", "UNSUPPORTED_RECIPE", f"Recipe for {recipe.repo} uses {detail}.",
                          hint="Re-vendor the recipes or extend the renderer.")
 
 
@@ -224,7 +224,7 @@ def split_count(upstream_splits: int, opts: RenderOptions, bits: int) -> int:
 def render(recipe: Recipe, opts: RenderOptions) -> dict[str, Any]:
     """Olive run config for `recipe`, adapted to this machine, target, quality and runtime."""
     if opts.quality not in ("standard", "recipe"):
-        raise NpuModelError("recipe", "UNKNOWN_QUALITY", f"Unresolved quality mode: {opts.quality}")
+        raise TemperumError("recipe", "UNKNOWN_QUALITY", f"Unresolved quality mode: {opts.quality}")
     upstream = recipe.load()
     cfg = copy.deepcopy(upstream)
     cfg["input_model"] = {"type": "HfModel", "model_path": str(opts.model_dir)}

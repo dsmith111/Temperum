@@ -5,7 +5,7 @@ from typing import Optional
 
 
 @dataclass
-class NpuModelError(Exception):
+class TemperumError(Exception):
     stage: str
     reason_code: str
     message: str

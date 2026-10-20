@@ -7,8 +7,8 @@ from typing import Any
 
 import pytest
 
-from npu_model.calib import CorpusSpec, ensure_corpus
-from npu_model.core.errors import NpuModelError
+from temperum.calib import CorpusSpec, ensure_corpus
+from temperum.core.errors import TemperumError
 
 REVISION = "b08601e04326c79dfdd32d625aee71d232d685c3"
 
@@ -49,8 +49,8 @@ def test_corpus_is_reused_for_the_same_revision(tmp_path: Path) -> None:
 
 
 def test_unreachable_dataset_api_is_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("npu_model.calib.time.sleep", lambda _s: None)
-    with pytest.raises(NpuModelError) as exc:
+    monkeypatch.setattr("temperum.calib.time.sleep", lambda _s: None)
+    with pytest.raises(TemperumError) as exc:
         ensure_corpus(CorpusSpec(rows=100), tmp_path, get_json=FakeApi(fail_rows=True))
     assert exc.value.reason_code == "CORPUS_UNAVAILABLE"
     assert not list(tmp_path.glob("*.jsonl"))

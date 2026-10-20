@@ -34,7 +34,7 @@ def main() -> None:
     pins = sorted((line for line in freeze if "==" in line and line.split("==")[0].lower() not in skip),
                   key=str.lower)
     header = [
-        f"# npu-model toolchain lock: role={args.role} runtime={args.runtime} platform={probe[1]}"
+        f"# temperum toolchain lock: role={args.role} runtime={args.runtime} platform={probe[1]}"
         + (f" device={args.device}" if args.device else ""),
         "# mode: exact",
         f"# python: {probe[0]}",

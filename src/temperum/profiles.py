@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from npu_model.core.errors import NpuModelError
+from temperum.core.errors import TemperumError
 
 
 @dataclass(frozen=True)
@@ -134,7 +134,7 @@ def get_target(target_id: str) -> TargetProfile:
     try:
         return TARGETS[target_id]
     except KeyError:
-        raise NpuModelError("target", "UNKNOWN_TARGET", f"Unknown target profile: {target_id}",
+        raise TemperumError("target", "UNKNOWN_TARGET", f"Unknown target profile: {target_id}",
                             hint=f"Known targets: {', '.join(sorted(TARGETS))}") from None
 
 
@@ -142,5 +142,5 @@ def get_runtime(runtime_id: str) -> RuntimeProfile:
     try:
         return RUNTIMES[runtime_id]
     except KeyError:
-        raise NpuModelError("runtime", "UNKNOWN_RUNTIME", f"Unknown runtime profile: {runtime_id}",
+        raise TemperumError("runtime", "UNKNOWN_RUNTIME", f"Unknown runtime profile: {runtime_id}",
                             hint=f"Known runtimes: {', '.join(sorted(RUNTIMES))}") from None
