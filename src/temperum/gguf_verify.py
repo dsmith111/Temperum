@@ -185,6 +185,13 @@ def _heldout_text(path: Path, out: Path, rows: int = 400) -> Path:
     return out
 
 
+def _without_bos(expected: str, generated: str | None, bos: str | None) -> str:
+    """transformers renders the BOS text into the prompt; llama-server adds that token when tokenizing instead."""
+    if bos and expected.startswith(bos) and not (generated or "").startswith(bos):
+        return expected[len(bos):]
+    return expected
+
+
 def verify_gguf(bundle: Path, snapshot: Path, plan: GgufPlan, chains: Any, work: Path, say: Progress,
                 reference_gguf: Path | None = None, chat: ChatTemplate | None = None) -> dict[str, Any]:
     level = plan.verify_level
@@ -265,7 +272,9 @@ def verify_gguf(bundle: Path, snapshot: Path, plan: GgufPlan, chains: Any, work:
                                 "prompt_ms": (result.get("timings") or {}).get("prompt_ms")})
             quality["needle"] = needles
             rendered = (reference or {}).get("rendered", [])
-            checks = [(c, r, server.apply_template(c)) for c, r in zip(CONVERSATIONS, rendered)]
+            bos = server.bos_text()
+            checks = [(c, _without_bos(r, g, bos), g) for c, r, g in
+                      ((c, r, server.apply_template(c)) for c, r in zip(CONVERSATIONS, rendered))]
             report["template"] = {
                 "status": "match" if checks and all(r == g for _, r, g in checks) else
                           ("mismatch" if checks else "unchecked"),

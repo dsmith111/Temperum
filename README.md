@@ -5,9 +5,14 @@ Convert a Hugging Face model to run on this machine's NPU through the
 the result on the NPU against the source model, and can install it into the fork:
 
 ```powershell
-temperum convert Qwen/Qwen2.5-1.5B-Instruct --install --host http://127.0.0.1:11434
+temperum convert Qwen/Qwen2.5-1.5B-Instruct
 ollama run qwen2.5-1.5b-instruct:npu
 ```
+
+In a terminal, `temperum` shows a progress bar through the stages, then asks whether to
+install the model into the fork (starting the fork's server if none runs), validate it
+there, and upload it to ollama.com. Scripts get the same with `--install --validate --push`
+and `--yes`, or `--json`.
 
 **Why the NPU:** a model running there leaves the CPU to you. On the CPU alone a model can
 saturate a weaker machine, slowing your own work and the model alike; that matters most for
@@ -40,11 +45,14 @@ That command:
 6. verifies it on the NPU with the fork's `llama-server`: where the layers run, answers
    and long-prompt retrieval against the source model, perplexity against the Q8_0
    conversion, and the chat template;
-7. with `--install`, runs `ollama create` on the fork, then loads the model once to check
-   that the fork really runs it on the NPU.
+7. asks (or, with `--install`, proceeds) to install it into the fork with `ollama create`,
+   loading it once to check where the fork really runs it; then to validate it through the
+   fork (`--validate`: load time, a two-turn chat, decode and prompt speed, and the CPU cores
+   busy while it generates); then to upload it to ollama.com (`--push`, `--as account/name`),
+   so you can share it and pull it on your other devices.
 
 Qwen2.5-1.5B converts in under a minute; standard verification, which runs the source model
-for reference answers, adds about 8. [docs/models.md](docs/models.md) has ten models from
+for reference answers, adds about 8. [docs/models.md](docs/models.md) has twelve models from
 0.36B to 7.6B with times, quality and speed.
 
 ## Install
@@ -83,20 +91,23 @@ You need a Snapdragon X laptop with Windows 11, Python 3.10 or newer, and Git.
    creates, each with its own native ARM64 Python, so the x64 Python that Windows on Arm
    machines often have works too.
 
-`--install` needs the fork's endpoint (`--host` or `OLLAMA_HOST`): `temperum` never picks
-or starts a server itself. If the fork's server runs without the switch, install says the
-model runs on the CPU and how to fix it.
+Install, validate and push talk to the fork's server at `--host`, else `OLLAMA_HOST`, else
+port 11434. When no server answers there and `TEMPERUM_OLLAMA_EXE` is set, `temperum` starts
+one with the NPU switch on and leaves it running (in a terminal it asks first). If a server
+runs without the switch, install says the model runs on the CPU and how to fix it. Uploads
+go through that server, which holds your ollama.com key: `temperum` never sees it, and shows
+the sign-in link when the server is not linked to an account yet.
 
 ## What converts today
 
 - **GGUF (the default):** whatever llama.cpp's converter handles, about 300 architectures;
-  verification on the NPU decides whether the result is usable. Ten models are checked so
+  verification on the NPU decides whether the result is usable. Twelve models are checked so
   far ([docs/models.md](docs/models.md), or `temperum models`). Models up to 5 GiB on the
   NPU (Qwen2.5-7B at Q4_0 with up to a 16K context) load whole; larger ones are split with
   the CPU, which is slower.
 - **Gated models** (for example Llama) work with your Hugging Face access: request access
   on the model page, then `hf auth login` or set `HF_TOKEN`. Tokens are never written to
-  outputs.
+  outputs. Llama 3.2 (1B, 3B) is verified; Llama 3.1 is a separate licence on Hugging Face.
 - **Models whose source is too large to run here** (the 3.8B Phi models and Qwen2.5-7B on
   16 GB) are still checked against their tokenizer and chat template; the verdict says what
   was not compared.
@@ -139,13 +150,15 @@ implemented but not yet tested.
 
 | Command | Purpose |
 |---|---|
-| `temperum convert MODEL` | Plan, convert and verify. `--install` installs into the fork; `--plan` stops after the plan; `--yes` skips the prompt; `--quant Q4_0\|Q4_K_M\|Q8_0`, `--context N`, `--verify quick\|standard\|full\|none`, `--out DIR`, `--target qnn-x-elite` (QNN only: `--quality`, `--device`, `--template FILE --stop S`) |
+| `temperum convert MODEL` | Plan, convert and verify; in a terminal, then asks to install, validate and upload. `--install`, `--validate`, `--push [--as NAME]` do that without asking; `--plan` stops after the plan; `--yes` skips every question; `--quant Q4_0\|Q4_K_M\|Q8_0`, `--context N`, `--verify quick\|standard\|full\|none`, `--out DIR`, `--target qnn-x-elite` (QNN only: `--quality`, `--device`, `--template FILE --stop S`) |
 | `temperum setup` | Create or check (`--check`) what conversions need; `--target qnn-x-elite` adds the QNN toolchains |
 | `temperum doctor` | Target, the fork's NPU runtime and switch, memory, disk, toolchain health |
 | `temperum models` | Conversions verified on hardware, the GGUF route, QNN recipes and families |
 | `temperum verify BUNDLE` | Re-run verification on this machine's NPU (with the fork's current runtime) |
 | `temperum inspect --input BUNDLE` | Structural and declaration report for a QNN bundle (never runs the model) |
-| `temperum install --input BUNDLE --name TAG` | Install a bundle into the fork: GGUF with `--execute`; QNN as a reviewed plan, then `--execute --expect-fingerprint FP` |
+| `temperum install --input BUNDLE --name TAG` | Install a bundle into the fork: GGUF with `--execute` (starts the fork's server if none runs); QNN as a reviewed plan, then `--execute --expect-fingerprint FP` |
+| `temperum validate TAG` | Load an installed model through the fork: where it runs, load time, a two-turn chat, decode and prompt speed, CPU cores busy while generating |
+| `temperum push TAG [--as NAME]` | Upload an installed model to ollama.com through the fork (default name: your account/<name>:<tag>) |
 
 Settings: `TEMPERUM_OLLAMA_EXE` (the fork), `TEMPERUM_TARGET` (default target),
 `OLLAMA_HOST` (the fork's endpoint for installs), `HF_TOKEN` (gated models) and

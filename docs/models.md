@@ -11,7 +11,7 @@ two chat turns; nothing was tuned per model.
 `temperum convert MODEL --install` (the runs used `--target gguf-hexagon`, now the
 default): Q4_0, standard verification. The runtime is the fork's portable package
 (branch `npu/hexagon-spike`, llama.cpp b11644) with Qualcomm's signed HTP libraries from
-`ollama npu setup --provider hexagon`. Measured 2026-10-19.
+`ollama npu setup --provider hexagon`. Measured 2026-10-19; the Llama 3.2 rows on 2026-10-20.
 
 | Model | Params | Convert + verify | NPU layers | Perplexity | Greedy exact | Long prompts | Template the fork uses | Verdict |
 |---|---|---|---|---|---|---|---|---|
@@ -19,9 +19,11 @@ default): Q4_0, standard verification. The runtime is the fork's portable packag
 | Qwen/Qwen2.5-0.5B-Instruct | 0.49B | - + 1.9 min | 25/25 | 1.16x | 2/6 | 875 ✓, 1763 ✓ | GGUF | passed |
 | Qwen/Qwen3-0.6B | 0.75B | 0.5 + 3.0 min | 29/29 | 1.12x | 2/6 | 858 ✓, 1746 ✓ | GGUF | passed |
 | TinyLlama/TinyLlama-1.1B-Chat-v1.0 | 1.1B | 0.5 + 3.7 min | 23/23 | 1.03x | 2/6 | 871 ✓ | built-in (Zephyr) | passed |
+| meta-llama/Llama-3.2-1B-Instruct | 1.24B | 1.2 + 11.7 min | 17/17 | 1.13x | - | 869 ✓, 1749 ✓ | GGUF | passed |
 | Qwen/Qwen2.5-1.5B-Instruct | 1.54B | - + 7.6 min | 29/29 | 1.14x | 3/6 | 875 ✓, 1763 ✓ | GGUF | passed |
 | deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B | 1.78B | 0.8 + 8.3 min | 29/29 | 1.11x | 2/6 | 851 ✗, 1739 ✗ (source ✗ too) | GGUF | passed |
 | Qwen/Qwen3-1.7B | 2.03B | 1.0 + 8.4 min | 29/29 | 1.21x | 3/6 | 858 ✓, 1746 ✓ | GGUF | warning |
+| meta-llama/Llama-3.2-3B-Instruct | 3.21B | 2.9 + 2.1 min | 29/29 | 1.06x | - | 869 ✓, 1749 ✓ | GGUF | warning |
 | microsoft/Phi-3.5-mini-instruct | 3.82B | 2.4 + 3.5 min | 33/33 | 1.10x | - | 858 ✓, 1758 ✓ | checked (phi3) | warning |
 | microsoft/Phi-4-mini-instruct | 3.84B | 2.8 + 3.0 min | 33/33 | 1.16x | - | 848 ✓, 1737 ✓ | GGUF | warning |
 | Qwen/Qwen2.5-7B-Instruct | 7.62B | 7.2 + 5.4 min | 29/29 | 1.08x | - | 875 ✓, 1763 ✓ | GGUF | warning |
@@ -34,9 +36,11 @@ Speed through the fork (tokens per second; first token in seconds):
 | Qwen/Qwen2.5-0.5B-Instruct | 2,546 | 68.1 | 0.23 | 1,483 | 156.6 | 0.38 |
 | Qwen/Qwen3-0.6B | 1,743 | 43.4 | 0.33 | 845 | 80.1 | 0.65 |
 | TinyLlama/TinyLlama-1.1B-Chat-v1.0 | 1,510 | 53.4 | 0.42 | 623 | 99.6 | 0.98 |
+| meta-llama/Llama-3.2-1B-Instruct | 1,940 | 46.7 | 0.29 | 766 | 79.9 | 0.70 |
 | Qwen/Qwen2.5-1.5B-Instruct | 1,230 | 34.5 | 0.48 | 559 | 68.3 | 1.01 |
 | deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B | 1,179 | 34.8 | 0.48 | 524 | 69.4 | 1.03 |
 | Qwen/Qwen3-1.7B | 1,054 | 26.3 | 0.55 | 443 | 50.4 | 1.24 |
+| meta-llama/Llama-3.2-3B-Instruct | 893 | 19.0 | 0.65 | 270 | 33.7 | 1.99 |
 | microsoft/Phi-3.5-mini-instruct | 491 | 9.7 | 1.32 | 198 | 27.9 | 3.05 |
 | microsoft/Phi-4-mini-instruct | 713 | 12.8 | 0.78 | 231 | 30.5 | 2.20 |
 | Qwen/Qwen2.5-7B-Instruct | 390 | 10.0 | 1.53 | 118 | 13.8 | 5.00 |
@@ -114,9 +118,14 @@ GGUF on the NPU (same harness, 556-token prompt).
 
 ## Not covered yet
 
-- **Llama 3.2** needs access to Meta's gated repository; `temperum` stops at the plan with
-  the access link until the account has it. (SmolLM2 and TinyLlama use the Llama
-  architecture.)
+- **Llama 3.1** (8B) needs its own licence acceptance on Hugging Face, separate from Llama
+  3.2's; `temperum` stops at the plan with the access link until the account has it. The
+  Llama 3.2 rows: the 1B's source model ran for reference answers (its greedy answers were
+  not scored, as the row shows); the 3B's did not fit beside an editor in 16 GB, so its
+  answers were not compared. Both keep the GGUF's own template (Llama 3.2's date preamble),
+  which the converter's llama3 Go template lacks; the verifier compared that rendering with
+  transformers' and, since 2026-10-20, ignores the BOS text llama-server adds at
+  tokenization instead of in the prompt.
 - **One unreproduced failure:** in one of about 19 two-turn chats, Phi-4-mini (then split
   between NPU and CPU) answered the second turn with unrelated words. Later runs, split and
   whole, did not repeat it.

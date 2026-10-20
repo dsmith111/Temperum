@@ -246,6 +246,9 @@ def test_quick_verification_generates_with_the_bundles_own_chat_format(tmp_path:
         def text(self) -> str:
             return ("load_tensors: offloaded 29/29 layers to GPU\n"
                     "load_tensors:         HTP0 model buffer size =   898.14 MiB\n")
+        def bos_text(self) -> str | None:
+            return None
+
         def apply_template(self, messages: list[dict[str, str]]) -> str:
             return f"<user>{messages[-1]['content']}<assistant>"
         def complete(self, prompt: Any, n_predict: int) -> dict[str, Any]:
@@ -292,7 +295,7 @@ def test_a_model_too_large_to_run_here_is_still_checked_with_its_tokenizer(tmp_p
             "tokenizer_only": True, "prompts": [{"prompt": "Q", "input_ids": [7, 8, 9]}],
             "needle": [{"target": 900, "input_len": 870, "input_ids": [5] * 870},
                        {"target": 1800, "input_len": 1760, "input_ids": [5] * 1760}],
-            "rendered": [f"<user>{c[-1]['content']}<assistant>" for c in CONVERSATIONS]}), encoding="utf-8")
+            "rendered": [f"<s><user>{c[-1]['content']}<assistant>" for c in CONVERSATIONS]}), encoding="utf-8")
         return 0, ""
 
     sent: list[Any] = []
@@ -304,6 +307,9 @@ def test_a_model_too_large_to_run_here_is_still_checked_with_its_tokenizer(tmp_p
         def text(self) -> str:
             return ("load_tensors: offloaded 33/33 layers to GPU\n"
                     "load_tensors:         HTP0 model buffer size =  2100.00 MiB\n")
+        def bos_text(self) -> str | None:
+            return "<s>"
+
         def apply_template(self, messages: list[dict[str, str]]) -> str:
             return f"<user>{messages[-1]['content']}<assistant>"
         def complete(self, prompt: Any, n_predict: int) -> dict[str, Any]:

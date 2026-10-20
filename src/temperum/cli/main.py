@@ -3,15 +3,18 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 import time
+import webbrowser
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 import typer
 from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
+from temperum import ui
 from temperum.core.errors import TemperumError
 
 if TYPE_CHECKING:
@@ -45,6 +48,125 @@ def _progress(start: float, as_json: bool = False) -> Any:
         minutes, seconds = divmod(int(elapsed), 60)
         err.print(f"[dim]{minutes:3d}:{seconds:02d}[/dim] {escape(message)}")
     return say
+
+
+def _interactive(yes: bool, as_json: bool) -> bool:
+    """Questions and the stage bar need a terminal on both ends and neither --yes nor --json."""
+    return not yes and not as_json and sys.stdin.isatty() and sys.stderr.isatty()
+
+
+def _print_install(installed: dict[str, Any]) -> None:
+    placed = installed.get("placement", {})
+    where = {"npu": f"whole on the NPU ({placed.get('npu_mib')} MiB)",
+             "split": f"{placed.get('npu_mib')} of {placed.get('size_mib')} MiB on the NPU",
+             "cpu": "on the CPU"}.get(str(placed.get("where")), "")
+    err.print(f"  installed as {escape(str(installed['name']))}" + (f"; the fork runs it {where}" if where else "")
+              + f": ollama run {escape(str(installed['name']))}")
+    for warning in installed.get("warnings", []):
+        err.print(f"  [yellow]![/yellow] {escape(str(warning))}")
+
+
+def _after_convert(summary: dict[str, Any], *, tag: str, installer: Callable[[str], dict[str, Any]], install: bool,
+                   validate: bool, push: bool, push_as: Optional[str], interactive: bool, exe: Optional[Path],
+                   host: Optional[str], say: Callable[[str], None]) -> None:
+    """Install into the fork, validate through it, upload to ollama.com: asked when interactive, else by flag."""
+    from temperum import paths
+    from temperum.install import fork
+    from temperum.install.validate import validate as validate_model
+
+    if interactive and not install:
+        if exe is None:
+            err.print(f"  To install it into the fork, set {fork.EXE_SETTING} to the fork's ollama.exe and run: "
+                      f"temperum install --input {escape(str(summary['bundle']))} --name {escape(tag)} --execute")
+            return
+        install = ui.confirm(err, f"Install it into the Ollama NPU fork as [bold]{escape(tag)}[/bold]?", default=True)
+    if not (install or validate or push):
+        return
+    endpoint = fork.endpoint_for(host)
+    if interactive and fork.version(endpoint) is None:
+        if exe is None or not ui.confirm(err, f"No server answers at {endpoint}. Start the fork's server now, with "
+                                              "the NPU switch on?", default=True):
+            err.print(f"  Start the fork's server (OLLAMA_HEXAGON=1, then ollama serve) and run: temperum install "
+                      f"--input {escape(str(summary['bundle']))} --name {escape(tag)} --execute")
+            return
+    info = fork.ensure(endpoint, exe, say, log_dir=paths.home() / "logs")
+    if info.started:
+        summary["server"] = {"endpoint": endpoint, "pid": info.pid, "log": str(info.log), "started": True}
+        err.print(f"  started the fork's server at {endpoint} (pid {info.pid}); it keeps running after temperum "
+                  "exits")
+    elif not info.is_fork:
+        err.print(f"  [yellow]![/yellow] the server at {endpoint} is version {escape(info.version)}, which does "
+                  "not look like the NPU fork")
+    if install:
+        summary["install"] = installer(endpoint)
+        _print_install(summary["install"])
+    if interactive and not validate:
+        validate = ui.confirm(err, "Validate it through the fork (load it, time a generation, watch the CPU)?",
+                              default=True)
+    if validate:
+        report = validate_model(endpoint, tag, fork_dir=exe.parent if exe else None, say=say)
+        summary["validation"] = report
+        err.print(ui.validation_table(report))
+    if interactive and not push:
+        push = ui.confirm(err, "Upload it to ollama.com, to share it and pull it on your other devices?",
+                          default=False)
+    if push:
+        summary["push"] = _push_flow(endpoint, tag, push_as, interactive, say)
+
+
+def _push_flow(endpoint: str, tag: str, push_as: Optional[str], interactive: bool,
+               say: Callable[[str], None]) -> dict[str, Any]:
+    from temperum.install import push as pushing
+    from temperum.install.ollama_import import _canonical_tag
+
+    while True:
+        try:
+            owner = pushing.account(endpoint)
+            break
+        except pushing.SigninRequired as exc:
+            if not interactive:
+                raise
+            err.print("  The fork's server is not linked to an ollama.com account yet. Sign in at:\n"
+                      f"  {escape(exc.url)}")
+            webbrowser.open(exc.url)
+            if not ui.confirm(err, "Linked? Check again", default=True):
+                raise typer.Exit(code=1)
+    remote = pushing.check_remote_name(push_as or pushing.remote_name(owner, tag))
+    if interactive and push_as is None:
+        remote = pushing.check_remote_name(ui.ask(err, "Upload as", default=remote))
+    if remote != _canonical_tag(tag):
+        say(f"naming it {remote}")
+        pushing.copy(endpoint, tag, remote)
+    say(f"uploading {remote} to ollama.com through the fork")
+    callback, stop = _push_progress(interactive, say)
+    try:
+        result = pushing.push(endpoint, remote, progress=callback)
+    finally:
+        stop()
+    err.print(f"  uploaded: {escape(result['url'])}; pull it elsewhere with: ollama pull {escape(remote)}")
+    return result
+
+
+def _push_progress(interactive: bool, say: Callable[[str], None]) -> tuple[Callable[[str, int, int], None],
+                                                                            Callable[[], None]]:
+    if not interactive:
+        seen: set[str] = set()
+
+        def plain(status: str, _completed: int, _total: int) -> None:
+            if status not in seen:
+                seen.add(status)
+                say(status)
+        return plain, lambda: None
+    from rich.progress import BarColumn, DownloadColumn, Progress, TextColumn, TransferSpeedColumn
+
+    progress = Progress(TextColumn("{task.description}"), BarColumn(bar_width=None), DownloadColumn(),
+                        TransferSpeedColumn(), console=err, transient=True)
+    progress.start()
+    task = progress.add_task("uploading", total=None)
+
+    def update(status: str, completed: int, total: int) -> None:
+        progress.update(task, description=escape(status[:48]), completed=completed, total=total or None)
+    return update, progress.stop
 
 
 def _print_plan(plan: Any) -> None:
@@ -89,7 +211,13 @@ def convert_command(
     plan_only: bool = typer.Option(False, "--plan", help="Show the plan and stop"),
     yes: bool = typer.Option(False, "--yes", "-y", help="Run without asking (accepts the plan and licence notice)"),
     as_json: bool = typer.Option(False, "--json", help="Print the plan/result as JSON on stdout"),
-    install: bool = typer.Option(False, "--install", help="Also install into a running Ollama fork"),
+    install: bool = typer.Option(False, "--install", help="Also install into the Ollama fork (its server is started "
+                                                        "if none runs)"),
+    validate: bool = typer.Option(False, "--validate", help="With --install: load it through the fork and measure "
+                                                          "where it runs, speed and CPU use"),
+    push: bool = typer.Option(False, "--push", help="With --install: upload it to ollama.com through the fork"),
+    push_as: Optional[str] = typer.Option(None, "--as", help="ollama.com name for --push (default: your account/"
+                                                            "<name>:<tag>)"),
     name: Optional[str] = typer.Option(None, "--name", help="Ollama tag for --install (default: <model>:npu; "
                                                                     "<model>:npu-qnn for a QNN bundle)"),
     ollama_exe: Optional[Path] = typer.Option(None, "--ollama-exe", help="Fork executable for --install"),
@@ -104,6 +232,9 @@ def convert_command(
 
     start = time.time()
     try:
+        if (validate or push) and not install:
+            raise TemperumError("import", "INSTALL_REQUIRED", "--validate and --push apply to the installed model.",
+                                hint="Add --install.")
         if install:  # fail now, not after a long conversion
             _check_install_options(ollama_exe, host)
         machine = None
@@ -119,7 +250,8 @@ def convert_command(
                           "ignored for a GGUF")
             _convert_gguf(model, target, quant=quant, context=context, out_dir=out_dir, verify_level=verify_level,
                           overwrite=overwrite, python=python, plan_only=plan_only, yes=yes, as_json=as_json,
-                          install=install, name=name, ollama_exe=ollama_exe, host=host, start=start, machine=machine)
+                          install=install, name=name, ollama_exe=ollama_exe, host=host, start=start, machine=machine,
+                          validate=validate, push=push, push_as=push_as)
             return
         options = convert.ConvertOptions(model=model, target=target, quality=quality, device=device,
                                          context=context, out=out_dir, verify=verify_level, overwrite=overwrite,
@@ -136,7 +268,12 @@ def convert_command(
             return
         if not yes and not typer.confirm("Proceed?", default=True, err=True):
             raise typer.Exit(code=1)
-        result = convert.run(plan, progress=_progress(start, as_json))
+        interactive = _interactive(yes, as_json)
+        if interactive:
+            with ui.StageProgress(err, float(plan.estimates["minutes"])) as stages:
+                result = convert.run(plan, progress=stages.say)
+        else:
+            result = convert.run(plan, progress=_progress(start, as_json))
         report = result.verification
         summary: dict[str, Any] = {"bundle": str(result.bundle), "verdict": report.get("verdict"),
                                    "reasons": report.get("reasons", []), "job": str(result.job_dir),
@@ -145,13 +282,10 @@ def convert_command(
         if quality_report.get("perplexity"):
             summary["perplexity_ratio"] = quality_report["perplexity"].get("ratio")
         summary["speed"] = report.get("speed", {})
-        install = install and summary["verdict"] != "failed"  # never install a bundle that failed verification
-        if install:
-            summary["install"] = _install(result.bundle, name or f"{plan.model.name}:npu-qnn", ollama_exe, host,
-                                          result.job_dir, plan.host.processor_name)
-        if as_json:
-            typer.echo(json.dumps(summary, indent=2, default=str))
-        else:
+        tag = name or f"{plan.model.name}:npu-qnn"
+        if interactive:
+            err.print(ui.ready_panel(summary))
+        elif not as_json:
             colour = {"passed": "green", "warning": "yellow"}.get(str(summary["verdict"]), "red")
             err.print(f"[bold {colour}]{escape(str(summary['verdict']))}[/bold {colour}] "
                       f"{escape(str(result.bundle))} ({summary['minutes']} min)")
@@ -163,16 +297,21 @@ def convert_command(
             if speed.get("median_tokens_per_s"):
                 err.print(f"  decode: {speed['median_tokens_per_s']:.0f} tokens/s, "
                           f"first token: {speed.get('median_ttft_s') or 0:.2f} s")
-            if install:
-                err.print(f"  installed as {escape(str(summary['install'].get('name')))}: "
-                          f"ollama run {escape(str(summary['install'].get('name')))}")
-            elif summary["verdict"] != "failed":
+            if not install and summary["verdict"] != "failed":
                 err.print(f"  install: temperum install --input {escape(str(result.bundle))} "
-                          f"--name {escape(plan.model.name)}:npu-qnn --ollama-exe FORK_EXE --host http://127.0.0.1:11434 "
+                          f"--name {escape(tag)} --ollama-exe FORK_EXE --host http://127.0.0.1:11434 "
                           "(review the plan, then add --execute --expect-fingerprint FP)")
-            else:
+        if summary["verdict"] == "failed":  # never install a bundle that failed verification
+            if not as_json:
                 err.print(f"  Olive's cache is kept in {escape(str(result.job_dir))}, so rerunning with --overwrite "
                           "(for example with --num-splits) reuses the quantization")
+        else:
+            _after_convert(summary, tag=tag, install=install, validate=validate, push=push, push_as=push_as,
+                           interactive=interactive, exe=ollama_exe, host=host, say=_progress(start, as_json),
+                           installer=lambda endpoint: _install(result.bundle, tag, ollama_exe, endpoint,
+                                                               result.job_dir, plan.host.processor_name))
+        if as_json:
+            typer.echo(json.dumps(summary, indent=2, default=str))
         if summary["verdict"] == "failed":
             raise typer.Exit(code=3)
     except TemperumError as exc:
@@ -182,9 +321,10 @@ def convert_command(
 def _convert_gguf(model: str, target_id: str, *, quant: str, context: Optional[int], out_dir: Optional[Path],
                   verify_level: str, overwrite: bool, python: Optional[Path], plan_only: bool, yes: bool,
                   as_json: bool, install: bool, name: Optional[str], ollama_exe: Optional[Path],
-                  host: Optional[str], start: float, machine: Optional[HostInfo] = None) -> None:
+                  host: Optional[str], start: float, machine: Optional[HostInfo] = None,
+                  validate: bool = False, push: bool = False, push_as: Optional[str] = None) -> None:
     """The GGUF target: llama.cpp's converter, the fork's llama-quantize, verified on the NPU."""
-    from temperum import gguf
+    from temperum import gguf, paths
     from temperum.gguf_verify import verify_gguf
     from temperum.host import detect_host
     from temperum.install.ollama_import import install_gguf
@@ -221,7 +361,17 @@ def _convert_gguf(model: str, target_id: str, *, quant: str, context: Optional[i
         return
     if not yes and not typer.confirm("Proceed?", default=True, err=True):
         raise typer.Exit(code=1)
-    result = gguf.run(plan, progress=_progress(start, as_json), verifier=verify_gguf)
+    interactive = _interactive(yes, as_json)
+    if interactive:
+        from huggingface_hub.utils import disable_progress_bars
+
+        disable_progress_bars()  # the stage bar shows the download instead of the hub's own bars
+        snapshot = paths.sources_dir() / str(plan.model.ref.repo).replace("/", "--") / str(plan.model.commit)
+        probe = ui.snapshot_probe(snapshot, int(float(plan.estimates.get("download_gb") or 0) * 1e9))
+        with ui.StageProgress(err, float(plan.estimates["minutes"]), probe) as stages:
+            result = gguf.run(plan, progress=stages.say, verifier=verify_gguf)
+    else:
+        result = gguf.run(plan, progress=_progress(start, as_json), verifier=verify_gguf)
     report = result.verification
     summary: dict[str, Any] = {"bundle": str(result.bundle), "verdict": report.get("verdict"),
                                "reasons": report.get("reasons", []), "job": str(result.job_dir),
@@ -230,13 +380,10 @@ def _convert_gguf(model: str, target_id: str, *, quant: str, context: Optional[i
     ppl = report.get("quality", {}).get("perplexity", {})
     if ppl:
         summary["perplexity_ratio"] = ppl.get("ratio")
-    if install and summary["verdict"] != "failed" and exe is not None:
-        summary["install"] = install_gguf(result.bundle, name or f"{plan.model.name}:npu", executable=exe,
-                                          host=host or os.environ.get("OLLAMA_HOST"), work_dir=result.job_dir / "install",
-                                          say=_progress(start, as_json))
-    if as_json:
-        typer.echo(json.dumps(summary, indent=2, default=str))
-    else:
+    tag = name or f"{plan.model.name}:npu"
+    if interactive:
+        err.print(ui.ready_panel(summary))
+    elif not as_json:
         colour = {"passed": "green", "warning": "yellow"}.get(str(summary["verdict"]), "red")
         err.print(f"[bold {colour}]{escape(str(summary['verdict']))}[/bold {colour}] "
                   f"{escape(str(result.bundle))} ({summary['minutes']} min)")
@@ -254,27 +401,29 @@ def _convert_gguf(model: str, target_id: str, *, quant: str, context: Optional[i
                       if speed.get("long_prompt_tokens_per_s") else
                       f"{speed.get('median_prompt_tokens_per_s') or 0:.0f} tokens/s")
             err.print(f"  decode: {speed['median_tokens_per_s']:.0f} tokens/s, prompt: {prompt}")
-        if "install" in summary:
-            installed = summary["install"]
-            placed = installed.get("placement", {})
-            where = {"npu": f"whole on the NPU ({placed.get('npu_mib')} MiB)",
-                     "split": f"{placed.get('npu_mib')} of {placed.get('size_mib')} MiB on the NPU",
-                     "cpu": "on the CPU"}.get(str(placed.get("where")), "")
-            err.print(f"  installed as {escape(str(installed['name']))}" + (f"; the fork runs it {where}" if where
-                                                                             else "")
-                      + f": ollama run {escape(str(installed['name']))}")
-            for warning in installed.get("warnings", []):
-                err.print(f"  [yellow]![/yellow] {escape(str(warning))}")
+    if summary["verdict"] != "failed":
+
+        def installer(endpoint: str) -> dict[str, Any]:
+            if exe is None:
+                raise TemperumError("import", "EXE_REQUIRED", "Installing needs the fork executable.",
+                                    hint="Pass --ollama-exe PATH or set TEMPERUM_OLLAMA_EXE.")
+            return install_gguf(result.bundle, tag, executable=exe, host=endpoint,
+                                work_dir=result.job_dir / "install", say=_progress(start, as_json))
+        _after_convert(summary, tag=tag, install=install, validate=validate, push=push, push_as=push_as,
+                       interactive=interactive, exe=exe, host=host, say=_progress(start, as_json),
+                       installer=installer)
+    if as_json:
+        typer.echo(json.dumps(summary, indent=2, default=str))
     if summary["verdict"] == "failed":
         raise typer.Exit(code=3)
 
 
 def _check_install_options(ollama_exe: Optional[Path], host: Optional[str]) -> None:
-    from temperum.install.ollama_import import local_endpoint
+    from temperum.install import fork
 
-    local_endpoint(host or os.environ.get("OLLAMA_HOST"))
-    exe = ollama_exe or (Path(os.environ["TEMPERUM_OLLAMA_EXE"]) if os.environ.get("TEMPERUM_OLLAMA_EXE") else None)
-    if exe is None or not exe.is_file():
+    fork.endpoint_for(host)
+    exe = fork.executable(ollama_exe)
+    if exe is None:
         raise TemperumError("import", "EXE_REQUIRED", "--install needs the fork executable.",
                             hint="Pass --ollama-exe PATH or set TEMPERUM_OLLAMA_EXE.")
 
@@ -564,6 +713,69 @@ def inspect_command(
         raise typer.Exit(code=2)
 
 
+@app.command("validate")
+def validate_command(
+    tag: str = typer.Argument(..., help="An installed Ollama tag"),
+    ollama_exe: Optional[Path] = typer.Option(None, "--ollama-exe", help="Fork executable (default: "
+                                                                        "TEMPERUM_OLLAMA_EXE); its server is "
+                                                                        "started if none runs"),
+    host: Optional[str] = typer.Option(None, "--host", help="http://127.0.0.1:PORT (default: OLLAMA_HOST, else "
+                                                           "port 11434)"),
+    as_json: bool = typer.Option(False, "--json", help="Print the report as JSON"),
+) -> None:
+    """Load a model through the fork and report where it runs, its speed and the CPU it keeps busy."""
+    from temperum import paths
+    from temperum.install import fork
+    from temperum.install.validate import validate as validate_model
+
+    say = _progress(time.time(), as_json)
+    try:
+        exe = fork.executable(ollama_exe)
+        endpoint = fork.endpoint_for(host)
+        info = fork.ensure(endpoint, exe, say, log_dir=paths.home() / "logs")
+        if info.started:
+            say(f"started the fork's server at {endpoint} (pid {info.pid}); it keeps running")
+        report = validate_model(endpoint, tag, fork_dir=exe.parent if exe else None, say=say)
+        if info.started:
+            report["server"] = {"endpoint": endpoint, "pid": info.pid, "log": str(info.log), "started": True}
+        if as_json:
+            typer.echo(json.dumps(report, indent=2, default=str))
+        else:
+            err.print(ui.validation_table(report))
+    except TemperumError as exc:
+        _handle_err(exc)
+
+
+@app.command("push")
+def push_command(
+    tag: str = typer.Argument(..., help="An installed Ollama tag"),
+    push_as: Optional[str] = typer.Option(None, "--as", help="ollama.com name, account/name:tag (default: your "
+                                                            "account/<name>:<tag>)"),
+    ollama_exe: Optional[Path] = typer.Option(None, "--ollama-exe", help="Fork executable (default: "
+                                                                        "TEMPERUM_OLLAMA_EXE); its server is "
+                                                                        "started if none runs"),
+    host: Optional[str] = typer.Option(None, "--host", help="http://127.0.0.1:PORT (default: OLLAMA_HOST, else "
+                                                           "port 11434)"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="No questions: fail if the server is not signed in"),
+    as_json: bool = typer.Option(False, "--json", help="Print the result as JSON"),
+) -> None:
+    """Upload a model to ollama.com through the fork, which holds your account key; temperum never sees it."""
+    from temperum import paths
+    from temperum.install import fork
+
+    say = _progress(time.time(), as_json)
+    try:
+        endpoint = fork.endpoint_for(host)
+        info = fork.ensure(endpoint, fork.executable(ollama_exe), say, log_dir=paths.home() / "logs")
+        if info.started:
+            say(f"started the fork's server at {endpoint} (pid {info.pid}); it keeps running")
+        result = _push_flow(endpoint, tag, push_as, _interactive(yes, as_json), say)
+        if as_json:
+            typer.echo(json.dumps(result, indent=2))
+    except TemperumError as exc:
+        _handle_err(exc)
+
+
 @app.command("install")
 def install_command(
     input: Path = typer.Option(..., "--input", help="Bundle folder to install"),
@@ -579,22 +791,28 @@ def install_command(
     timeout: float = typer.Option(300, "--timeout", min=1, max=3600, help="Execution time budget in seconds"),
 ) -> None:
     """Plan (default) or execute a local `ollama create` of a bundle; never downloads or uploads."""
+    from temperum import paths
+    from temperum.install import fork
     from temperum.install.ollama_import import execute_import, install_gguf, plan_import
 
     try:
         if (input / "model.gguf").is_file():  # GGUF bundle: FROM + parameters; the GGUF carries its template
-            exe = ollama_exe or (Path(os.environ["TEMPERUM_OLLAMA_EXE"])
-                                 if os.environ.get("TEMPERUM_OLLAMA_EXE") else None)
+            exe = fork.executable(ollama_exe)
             if exe is None:
                 raise TemperumError("import", "EXE_REQUIRED", "Installing needs the fork executable.",
                                     hint="Pass --ollama-exe PATH or set TEMPERUM_OLLAMA_EXE.")
+            endpoint = fork.endpoint_for(host)
             if not execute:
                 typer.echo(json.dumps({"action": "local-create", "format": "gguf", "bundle": str(input), "name": name,
-                                       "executable": str(exe), "executed": False,
+                                       "executable": str(exe), "endpoint": endpoint, "executed": False,
                                        "next": "Repeat with --execute to run `ollama create` on the fork."}, indent=2))
                 return
-            result = install_gguf(input, name, executable=exe, host=host or os.environ.get("OLLAMA_HOST"),
-                                  work_dir=work_dir / "temperum-install", overwrite=overwrite, timeout=timeout)
+            say = _progress(time.time())
+            info = fork.ensure(endpoint, exe, say, log_dir=paths.home() / "logs")
+            result = install_gguf(input, name, executable=exe, host=endpoint, work_dir=work_dir / "temperum-install",
+                                  overwrite=overwrite, timeout=timeout, say=say)
+            if info.started:
+                result["server"] = {"endpoint": endpoint, "pid": info.pid, "log": str(info.log), "started": True}
             typer.echo(json.dumps({"action": "local-create", "format": "gguf", "executed": True, "installed": True,
                                    **result}, indent=2))
             return
