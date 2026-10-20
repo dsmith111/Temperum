@@ -86,6 +86,27 @@ def test_unknown_formats_need_an_explicit_template() -> None:
     assert exc.value.reason_code == "TEMPLATE_UNKNOWN"
 
 
+def test_qnn_bundles_keep_an_unknown_format_for_the_fork_to_render(tmp_path: Path) -> None:
+    from npu_model.convert import ConvertOptions, _chat_template
+
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    (snapshot / "chat_template.jinja").write_text(
+        "{% for m in messages %}### {{ m.role }}: {{ m.content }}{% endfor %}", encoding="utf-8")
+    options = ConvertOptions(model="org/m")
+    chat = _chat_template(options, snapshot)
+    assert chat.family == "own" and chat.render([{"role": "user", "content": "x"}]) is None
+    assert chat.modelfile() == "FROM .\n"  # no TEMPLATE: the fork renders chat_template.jinja
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "chat_template.jinja").write_text("{{ messages }}", encoding="utf-8")
+    (bundle / "Modelfile").write_text(chat.modelfile(), encoding="utf-8", newline="\n")
+    assert read_modelfile(bundle / "Modelfile", bundle.resolve(), 4096).text == "FROM .\n"
+    template = tmp_path / "template.txt"
+    template.write_text("{{ .Prompt }}", encoding="utf-8")
+    assert _chat_template(ConvertOptions(model="org/m", template=template), snapshot).family == "custom"
+
+
 def test_custom_templates_must_be_go_templates() -> None:
     assert custom("{{ .Prompt }}", ["</s>"]).stops == ("</s>",)
     with pytest.raises(NpuModelError):

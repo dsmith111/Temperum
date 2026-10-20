@@ -192,6 +192,10 @@ def assemble(inputs: AssembleInputs) -> tuple[Path, Inspection]:
     if inputs.processor_name:
         _write_json(staging / "ollama_npu.json", declaration(cfg, inputs))
     (staging / "Modelfile").write_text(inputs.chat.modelfile(), encoding="utf-8", newline="\n")
+    jinja = load_jinja(inputs.snapshot)
+    if inputs.chat.family == "own" and jinja and not (staging / "chat_template.jinja").is_file():
+        # The fork renders this file; the bundle may not carry tokenizer_config.json.
+        (staging / "chat_template.jinja").write_text(jinja, encoding="utf-8", newline="")
     licences = []
     for item in sorted(inputs.snapshot.iterdir()):
         if item.is_file() and item.name.lower().startswith(LICENSE_PREFIXES) and not (staging / item.name).exists():

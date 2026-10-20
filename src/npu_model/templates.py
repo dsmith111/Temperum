@@ -3,7 +3,9 @@
 Ollama does not execute Hugging Face Jinja templates (it matches them against a fixed list of
 known ones, which modern templates rarely match). The prompt format is recognized from the
 Jinja source and a curated Go template reproducing it is emitted, including the model's
-default system prompt. Unrecognized formats need an explicit template from the user.
+default system prompt. A QNN bundle with an unrecognized format keeps the model's own Jinja
+template, which the fork's ORT runner renders through GenAI (`own`); an explicit --template
+overrides either.
 
 `ChatTemplate.render` mirrors each Go template in Python, so verification can format prompts
 exactly as Ollama will and compare them with the model's own template.
@@ -30,6 +32,8 @@ class ChatTemplate:
 
     def modelfile(self) -> str:
         """Modelfile for a bundle folder (FROM is the folder itself)."""
+        if self.family == "own":  # the fork renders the bundle's chat_template.jinja
+            return "FROM .\n"
         lines = ["FROM .", f'TEMPLATE """{self.template}"""']
         lines += [f'PARAMETER stop "{stop}"' for stop in self.stops]
         return "\n".join(lines) + "\n"
@@ -180,6 +184,12 @@ def from_jinja(jinja: str | None) -> ChatTemplate:
     raise NpuModelError("template", "TEMPLATE_UNKNOWN",
                         "The model's chat template is not a recognized prompt format.",
                         hint="Pass --template FILE with an Ollama Go template (and --stop for its end markers).")
+
+
+def own() -> ChatTemplate:
+    """The model's own Jinja template, carried as chat_template.jinja and rendered by the fork's
+    ORT runner through GenAI (fork c24c6c41 or later); the Modelfile has no TEMPLATE."""
+    return ChatTemplate("own", "", (), None, verified=False)
 
 
 def custom(template_text: str, stops: list[str]) -> ChatTemplate:

@@ -141,10 +141,13 @@ def read_modelfile(path: Path, bundle: Path, context_length: int | None) -> Mode
         _fail("LOCAL_FROM_REQUIRED", f"FROM must exist locally and equal the inspected folder: {exc}")
     if resolved != bundle:
         _fail("SOURCE_SUBSTITUTION", "Modelfile FROM does not point to the inspected local folder.")
-    if (len(templates) != 1 or not templates[0].strip() or "{%" in templates[0] or "{#" in templates[0]
+    if not templates and (bundle / "chat_template.jinja").is_file():
+        pass  # the fork (c24c6c41 or later) renders the bundle's own Jinja template through GenAI
+    elif (len(templates) != 1 or not templates[0].strip() or "{%" in templates[0] or "{#" in templates[0]
             or not re.search(r"\{\{[^{}]*\.(Prompt|Messages|System)\b[^{}]*\}\}", templates[0])):
         _fail("OLLAMA_TEMPLATE_REQUIRED", "Supply one known-correct Ollama Go TEMPLATE using .Prompt/.Messages/"
-              ".System; bundle Jinja is not an Ollama template. Role tokens are never inferred.")
+              ".System, or leave TEMPLATE out of a bundle carrying chat_template.jinja for the fork to render. "
+              "Role tokens are never inferred.")
     parameters = [entry[1].split() for entry in commands if entry[0] == "PARAMETER"]
     if any(len(parameter) < 2 for parameter in parameters):
         _fail("INVALID_MODELFILE", "PARAMETER requires a name and value.")

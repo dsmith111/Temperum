@@ -87,7 +87,6 @@ def test_local_from_guards(
 
 @pytest.mark.parametrize("text,code", [
     ('FROM .\nFROM .\nTEMPLATE "{{ .Prompt }}"\n', "LOCAL_FROM_REQUIRED"),
-    ('FROM .\n', "OLLAMA_TEMPLATE_REQUIRED"),
     ('FROM .\nTEMPLATE "{% for message in messages %}{{ message }}"\n', "OLLAMA_TEMPLATE_REQUIRED"),
     ('FROM .\nTEMPLATE "{{ .Prompt }}"\nDRAFT remote:latest\n', "UNSAFE_MODELFILE"),
     ('FROM .\nTEMPLATE "{{ .Prompt }}"\nPARAMETER num_ctx 8192\n', "CONTEXT_CONFLICT"),
@@ -103,6 +102,17 @@ def test_modelfile_guards(
     with pytest.raises(NpuModelError) as error:
         make_plan(bundle, modelfile)
     assert error.value.reason_code == code
+
+
+def test_modelfile_without_template_relies_on_the_bundles_chat_template(
+    bundle: Path, modelfile: Path, fake_onnx: SimpleNamespace,
+) -> None:
+    modelfile.write_text("FROM .\n")
+    make_plan(bundle, modelfile)  # the fork renders chat_template.jinja
+    (bundle / "chat_template.jinja").unlink()
+    with pytest.raises(NpuModelError) as error:
+        make_plan(bundle, modelfile)
+    assert error.value.reason_code == "OLLAMA_TEMPLATE_REQUIRED"
 
 
 def test_source_substitution_rejected(

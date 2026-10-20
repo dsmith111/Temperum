@@ -123,6 +123,9 @@ implemented but not yet tested.
   those families (`model_type` qwen2, qwen3, llama, phi3) use their family's recipe.
 - **Quality modes:** `standard` (default on the CPU) uses rotated 8-bit round-to-nearest
   weights; `recipe` (default on CUDA) uses the recipe's own GPTQ settings, usually 4-bit.
+- **Chat formats:** recognized ones get a checked Ollama template; others keep the model's
+  own Jinja template, which the fork renders through GenAI (fork `c24c6c41` or later), and
+  verification checks that rendering against transformers'. `--template` overrides both.
 
 ## Commands
 

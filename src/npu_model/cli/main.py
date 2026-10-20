@@ -509,7 +509,7 @@ def verify_command(
     from npu_model.convert import VERIFICATION_FILE
     from npu_model.host import detect_host
     from npu_model.profiles import DEFAULT_RUNTIME, get_runtime
-    from npu_model.templates import from_jinja, load_jinja
+    from npu_model.templates import from_jinja, load_jinja, own
     from npu_model.toolchains import Toolchains
     from npu_model.verify import verify
 
@@ -529,7 +529,8 @@ def verify_command(
             for role in ("quantize", "verify"):
                 chains.ensure(role)
             heldout = calib.ensure_corpus(calib.HELDOUT, paths.data_dir()).path if level != "quick" else None
-            report = verify(bundle, snapshot, from_jinja(load_jinja(snapshot)), level,
+            own_template = manifest.get("chat_template", {}).get("family") == "own"
+            report = verify(bundle, snapshot, own() if own_template else from_jinja(load_jinja(snapshot)), level,
                             quantize_python=chains.python_exe("quantize"), verify_python=chains.python_exe("verify"),
                             work=paths.jobs_dir() / "verify" / bundle.name, heldout=heldout,
                             params=read_checkpoint(snapshot).total_params, available_gb=host.available_ram_gb,

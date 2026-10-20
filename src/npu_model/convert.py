@@ -30,7 +30,7 @@ from npu_model.olive_run import output_complete, run_olive
 from npu_model.profiles import DEFAULT_RUNTIME, RuntimeProfile, TargetProfile, get_runtime
 from npu_model.recipes import RecipeChoice, RenderOptions, choose, precision_label, render, resolve_quality
 from npu_model.sources import ResolvedModel, fetch, parse_ref, resolve
-from npu_model.templates import ChatTemplate, custom, from_jinja, load_jinja
+from npu_model.templates import ChatTemplate, custom, from_jinja, load_jinja, own
 from npu_model.toolchains import ENV_SIZE_GB, PYTHON_SIZE_GB, EnvStatus, Toolchains
 from npu_model.verify import verify
 
@@ -324,7 +324,12 @@ def _now() -> str:
 def _chat_template(options: ConvertOptions, snapshot: Path) -> ChatTemplate:
     if options.template:
         return custom(options.template.read_text(encoding="utf-8"), options.stops)
-    return from_jinja(load_jinja(snapshot))
+    try:
+        return from_jinja(load_jinja(snapshot))
+    except NpuModelError as exc:
+        if exc.reason_code != "TEMPLATE_UNKNOWN":
+            raise
+        return own()  # the fork renders the model's own template; verification compares it
 
 
 @dataclass
@@ -360,6 +365,8 @@ def _run(conversion: ConvertPlan, job: Job, say: Progress, chains_factory: Calla
     corpus = calib.ensure_corpus(calib.CALIBRATION, paths.data_dir())
     job.record("calibration-data", "done", **{k: v for k, v in corpus.to_dict().items() if k != "path"})
     chat = _chat_template(options, snapshot)
+    if chat.family == "own":
+        say("chat format not recognized: the bundle keeps the model's own template, which the fork renders")
 
     info = read_checkpoint(snapshot)
     olive_out = job.dir / "out"

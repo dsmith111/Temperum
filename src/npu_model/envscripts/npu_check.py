@@ -89,6 +89,10 @@ def main() -> None:
     ap.add_argument("--max-new", type=int, default=32)
     ap.add_argument("--ppl-stride", type=int, default=16)
     ap.add_argument("--needle-answer", default="")
+    ap.add_argument("--chat-template", help="Jinja file the fork renders through GenAI (else the tokenizer config's)")
+    ap.add_argument("--conversations", help="JSON list of conversations to render through GenAI")
+    ap.add_argument("--render-prompts", action="store_true",
+                    help="format --prompts through GenAI's chat template, as the fork does without a TEMPLATE")
     args = ap.parse_args()
 
     report: dict[str, Any] = {"load": {"ok": False}}
@@ -108,6 +112,16 @@ def main() -> None:
     bos = model_cfg.get("bos_token_id")
     probe = [int(i) for i in tok.encode("Hi")]
     report["tokenizer"] = {"adds_bos": bool(probe) and bos is not None and probe[0] == bos}
+    template = Path(args.chat_template).read_text(encoding="utf-8") if args.chat_template else None
+
+    def render(messages: list[dict[str, str]]) -> str:
+        return str(tok.apply_chat_template(json.dumps(messages), template_str=template, add_generation_prompt=True))
+
+    if args.conversations:
+        try:
+            report["rendered"] = [render(c) for c in json.loads(args.conversations)]
+        except Exception as exc:  # report, don't hide
+            report["render_error"] = f"{type(exc).__name__}: {exc}"[:500]
 
     ttfts: list[float] = []
     rates: list[float] = []
@@ -117,7 +131,10 @@ def main() -> None:
         prompts = [(p["prompt"], p["input_ids"], p) for p in reference["prompts"]]
         max_new = int(reference["max_new_tokens"])
     else:
-        prompts = [(text, [int(i) for i in tok.encode(text)], None) for text in json.loads(args.prompts or "[]")]
+        texts = json.loads(args.prompts or "[]")
+        if args.render_prompts and "render_error" not in report:
+            texts = [render([{"role": "user", "content": text}]) for text in texts]
+        prompts = [(text, [int(i) for i in tok.encode(text)], None) for text in texts]
         max_new = args.max_new
     for index, (text, ids, ref) in enumerate(prompts, 1):
         _say(f"prompt {index}/{len(prompts)}")

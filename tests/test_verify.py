@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from npu_model.core.errors import NpuModelError
-from npu_model.templates import from_jinja
+from npu_model.templates import from_jinja, own
 from npu_model.verify import CONVERSATIONS, reference_dtype, template_check, verdict, verify
 
 CHATML = from_jinja("<|im_start|>system\nYou are helpful.<|im_end|>\n<|im_start|>")
@@ -68,6 +68,7 @@ class FakeScripts:
         self.ratio = ratio
         self.load_ok = load_ok
         self.calls: list[list[str]] = []
+        self.genai_render = lambda conversation: CHATML.render(conversation)  # npu_check.py --conversations
 
     def __call__(self, cmd: list[str], **kwargs: Any) -> Any:
         self.calls.append(cmd)
@@ -88,6 +89,9 @@ class FakeScripts:
                                             "matching_prefix": 1, "reference_tokens": 1, "exact": True}],
                                "speed": {"median_tokens_per_s": 50.0}, "tokenizer": {"adds_bos": False},
                                "perplexity": {"ratio": self.ratio}, "needle": []})
+                if "--conversations" in cmd:
+                    conversations = json.loads(cmd[cmd.index("--conversations") + 1])
+                    report["rendered"] = [self.genai_render(c) for c in conversations]
             out.write_text(json.dumps(report), encoding="utf-8")
 
         class Proc:
@@ -128,6 +132,28 @@ def test_quick_verification_skips_the_reference(tmp_path: Path) -> None:
     formatted = json.loads(fake.calls[0][fake.calls[0].index("--prompts") + 1])
     assert formatted[0].startswith("<|im_start|>system\nYou are helpful.")
     assert report["verdict"] == "passed" and report["quality"] == {}
+
+
+def test_own_template_is_checked_as_genai_renders_it(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    (bundle / "chat_template.jinja").write_text("{{ messages }}", encoding="utf-8")
+    fake = FakeScripts()
+    report = verify(bundle, tmp_path, own(), "quick", quantize_python=Path("q.exe"), verify_python=Path("v.exe"),
+                    work=tmp_path / "work", heldout=None, params=None, available_gb=None, popen=fake)
+    # transformers renders the template (tokenizer only); GenAI renders it and formats the prompts as the fork does
+    assert [c[0] for c in fake.calls] == ["q.exe", "v.exe"] and "--tokenizer-only" in fake.calls[0]
+    npu = fake.calls[1]
+    assert "--render-prompts" in npu and npu[npu.index("--chat-template") + 1].endswith("chat_template.jinja")
+    assert json.loads(npu[npu.index("--prompts") + 1])[0] == "What is the capital of France? Answer in one word."
+    assert report["template"]["status"] == "match" and report["template"]["renderer"] == "genai"
+    assert report["verdict"] == "passed"
+
+    fake = FakeScripts()
+    fake.genai_render = lambda conversation: "different"
+    report = verify(bundle, tmp_path, own(), "quick", quantize_python=Path("q.exe"), verify_python=Path("v.exe"),
+                    work=tmp_path / "work2", heldout=None, params=None, available_gb=None, popen=fake)
+    assert report["verdict"] == "warning"
+    assert report["reasons"] == ["GenAI, which the fork renders the chat template with, differs from transformers"]
 
 
 def test_load_failure_is_a_failed_verdict(tmp_path: Path) -> None:

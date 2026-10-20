@@ -104,20 +104,25 @@ def run_script(python: Path, script: str, args: list[str], say: Progress, popen:
     return proc.wait(), "\n".join(tail)
 
 
-def template_check(chat: ChatTemplate, rendered: list[str], bos_text: str | None) -> dict[str, Any]:
-    """Compare the generated Ollama template with the model's own (Jinja) rendering."""
+def template_check(chat: ChatTemplate, rendered: list[str], bos_text: str | None,
+                   generated: list[str] | None = None) -> dict[str, Any]:
+    """Compare the generated Ollama template with the model's own (Jinja) rendering.
+
+    `generated` replaces the template's own rendering: GenAI's, for a bundle whose template the fork
+    renders (family "own").
+    """
     if not rendered:
         return {"status": "not-checked", "detail": "the model has no chat template"}
     results = []
-    for conversation, expected in zip(CONVERSATIONS, rendered):
-        ours = chat.render(conversation)
+    for index, (conversation, expected) in enumerate(zip(CONVERSATIONS, rendered)):
+        ours = generated[index] if generated is not None and index < len(generated) else chat.render(conversation)
         if ours is None:
             return {"status": "not-checked", "detail": "custom template"}
         if bos_text and expected.startswith(bos_text) and not ours.startswith(bos_text):
             expected = expected[len(bos_text):]  # the runtime tokenizer adds BOS itself (probed)
         results.append({"match": ours == expected, "expected": expected, "generated": ours})
     status = "match" if all(r["match"] for r in results) else "mismatch"
-    return {"status": status, "conversations": results}
+    return {"status": status, "conversations": results, **({"renderer": "genai"} if generated is not None else {})}
 
 
 def verdict(report: dict[str, Any], level: str) -> tuple[str, list[str]]:
@@ -153,9 +158,12 @@ def verdict(report: dict[str, Any], level: str) -> tuple[str, list[str]]:
             elif needle.get("reference_correct") is None:  # the source model did not run
                 status = "warning"
                 reasons.append(f"missed a fact in a {needle['input_len']}-token prompt")
-        if report.get("template", {}).get("status") == "mismatch":
-            status = "warning"
-            reasons.append("generated Ollama template differs from the model's own chat template")
+    template = report.get("template", {})  # checked at any level where a rendering was compared
+    if template.get("status") == "mismatch":
+        status = "warning"
+        reasons.append("GenAI, which the fork renders the chat template with, differs from transformers"
+                       if template.get("renderer") == "genai" else
+                       "generated Ollama template differs from the model's own chat template")
     return status, reasons
 
 
@@ -200,11 +208,31 @@ def verify(bundle: Path, snapshot: Path, chat: ChatTemplate, level: str, *, quan
             else:
                 quality["reference_dtype"] = dtype
                 quality["reference_compute"] = "float32"
+    own = chat.family == "own"  # the fork renders the bundle's chat_template.jinja through GenAI
+    expected_rendering: list[str] = []
+    if own and reference_path is None and quantize_python is not None:
+        spec_path = work / "template_spec.json"
+        spec_path.write_text(json.dumps({"prompts": [], "max_new_tokens": 0, "ppl_chunks": 0, "chunk_len": 256,
+                                         "needle": NEEDLE, "needle_sizes": [], "conversations": CONVERSATIONS}),
+                             encoding="utf-8")
+        rendering_path = work / "template_reference.json"
+        say("rendering the model's chat template with transformers")
+        code, _ = run_script(quantize_python, "reference.py",
+                             ["--model", str(snapshot), "--spec", str(spec_path), "--tokenizer-only",
+                              "--out", str(rendering_path)], say, popen)
+        if code == 0 and rendering_path.is_file():
+            expected_rendering = json.loads(rendering_path.read_text(encoding="utf-8")).get("rendered", [])
     npu_out = work / "npu_check.json"
     args = ["--bundle", str(bundle), "--out", str(npu_out), "--max-new", str(settings.max_new),
             "--needle-answer", NEEDLE["answer"]]
+    if own:
+        args += ["--conversations", json.dumps(CONVERSATIONS)]
+        if (bundle / "chat_template.jinja").is_file():
+            args += ["--chat-template", str(bundle / "chat_template.jinja")]
     if reference_path:
         args += ["--reference", str(reference_path)]
+    elif own:
+        args += ["--prompts", json.dumps(PROMPTS[: settings.prompts]), "--render-prompts"]
     else:
         formatted = [chat.render([{"role": "user", "content": p}]) or p for p in PROMPTS[: settings.prompts]]
         args += ["--prompts", json.dumps(formatted)]
@@ -226,9 +254,15 @@ def verify(bundle: Path, snapshot: Path, chat: ChatTemplate, level: str, *, quan
         quality["mean_matching_prefix"] = round(
             sum(r.get("matching_prefix", 0) / max(1, r.get("reference_tokens", 1)) for r in rows) / max(1, len(rows)), 3)
         quality["needle"] = npu.get("needle", [])
+        expected_rendering = reference.get("rendered", [])
+    if reference_path or (own and expected_rendering):
         adds_bos = bool(npu.get("tokenizer", {}).get("adds_bos"))
         bos_text = _token_text(snapshot, cfg["model"].get("bos_token_id")) if adds_bos else None
-        report["template"] = template_check(chat, reference.get("rendered", []), bos_text)
+        report["template"] = template_check(chat, expected_rendering, bos_text,
+                                            npu.get("rendered") if own else None)
+        if own and "render_error" in npu:
+            report["template"] = {"status": "mismatch", "renderer": "genai",
+                                  "detail": f"GenAI could not render it: {npu['render_error']}"}
     report["quality"] = quality
     report["verdict"], report["reasons"] = verdict(report, level)
     return report
