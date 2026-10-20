@@ -15,6 +15,14 @@ an agent working alongside you. Generating with Qwen2.5-1.5B through the fork, t
 kept the server at 0.1 of a CPU core, against 5.3 cores on the CPU. Power matters mostly for
 chat use. The CPU still decodes about twice as fast; the NPU processes prompts faster.
 
+**You may not need to convert.** The fork runs ollama.com's stock models on the NPU as they
+are: with the NPU switch on, `ollama run llama3.2` loads the model whole on the NPU (measured:
+`qwen2.5:1.5b`, `llama3.2:3b`, `phi4-mini` and their `-q4_0` tags, which decode about a third
+faster; see the fork's
+[NPU guide](https://github.com/dsmith111/ollama-npu/blob/npu/hexagon-spike/docs/npu_hexagon.md#models-from-ollamacom)).
+Temperum is for models the library does not have, for a Q4_0 of one that only has K-quant
+tags, or for your own fine-tune.
+
 That command:
 
 1. picks the target: on a Snapdragon X, a GGUF for the Hexagon NPU (QNN bundles are the
