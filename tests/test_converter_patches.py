@@ -9,6 +9,8 @@ from typing import Any
 
 import pytest
 
+from temperum.core.errors import TemperumError
+from temperum.toolchains import llama_cpp
 from temperum.toolchains.llama_cpp import ConverterSource
 
 
@@ -43,6 +45,27 @@ def test_patches_replace_pinned_files_after_the_archive_is_verified(tmp_path: Pa
         ConverterSource("u", "abc", "https://example.invalid/a.tar.gz",
                         {"conversion/gpt2.py": hashlib.sha256(b"print('broken')\n").hexdigest()},
                         {"conversion/gpt2.py": patch}).ensure(opener=_archive({"conversion/gpt2.py": b"print('fixed')\n"}))
+
+
+def test_bytecode_pip_compiles_next_to_a_patch_is_not_a_patch(tmp_path: Path,
+                                                              monkeypatch: pytest.MonkeyPatch) -> None:
+    # `pip install .` byte-compiles the package, so the installed patch folder gains a __pycache__ beside
+    # gpt2.py; copying that into the fetched converter failed (no such directory) on the owner's install
+    root = tmp_path / "patches" / "b11644" / "conversion"
+    (root / "__pycache__").mkdir(parents=True)
+    (root / "gpt2.py").write_text("print('fixed')\n", encoding="utf-8")
+    (root / "__pycache__" / "gpt2.cpython-314.pyc").write_bytes(b"\x00")
+    monkeypatch.setattr(llama_cpp, "PATCHES", tmp_path / "patches")
+    assert list(ConverterSource.load("b11644").patches) == ["conversion/gpt2.py"]
+
+
+def test_a_patch_must_name_a_pinned_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "patches" / "b11644"
+    root.mkdir(parents=True)
+    (root / "convert_hf_to_gguf_typo.py").write_text("x\n", encoding="utf-8")
+    monkeypatch.setattr(llama_cpp, "PATCHES", tmp_path / "patches")
+    with pytest.raises(TemperumError, match="names no file pinned"):
+        ConverterSource.load("b11644")
 
 
 def test_the_pinned_converter_carries_the_gpt2_patch() -> None:

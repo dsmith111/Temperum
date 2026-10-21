@@ -35,6 +35,24 @@ def _open_url(url: str) -> IO[bytes]:
     return response
 
 
+def _patches(root: Path, files: dict[str, str]) -> dict[str, Path]:
+    """Temperum's replacements under `root`, keyed by their path inside llama.cpp. Only a pinned file
+    can be patched, and the bytecode pip compiles next to the patches (__pycache__) is not a patch."""
+    patches: dict[str, Path] = {}
+    if not root.is_dir():
+        return patches
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root)
+        if not path.is_file() or "__pycache__" in relative.parts or path.suffix == ".pyc":
+            continue
+        name = relative.as_posix()
+        if name not in files:
+            raise TemperumError("toolchain", "UNKNOWN_PATCH",
+                                f"Converter patch {name} names no file pinned for llama.cpp {root.name}")
+        patches[name] = path
+    return patches
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as fh:
@@ -57,10 +75,8 @@ class ConverterSource:
         if not path.is_file():
             raise TemperumError("toolchain", "UNKNOWN_LLAMA_CPP", f"No pinned llama.cpp converter for {tag}")
         data = json.loads(path.read_text(encoding="utf-8"))
-        root = PATCHES / tag
-        patches = {p.relative_to(root).as_posix(): p for p in sorted(root.rglob("*")) if p.is_file()} \
-            if root.is_dir() else {}
-        return cls(data["tag"], data["commit"], data["archive"], dict(data["files"]), patches)
+        return cls(data["tag"], data["commit"], data["archive"], dict(data["files"]),
+                   _patches(PATCHES / tag, data["files"]))
 
     @property
     def directory(self) -> Path:
