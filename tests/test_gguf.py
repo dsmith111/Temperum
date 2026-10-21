@@ -419,9 +419,11 @@ def test_a_base_model_runs_on_without_a_warning_and_a_failed_reference_says_why(
                            estimates={"params_billions": 0.12},
                            host=SimpleNamespace(available_ram_gb=6.0, total_ram_gb=16.0))
     chains = SimpleNamespace(python_exe=lambda _role: Path("python"))
+    said: list[str] = []
     report = gguf_verify.verify_gguf(tmp_path / "bundle", tmp_path / "source", plan,  # type: ignore[arg-type]
-                                     chains, tmp_path / "work", lambda _message: None,
+                                     chains, tmp_path / "work", said.append,
                                      reference_gguf=tmp_path / "model-Q8_0.gguf", chat=from_jinja(None))
+    assert "on the NPU: 13/13 layers, 78.0 MiB of weights" in said  # the line the interface's NPU row reads
     # the traceback's last line is what a person needs, not 400 characters of frames
     assert report["quality"]["skipped"] == "reference run failed: IndexError: index out of range in self"
     assert report["verdict"] == "warning"  # answers were not compared

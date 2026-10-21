@@ -108,13 +108,16 @@ class ResourceGraph(Vertical):
     processes use (near zero while a model answers on the NPU)."""
 
     DEFAULT_CSS = """
-    ResourceGraph { height: 3; width: 1fr; }
+    ResourceGraph { height: 4; width: 1fr; }
     ResourceGraph Horizontal { height: 1; }
     ResourceGraph .name { width: 10; color: $text-muted; }
     ResourceGraph Sparkline { width: 1fr; }
+    ResourceGraph #npu-bar { width: 1fr; }
     ResourceGraph .value { width: 30; padding-left: 1; }
     """
     KEEP = 90
+    SEGMENTS = 10  # the NPU row: lit segments are the share of the model's layers (or bytes) on the NPU
+    PURPLE, GRAY = "#a970ff", "grey35"
     ROWS = (("cpu", "CPU"), ("memory", "memory"), ("fork", "fork CPU"))
 
     def __init__(self, total_gb: Optional[float], cores: int, **kwargs: Any) -> None:
@@ -130,6 +133,22 @@ class ResourceGraph(Vertical):
                 yield Label(name, classes="name")
                 yield Sparkline([], summary_function=max, id=f"spark-{key}")
                 yield Label("", classes="value", id=f"value-{key}")
+        with Horizontal():
+            yield Label("NPU load", classes="name")
+            yield Static(self.segments(None), id="npu-bar")
+            yield Label("no model loaded yet", classes="value", id="value-npu")
+
+    @classmethod
+    def segments(cls, fraction: Optional[float]) -> str:
+        """Ten segments, purple for the share on the NPU (at least one when any is), grey for the rest."""
+        lit = 0
+        if fraction is not None and fraction > 0:
+            lit = max(1, round(min(1.0, fraction) * cls.SEGMENTS))
+        return " ".join([f"[{cls.PURPLE}]██[/]"] * lit + [f"[{cls.GRAY}]██[/]"] * (cls.SEGMENTS - lit))
+
+    def set_npu(self, fraction: Optional[float], text: str) -> None:
+        self.query_one("#npu-bar", Static).update(self.segments(fraction))
+        self.query_one("#value-npu", Label).update(escape(text))
 
     def push(self, sample: Sample, now: Optional[float] = None) -> None:
         now = time.monotonic() if now is None else now

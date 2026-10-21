@@ -14,10 +14,10 @@ NPU without learning the command line. Its home screen says what Temperum does, 
 models verified on this kind of machine, and takes any Hugging Face model id. The model
 screen then shows what the model is, what the conversion needs (RAM, NPU memory, time) and
 the quantizations to choose from, with a recommendation and the reason for it. While it
-works, a checklist of stages, a progress bar and three live graphs (the machine's CPU, its
+works, a checklist of stages, a progress bar, three live graphs (the machine's CPU, its
 memory, and the CPU the fork's own processes use, which stays near zero while a model answers
-on the NPU) show what is happening, with the details below and questions answered with a
-button or a key. The last screen says how the model did and how to run it, with the command
+on the NPU) and a row of ten segments lit for the share of the model on the NPU show what is
+happening, with the details below and questions answered with a button or a key. The last screen says how the model did and how to run it, with the command
 one key away from the clipboard. `/validate TAG`, `/push TAG`, `/doctor`, `/models` and
 `/config` typed in the home box do the rest; `/help` lists them. Up and Down recall earlier
 entries (kept between sessions); drag the mouse over the details to select text and Ctrl+C

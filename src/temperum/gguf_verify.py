@@ -61,6 +61,15 @@ def placement(log: str) -> dict[str, Any]:
     return result
 
 
+def placement_line(placed: dict[str, Any]) -> str:
+    """One progress line on where the server put the model: for the person watching, and for the
+    interface's NPU row."""
+    if placed.get("status") == "weights-on-npu":
+        return (f"on the NPU: {placed['layers_offloaded']}/{placed['layers_total']} layers, "
+                f"{placed['htp_weight_mib']} MiB of weights")
+    return "on the NPU: no layers (the server put no weights on an HTP device)"
+
+
 def _free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -238,6 +247,7 @@ def verify_gguf(bundle: Path, snapshot: Path, plan: GgufPlan, chains: Any, work:
         with LlamaServer(plan.payload, bundle / "model.gguf", plan.context, work / "llama-server.log") as server:
             report["load"] = {"ok": True}
             report["npu_placement"] = placement(server.text())
+            say(placement_line(report["npu_placement"]))
             prompts: list[tuple[str, list[int] | str, dict[str, Any] | None]]
             if reference:
                 prompts = [(p["prompt"], p["input_ids"], p) for p in reference["prompts"]]

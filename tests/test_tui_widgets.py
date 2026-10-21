@@ -7,7 +7,7 @@ from typing import Any
 from temperum.core.errors import TemperumError
 from temperum.tui import app as tui
 from temperum.tui.monitor import Monitor, Sample, parse_sample
-from temperum.tui.widgets import StageList, bar
+from temperum.tui.widgets import ResourceGraph, StageList, bar
 
 
 def test_the_monitor_parses_samples_and_reads_a_powershell_stream() -> None:
@@ -70,3 +70,22 @@ def test_the_recommendation_and_its_words() -> None:
     assert label == "Q8_0  best quality  ·  7.6 GB  ·  ~6 min  ·  too big for the NPU: runs split, slowly"
     assert tui.quant_label("Q4_0", big["Q4_0"], "Q4_0").endswith("·  whole on the NPU  ★ recommended")
     assert tui.quant_label("Q4_K_M", failed["Q4_0"], "Q8_0") == "Q4_K_M: not possible here (no)"
+
+
+def test_the_npu_row_follows_the_pipelines_placement_lines() -> None:
+    assert tui.npu_share("on the NPU: 24/24 layers, 400 MiB of weights") == (1.0, "24 of 24 layers (400 MiB)")
+    assert tui.npu_share("on the NPU: 12/36 layers, 900.5 MiB of weights") == (1 / 3, "12 of 36 layers (900.5 MiB)")
+    assert tui.npu_share("on the NPU: no layers (the server put no weights on an HTP device)") == (
+        0.0, "no layers: the server put nothing on the NPU")
+    assert tui.npu_share("installed as m:npu; the fork runs it whole on the NPU (126 MiB): ollama run m:npu") == (
+        1.0, "the whole model (126 MiB)")
+    assert tui.npu_share("the fork runs it 1887 of 3762 MiB on the NPU") == (1887 / 3762, "1887 of 3762 MiB, the rest "
+                                                                                          "on the CPU")
+    assert tui.npu_share("installed as m; the fork runs it on the CPU: ollama run m") == (0.0, "nothing: the model "
+                                                                                                "runs on the CPU")
+    assert tui.npu_share("converting to GGUF") is None
+    # ten segments: purple for the share on the NPU (never none when any is), grey for the rest
+    purple, grey = ResourceGraph.PURPLE, ResourceGraph.GRAY
+    assert ResourceGraph.segments(None).count(purple) == 0 and ResourceGraph.segments(None).count(grey) == 10
+    assert ResourceGraph.segments(1 / 3).count(purple) == 3 and ResourceGraph.segments(1 / 3).count(grey) == 7
+    assert ResourceGraph.segments(0.01).count(purple) == 1 and ResourceGraph.segments(1.0).count(grey) == 0

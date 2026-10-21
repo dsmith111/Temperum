@@ -13,7 +13,7 @@ from temperum import flows
 from temperum.core.errors import TemperumError
 from temperum.tui import app as tui
 from temperum.tui.app import DoneScreen, HomeScreen, ModelScreen, TemperumApp, TuiSession, WorkScreen, _options
-from temperum.tui.widgets import ChoiceBar, Gauge, StageList
+from temperum.tui.widgets import ChoiceBar, Gauge, ResourceGraph, StageList
 from textual.widgets import Input, OptionList
 
 pytestmark = pytest.mark.usefixtures("_own_home")
@@ -71,6 +71,7 @@ def _fake_run(session: Any, plan: Any, *, start: float, verifier: Any = None) ->
         say("converting to GGUF (Q8_0)")
         say("assembling the bundle")
         say("loading the bundle on the NPU with llama-server")
+        say("on the NPU: 24/24 layers, 400 MiB of weights")
     summary = {"bundle": "C:/b", "verdict": "passed", "reasons": [], "minutes": 0.1,
                "npu_placement": {"layers_offloaded": 24, "layers_total": 24, "htp_weight_mib": 400},
                "speed": {"median_tokens_per_s": 40.0}, "perplexity_ratio": 1.04, "base_model": False}
@@ -132,6 +133,8 @@ def test_a_typed_model_goes_home_to_model_to_work_to_done(monkeypatch: pytest.Mo
         stages = work.query_one("#stages", StageList)
         assert stages.states["download"] == "done" and stages.states["verify on the NPU"] == "done"
         assert work.query_one("#choice", ChoiceBar).display and "Install it" in app.history[-1]
+        graph = work.query_one("#graph", ResourceGraph)
+        assert str(graph.query_one("#value-npu").render()) == "24 of 24 layers (400 MiB)"
         await pilot.press("y")
         await _until(pilot, lambda: isinstance(app.screen, DoneScreen))
         done = app.screen

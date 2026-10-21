@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -218,6 +219,33 @@ def model_card(model: Any, plan: Any, machine: Any) -> Table:
     return grid
 
 
+_LAYERS = re.compile(r"on the NPU: (\d+)/(\d+) layers(?:, ([\d.]+) MiB of weights)?")
+_WHOLE = re.compile(r"whole on the NPU(?: \(([\d.]+) MiB\))?")
+_SPLIT = re.compile(r"(\d+) of (\d+) MiB on the NPU")
+
+
+def npu_share(message: str) -> Optional[tuple[float, str]]:
+    """The share of the model on the NPU that a progress line reports, with words for it: verification's
+    layer count, the install's and validation's bytes; None for any other line."""
+    layers = _LAYERS.search(message)
+    if layers:
+        on, total = int(layers.group(1)), int(layers.group(2))
+        mib = f" ({layers.group(3)} MiB)" if layers.group(3) else ""
+        return (on / total if total else 0.0), f"{on} of {total} layers{mib}"
+    if message.startswith("on the NPU: no layers"):
+        return 0.0, "no layers: the server put nothing on the NPU"
+    whole = _WHOLE.search(message)
+    if whole:
+        return 1.0, "the whole model" + (f" ({whole.group(1)} MiB)" if whole.group(1) else "")
+    split = _SPLIT.search(message)
+    if split:
+        on, total = int(split.group(1)), int(split.group(2))
+        return (on / total if total else 0.0), f"{on} of {total} MiB, the rest on the CPU"
+    if "the fork runs it on the CPU" in message:
+        return 0.0, "nothing: the model runs on the CPU"
+    return None
+
+
 def _reasons_text(summary: dict[str, Any]) -> str:
     return "\n".join(f"  • {escape(str(reason))}" for reason in summary.get("reasons") or [])
 
@@ -245,6 +273,7 @@ class TuiSession:
 
     def note(self, text: str, warning: bool = False) -> None:
         self._ui(self.app.write, ("  [yellow]![/yellow] " if warning else "  ") + escape(text))
+        self._ui(self.app.note_progress, text)
 
     def show(self, renderable: Any) -> None:
         self._ui(self.app.write, renderable)
@@ -804,6 +833,9 @@ class TemperumApp(App[None]):
         """Move the stage checklist along with the pipeline's messages."""
         if self.work is None or not self.work.is_mounted:
             return
+        share = npu_share(message)
+        if share is not None:
+            self.work.query_one("#graph", ResourceGraph).set_npu(*share)
         stages = self.work.query_one("#stages", StageList)
         index = ui.stage_of(message)
         lowered = message.strip().lower()
