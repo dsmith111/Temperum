@@ -22,17 +22,19 @@ import hashlib
 import importlib
 import json
 import os
+import queue
 import re
 import shutil
 import stat
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from temperum import paths
 from temperum.core.errors import TemperumError
@@ -40,6 +42,7 @@ from temperum.host import HostInfo, long_paths_enabled
 from temperum.profiles import RuntimeProfile
 
 Runner = Callable[..., "subprocess.CompletedProcess[str]"]
+Popen = Callable[..., Any]
 Progress = Callable[[str], None]
 
 ROLES = ("quantize", "compile", "verify")
@@ -47,6 +50,9 @@ LOCKS = Path(__file__).resolve().parent / "locks"
 STATE_FILE = "temperum-env.json"
 PIP_FLAGS = ["--disable-pip-version-check", "--no-input", "--progress-bar", "off"]
 PIP_ATTEMPTS = 3  # feeds that proxy PyPI on demand can 404 a wheel on its first request
+SAY_EVERY_S = 2.0  # pip's bursts of lines become one progress message each
+HEARTBEAT_S = 30.0  # and silence becomes a "still downloading X" line
+POLL_S = 1.0
 MAX_PATH = 259
 DEEPEST_ENV_FILE = 150  # longest path inside the M0 environments, relative to the env root: 144
 ENV_SIZE_GB = {"quantize": 1.0, "compile": 1.0, "verify": 0.35}
@@ -183,19 +189,90 @@ def _host_of(url: str) -> str:
     return urlsplit(url).hostname or url
 
 
+class PipWatcher:
+    """Turns pip's output into a few progress lines: which package is being resolved or downloaded (n of
+    total), when the downloaded packages are being installed, and a heartbeat while nothing new arrives."""
+
+    _COLLECTING = re.compile(r"^Collecting\s+([A-Za-z0-9_.\-]+)")
+    _FETCHING = re.compile(r"^(?:Downloading|Using cached)\s+(\S+)\s+\(([^)]+)\)")  # unindented: the file itself
+    _INSTALLING = re.compile(r"^Installing collected packages:\s*(.*)$")
+
+    def __init__(self, label: str, say: Progress, total: int | None = None,
+                 clock: Callable[[], float] = time.monotonic, every: float = SAY_EVERY_S,
+                 heartbeat: float = HEARTBEAT_S) -> None:
+        self.label, self.say, self.total, self.clock = label, say, total, clock
+        self.every, self.heartbeat_s = every, heartbeat
+        self.started = self.last_said = clock()
+        self.resolved = self.fetched = 0
+        self.phase = "starting"
+        self.package: str | None = None
+        self.pending: str | None = None
+
+    def line(self, raw: str) -> None:
+        text = raw.rstrip()
+        if match := self._COLLECTING.match(text):
+            self.resolved += 1
+            self.package, self.phase = match.group(1), "resolving"
+            self.pending = f"{self.label}: resolving {self.package} ({self._count(self.resolved)})"
+        elif (match := self._FETCHING.match(text)) and not match.group(1).endswith(".metadata"):
+            self.fetched += 1
+            self.package, self.phase = _package_of(match.group(1)), "downloading"
+            self.pending = (f"{self.label}: downloading {self.package} ({self._count(self.fetched)}, "
+                            f"{match.group(2)})")
+        elif match := self._INSTALLING.match(text):
+            count = len([p for p in match.group(1).split(",") if p.strip()])
+            self.phase, self.package = "installing", None
+            self.pending = f"{self.label}: installing the {count} downloaded packages"
+        self._flush(force=False)
+
+    def heartbeat(self) -> None:
+        """No output for a while: say what was pending, or that the same thing is still going on."""
+        if self.pending is not None:
+            self._flush(force=True)
+            return
+        now = self.clock()
+        if now - self.last_said >= self.heartbeat_s:
+            what = {"resolving": f"resolving {self.package}", "downloading": f"downloading {self.package}",
+                    "installing": "installing the downloaded packages"}.get(self.phase, "working")
+            elapsed = now - self.started
+            took = f"{int(elapsed // 60)} min" if elapsed >= 60 else f"{int(elapsed)} s"
+            self.say(f"{self.label}: still {what} ({took} so far)")
+            self.last_said = now
+
+    def finish(self) -> None:
+        self._flush(force=True)
+
+    def _count(self, n: int) -> str:
+        return f"{n} of {self.total}" if self.total else str(n)
+
+    def _flush(self, force: bool) -> None:
+        now = self.clock()
+        if self.pending is not None and (force or now - self.last_said >= self.every):
+            self.say(self.pending)
+            self.pending, self.last_said = None, now
+
+
+def _package_of(location: str) -> str:
+    """The project name in a wheel or sdist file name (or URL): everything before the first dash."""
+    name = unquote(location.rsplit("/", 1)[-1].rsplit("\\", 1)[-1])
+    return name.split("-", 1)[0]
+
 class Toolchains:
     """Provision and check the role environments for one runtime on this host."""
 
     def __init__(self, host: HostInfo, runtime: RuntimeProfile, device: str = "cpu", *,
                  home: Path | None = None, run: Runner = subprocess.run, uv: str | None = None,
                  python: Path | None = None, progress: Progress | None = None,
-                 sleep: Callable[[float], None] = time.sleep) -> None:
+                 sleep: Callable[[float], None] = time.sleep, popen: Popen | None = None) -> None:
         self.host = host
         self.runtime = runtime
         self.device = device
         self.home = home or paths.home()
         self.platform = platform_tag(host)
         self._run_fn = run
+        # Long installs stream through Popen; a fake runner replaces every subprocess, streaming included.
+        self._popen: Popen | None = popen if popen is not None else (subprocess.Popen if run is subprocess.run
+                                                                    else None)
         self._uv = uv
         self._python_override = python
         self._progress = progress or (lambda _msg: None)
@@ -284,16 +361,17 @@ class Toolchains:
         torch = lock.torch_pin
         if torch and lock.torch_index:
             self._progress(f"{role}: installing {torch} from {_host_of(lock.torch_index)}")
-            self._pip(pip + ["--no-deps", torch, "--index-url", lock.torch_index], log)
+            self._pip(pip + ["--no-deps", torch, "--index-url", lock.torch_index], log, role, total=1)
         requirements = path / "temperum-requirements.txt"
         requirements.write_text("\n".join(p for p in lock.pins if _dist_name(p) not in lock.no_deps) + "\n",
                                 encoding="utf-8")
         count = len(lock.pins)
         self._progress(f"{role}: installing {count} pinned packages through your pip configuration")
-        self._pip(pip + (["--no-deps"] if lock.mode == "exact" else []) + ["-r", str(requirements)], log)
+        self._pip(pip + (["--no-deps"] if lock.mode == "exact" else []) + ["-r", str(requirements)], log, role,
+                  total=count - len(lock.no_deps))
         no_deps = [p for p in lock.pins if _dist_name(p) in lock.no_deps]
         if no_deps:
-            self._pip(pip + ["--no-deps", *no_deps], log)
+            self._pip(pip + ["--no-deps", *no_deps], log, role, total=len(no_deps))
         self._progress(f"{role}: checking the environment")
         probe = self._probe(role)
         problems = self._problems(role, lock, probe)
@@ -422,10 +500,9 @@ class Toolchains:
             raise TemperumError("toolchain", code, f"Command failed ({proc.returncode}): {' '.join(cmd[:4])} ...",
                                 hint=f"Setup log: {log}")
 
-    def _pip(self, cmd: list[str], log: Path) -> None:
+    def _pip(self, cmd: list[str], log: Path, label: str = "pip", total: int | None = None) -> None:
         for attempt in range(1, PIP_ATTEMPTS + 1):
-            proc = self._run(cmd)
-            self._append(log, cmd, proc)
+            proc = self._stream(cmd, log, label, total)
             if proc.returncode == 0:
                 return
             if attempt < PIP_ATTEMPTS:
@@ -435,6 +512,51 @@ class Toolchains:
         raise TemperumError("toolchain", "PIP_FAILED", "Package installation failed: " + " | ".join(tail),
                             hint=f"Full log: {log}. Packages come from your pip configuration "
                                  "(index, proxy); check it can reach the pinned versions.")
+
+    def _stream(self, cmd: list[str], log: Path, label: str, total: int | None = None,
+                poll_s: float = POLL_S) -> subprocess.CompletedProcess[str]:
+        """Run a long command, writing its output to the log as it arrives and reporting progress meanwhile."""
+        if self._popen is None:
+            proc = self._run(cmd)
+            self._append(log, cmd, proc)
+            return proc
+        try:
+            process = self._popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                  text=True, encoding="utf-8", errors="replace", bufsize=1)
+        except OSError as exc:
+            proc = subprocess.CompletedProcess(cmd, 127, "", str(exc))
+            self._append(log, cmd, proc)
+            return proc
+        lines: queue.Queue[str | None] = queue.Queue()
+
+        def pump() -> None:
+            try:
+                for line in process.stdout or ():
+                    lines.put(str(line))
+            finally:
+                lines.put(None)
+
+        threading.Thread(target=pump, name="temperum-pip", daemon=True).start()
+        watcher = PipWatcher(label, self._progress, total)
+        output: list[str] = []
+        with log.open("a", encoding="utf-8") as handle:
+            handle.write(f"\n$ {' '.join(cmd)}\n")
+            while True:
+                try:
+                    line = lines.get(timeout=poll_s)
+                except queue.Empty:
+                    watcher.heartbeat()
+                    continue
+                if line is None:
+                    break
+                handle.write(line)
+                handle.flush()  # so the log can be followed while it runs
+                output.append(line)
+                watcher.line(line)
+            code = int(process.wait())
+            handle.write(f"[exit {code}]\n")
+        watcher.finish()
+        return subprocess.CompletedProcess(cmd, code, "".join(output), "")
 
     @staticmethod
     def _append(log: Path, cmd: list[str], proc: subprocess.CompletedProcess[str]) -> None:

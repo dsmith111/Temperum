@@ -61,8 +61,10 @@ You need a Snapdragon X laptop with Windows 11, Python 3.10 or newer, and Git.
 
 1. **The Ollama NPU fork, with its Hexagon backend.** It has no published release yet:
    build its portable package from branch `npu/hexagon-spike` with
-   `scripts\build_npu_windows.ps1 ... -HexagonSDKRoot <Hexagon SDK>` (see the fork's
-   `docs/development.md`).
+   `scripts\build_npu_windows.ps1`. The script finds Go, LLVM-MinGW, the Windows SDK,
+   CMake, Ninja, Visual Studio and the Hexagon SDK on the machine, and stops with where
+   to get a missing one and how to point at it; `-DetectOnly` shows what it would use
+   (see the fork's `docs/development.md`).
 
 2. **The NPU libraries and the switch.** The backend needs a set of Microsoft-signed NPU
    libraries from Qualcomm, whose terms restrict their use, so the fork downloads them at

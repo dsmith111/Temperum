@@ -191,3 +191,61 @@ def test_deep_env_roots_are_refused_without_long_paths(tmp_path: Path, monkeypat
     with pytest.raises(TemperumError) as exc:
         _toolchains(deep, FakeSystem(deep)).ensure("verify")
     assert exc.value.reason_code == "PATH_TOO_LONG"
+
+
+def test_pip_watcher_reports_packages_and_heartbeats() -> None:
+    from temperum.toolchains import PipWatcher
+
+    now = [100.0]
+    said: list[str] = []
+    watcher = PipWatcher("quantize", said.append, total=3, clock=lambda: now[0], every=2.0, heartbeat=30.0)
+    watcher.line("Collecting numpy==2.5.3 (from -r C:\\x\\temperum-requirements.txt (line 1))\n")
+    assert said == []  # the first line waits for the throttle
+    watcher.line("  Downloading https://feed/numpy-2.5.3-cp312-cp312-win_arm64.whl.metadata (60 kB)\n")
+    now[0] += 2.5
+    watcher.line("Collecting torch==2.14.1+cpu\n")
+    assert said == ["quantize: resolving torch (2 of 3)"]  # metadata downloads are part of resolving
+    watcher.line("Collecting typing_extensions==4.16.0\n")
+    watcher.line("Downloading https://feed/_packaging/x/numpy-2.5.3-cp312-cp312-win_arm64.whl (12.3 MB)\n")
+    watcher.line("Using cached https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp312-win_arm64.whl "
+                 "(76.1 MB)\n")
+    assert said[-1] == "quantize: resolving torch (2 of 3)"  # a burst becomes one message, the latest
+    now[0] += 1.0
+    watcher.heartbeat()  # silence flushes what is pending at once
+    assert said[-1] == "quantize: downloading torch (2 of 3, 76.1 MB)"
+    now[0] += 31.0
+    watcher.heartbeat()
+    assert said[-1] == "quantize: still downloading torch (34 s so far)"
+    watcher.line("Downloading https://feed/typing_extensions-4.16.0-py3-none-any.whl (44 kB)\n")
+    watcher.line("Installing collected packages: numpy, torch, typing_extensions\n")
+    watcher.finish()
+    assert said[-1] == "quantize: installing the 3 downloaded packages"
+
+
+def test_stream_logs_as_it_goes_and_reports(tmp_path: Path) -> None:
+    class FakeProcess:
+        def __init__(self, lines: list[str]) -> None:
+            self.stdout = iter(lines)
+
+        def wait(self) -> int:
+            return 0
+
+    said: list[str] = []
+    chains = _toolchains(tmp_path, FakeSystem(tmp_path), progress=said.append,
+                         popen=lambda cmd, **kw: FakeProcess(["Collecting a==1\n", "Downloading a-1.whl (2 kB)\n",
+                                                             "Installing collected packages: a\n",
+                                                             "Successfully installed a-1\n"]))
+    log = tmp_path / "stream.log"
+    proc = chains._stream(["python", "-m", "pip", "install", "a==1"], log, "quantize", total=1, poll_s=0.01)
+    text = log.read_text(encoding="utf-8")
+    assert proc.returncode == 0 and "Collecting a==1" in text and text.rstrip().endswith("[exit 0]")
+    # the lines arrived within the throttle, so only the last state was reported
+    assert said == ["quantize: installing the 1 downloaded packages"]
+
+
+def test_a_fake_runner_replaces_streaming_too(tmp_path: Path) -> None:
+    system = FakeSystem(tmp_path)
+    chains = _toolchains(tmp_path, system)
+    assert chains._popen is None
+    chains.ensure("quantize")
+    assert len(system.pip_calls()) >= 1
