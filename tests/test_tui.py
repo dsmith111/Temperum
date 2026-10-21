@@ -1,15 +1,20 @@
-"""The full-screen interface: commands in the prompt, questions answered there, the stage bar."""
+"""The full-screen interface: home, model, work and done screens; questions as buttons; copying."""
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Awaitable, Callable
 
 import pytest
+from rich.table import Table
 
 from temperum import flows
 from temperum.core.errors import TemperumError
-from temperum.tui.app import TemperumApp, TuiSession, _options
+from temperum.tui import app as tui
+from temperum.tui.app import DoneScreen, HomeScreen, ModelScreen, TemperumApp, TuiSession, WorkScreen, _options
+from temperum.tui.widgets import ChoiceBar, Gauge, StageList
+from textual.widgets import Input, OptionList
 
 pytestmark = pytest.mark.usefixtures("_own_home")
 
@@ -18,12 +23,14 @@ pytestmark = pytest.mark.usefixtures("_own_home")
 def _own_home(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TEMPERUM_HOME", str(tmp_path / "home"))
     monkeypatch.delenv("TEMPERUM_OLLAMA_EXE", raising=False)
+    # the home screen looks at this machine in a worker; keep the tests quick and deterministic
+    monkeypatch.setattr(TemperumApp, "_machine_job", lambda self: None)
 
 
 def _run(test: Callable[[TemperumApp, Any], Awaitable[None]]) -> None:
     async def go() -> None:
-        app = TemperumApp()
-        async with app.run_test(size=(100, 30)) as pilot:
+        app = TemperumApp(monitor=None)
+        async with app.run_test(size=(110, 36)) as pilot:
             await pilot.pause()
             await test(app, pilot)
     asyncio.run(go())
@@ -37,84 +44,153 @@ async def _until(pilot: Any, condition: Callable[[], bool], seconds: float = 10.
     raise AssertionError("condition not met in time")
 
 
+def _fake_plan(quant: str, params: float = 0.49) -> Any:
+    model = SimpleNamespace(name="qwen2.5-0.5b-instruct", license="apache-2.0", architecture="Qwen2ForCausalLM",
+                            config={"max_position_embeddings": 32768}, gated=False,
+                            ref=SimpleNamespace(repo="Qwen/Qwen2.5-0.5B-Instruct", path=None,
+                                                display="Qwen/Qwen2.5-0.5B-Instruct"),
+                            chat_template="{% for m in messages %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}"
+                                          "<|im_end|>{% endfor %}")
+    return SimpleNamespace(quant=quant, model=model, context=4096, warnings=["be careful"],
+                           destination=Path("C:/nowhere/bundle"),
+                           estimates={"gguf_gb": {"Q4_0": 0.3, "Q8_0": 0.6, "Q4_K_M": 0.35}[quant], "ram_gb": 2.0,
+                                      "minutes": 3, "params_billions": params, "download_gb": 1.0, "disk_gb": 2.5})
+
+
+def _fake_plan_job(self: TemperumApp, screen: ModelScreen, model: str, opts: dict[str, str]) -> None:
+    plans = {quant: _fake_plan(quant) for quant in ("Q4_0", "Q8_0", "Q4_K_M")}
+    machine = SimpleNamespace(total_ram_gb=15.4, available_ram_gb=6.0)
+    recommended, why = tui.recommend(plans)
+    self.call_from_thread(screen.show, plans["Q4_0"].model, plans, opts.get("--quant") or recommended, recommended,
+                          why, None, machine)
+
+
+def _fake_run(session: Any, plan: Any, *, start: float, verifier: Any = None) -> tuple[dict[str, Any], Any]:
+    with session.stages(1.0) as say:
+        say("fetching the model")
+        say("converting to GGUF (Q8_0)")
+        say("assembling the bundle")
+        say("loading the bundle on the NPU with llama-server")
+    summary = {"bundle": "C:/b", "verdict": "passed", "reasons": [], "minutes": 0.1,
+               "npu_placement": {"layers_offloaded": 24, "layers_total": 24, "htp_weight_mib": 400},
+               "speed": {"median_tokens_per_s": 40.0}, "perplexity_ratio": 1.04, "base_model": False}
+    session.ready(summary)
+    return summary, object()
+
+
+def _fake_after(session: Any, summary: dict[str, Any], *, tag: str, installer: Any, **_kw: Any) -> None:
+    if session.confirm("Install it into the fork?"):
+        session.say("installing into the fork as " + tag)
+        session.say("installed as " + tag)
+        summary["install"] = {"name": tag, "placement": {"where": "npu", "npu_mib": 400}, "warnings": []}
+        session.say(f"loading {tag} through the fork")
+        summary["validation"] = {"placement": {"where": "npu", "npu_mib": 400}, "load_s": 1.2,
+                                 "chat": {"correct": 2, "of": 2, "answers": ["Paris.", "Berlin."]},
+                                 "speed": {"decode_tokens_per_s": 30.0}, "cpu": {"cores": 0.05, "processes": 2}}
+
+
 def test_options_parse_flags_values_and_quoted_paths() -> None:
-    positional, options = _options(['"C:\\my models\\b"', "--name", "x:npu", "--overwrite"], {"--overwrite"},
-                                   {"--name"})
-    assert positional == ["C:\\my models\\b"] and options == {"--name": "x:npu", "--overwrite": "1"}
-    with pytest.raises(Exception, match="needs a value"):
+    positional, opts = _options(['"C:\\models\\my bundle"', "--name", "x:npu", "--overwrite"], {"--overwrite"},
+                                {"--name"})
+    assert positional == ["C:\\models\\my bundle"] and opts == {"--name": "x:npu", "--overwrite": "1"}
+    with pytest.raises(tui.UsageError):
         _options(["--name"], set(), {"--name"})
-    with pytest.raises(Exception, match="unknown option"):
-        _options(["--bogus"], set(), set())
+    with pytest.raises(tui.UsageError):
+        _options(["--what"], set(), set())
 
 
-def test_help_and_unknown_commands() -> None:
+def test_a_typed_model_goes_home_to_model_to_work_to_done(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(TemperumApp, "_plan_job", _fake_plan_job)
+    monkeypatch.setattr(flows, "gguf_plan_table", lambda plan: "the plan")
+    monkeypatch.setattr(flows, "run_gguf", _fake_run)
+    monkeypatch.setattr(flows, "after_convert", _fake_after)
+    monkeypatch.setattr(flows, "gguf_installer", lambda session, result, tag, exe, **kw: (lambda endpoint: {}))
+    copied: list[tuple[str, str]] = []
+    monkeypatch.setattr(TemperumApp, "copy_text", lambda self, text, what: copied.append((what, text)))
+
     async def test(app: TemperumApp, pilot: Any) -> None:
-        await pilot.press(*"/help", "enter")
+        assert isinstance(app.screen, HomeScreen)
+        assert app.screen.query_one("#verified", OptionList).option_count >= 1  # the verified models
+        await pilot.press(*"Qwen/Qwen2.5-0.5B-Instruct", "enter")
+        await _until(pilot, lambda: isinstance(app.screen, ModelScreen) and app.screen.chosen is not None)
+        screen = app.screen
+        assert isinstance(screen, ModelScreen)
+        assert screen.chosen == "Q8_0"  # a 0.49B model: the recommendation is 8 bits
+        pressed = screen.quants.pressed_button
+        assert pressed is not None and "★ recommended" in str(pressed.label) and pressed.id == "q-Q8_0"
+        assert screen.query_one("#g-ram", Gauge).value_text == "2.0 GB needed, 6.0 GB free of 15.4"
+        assert "0.6 GB of the NPU's 5.5 GB window" in screen.query_one("#g-npu", Gauge).value_text
+        assert str(pressed.label).startswith("Q8_0  best quality  ·  0.6 GB  ·  ~3 min  ·  whole on the NPU")
+        assert "be careful" in str(screen.query_one("#warnings").render())
+        await pilot.press("enter")  # convert
+        try:
+            await _until(pilot, lambda: isinstance(app.screen, WorkScreen) and app.pending is not None)
+        except AssertionError:
+            raise AssertionError(f"no question; screen {type(app.screen).__name__}; history {app.history[-4:]}")
+        work = app.screen
+        assert isinstance(work, WorkScreen)
+        stages = work.query_one("#stages", StageList)
+        assert stages.states["download"] == "done" and stages.states["verify on the NPU"] == "done"
+        assert work.query_one("#choice", ChoiceBar).display and "Install it" in app.history[-1]
+        await pilot.press("y")
+        await _until(pilot, lambda: isinstance(app.screen, DoneScreen))
+        done = app.screen
+        assert isinstance(done, DoneScreen)
+        assert stages.states["install"] == "done" and stages.states["validate"] == "done"
+        assert done.run_command() == "ollama run qwen2.5-0.5b-instruct:npu"
+        assert "24 of 24 layers" in done.query_one("#g-npu", Gauge).value_text
+        assert done.query_one("#g-quality", Gauge).value_text.startswith("perplexity 1.04x")
+        assert "0.05 of" in done.query_one("#g-cpu", Gauge).value_text
+        await pilot.press("c")
         await pilot.pause()
-        assert any("/convert MODEL" in line and "/push TAG" in line for line in app.history)
-        await pilot.press(*"/bogus", "enter")
-        await pilot.pause()
-        assert any("unknown command /bogus" in line for line in app.history)
+        assert copied[-1] == ("the run command", "ollama run qwen2.5-0.5b-instruct:npu")
+        await pilot.press("enter")  # convert another: back home
+        await _until(pilot, lambda: isinstance(app.screen, HomeScreen))
+        assert app.busy is None
     _run(test)
 
 
-def test_a_job_asks_in_the_prompt_and_drives_the_stage_bar() -> None:
-    seen: dict[str, Any] = {}
+def test_a_lookup_that_fails_is_shown_on_the_model_screen(monkeypatch: pytest.MonkeyPatch) -> None:
+    def failing(self: TemperumApp, screen: ModelScreen, model: str, opts: dict[str, str]) -> None:
+        self.call_from_thread(screen.show_error, "No such model", "Check the id on huggingface.co")
+    monkeypatch.setattr(TemperumApp, "_plan_job", failing)
+
+    async def test(app: TemperumApp, pilot: Any) -> None:
+        await pilot.press(*"org/missing", "enter")
+        await _until(pilot, lambda: isinstance(app.screen, ModelScreen))
+        await pilot.pause(0.2)
+        text = str(app.screen.query_one("#card").render())
+        assert "Could not plan this model" in text and "No such model" in text and "Check the id" in text
+        await pilot.press("escape")
+        await _until(pilot, lambda: isinstance(app.screen, HomeScreen))
+    _run(test)
+
+
+def test_a_job_asks_with_buttons_and_drives_the_stage_bar() -> None:
+    answers: list[Any] = []
 
     def job(session: TuiSession) -> None:
-        with session.stages(10) as say:
-            say("fetching org/model")
-            seen["confirm"] = session.confirm("Proceed?")
-            seen["again"] = session.confirm("Sure?", default=False)
-            seen["name"] = session.ask("Upload as", default="me/thing:npu")
-        update, stop = session.transfer("uploading")
-        update("pushing abc", 50, 100)
-        stop()
-        session.note("all done")
+        with session.stages(2.0) as say:
+            say("fetching the model")
+            answers.append(session.confirm("Carry on?", default=False))
+            say("converting to GGUF")
+        answers.append(session.ask("Name?", "default-name"))
 
     async def test(app: TemperumApp, pilot: Any) -> None:
-        app.run_job("testing", job)
+        app.run_job("testing", job, title="Testing", stages=["download", "convert"])
         await _until(pilot, lambda: app.pending is not None)
-        assert app.busy == "testing" and app._tracker is not None and app._tracker.stage_name == "downloading"
-        assert app.query_one("#stage").display
-        await pilot.press(*"maybe", "enter")  # not an answer: asked again
-        await _until(pilot, lambda: any("answer y or n" in line for line in app.history))
-        await _until(pilot, lambda: app.pending is not None)
-        await pilot.press("enter")  # the default: yes
-        await _until(pilot, lambda: app.pending is not None and app.pending.text == "Sure?")
-        await pilot.press(*"n", "enter")
+        assert isinstance(app.screen, WorkScreen)
+        assert app.screen.query_one("#stage").display and app.screen.query_one("#stages", StageList).running == "download"
+        await pilot.click("#no")
         await _until(pilot, lambda: app.pending is not None and app.pending.kind == "ask")
+        assert answers == [False]
         await pilot.press("enter")  # the default name
         await _until(pilot, lambda: app.busy is None)
-        assert seen == {"confirm": True, "again": False, "name": "me/thing:npu"}
-        assert any("all done" in line for line in app.history) and app._tracker is None
-        assert any("? Proceed?" in line for line in app.history)
-    _run(test)
-
-
-def test_a_bare_model_id_converts_through_the_shared_flow(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[Any] = []
-    plan = SimpleNamespace(model=SimpleNamespace(name="model"), warnings=["be careful"], estimates={"minutes": 1})
-    monkeypatch.setattr(flows, "plan_gguf", lambda model, **kw: calls.append(("plan", model, kw["quant"])) or (plan, None))
-    monkeypatch.setattr(flows, "gguf_plan_table", lambda plan_in: "the plan")
-    monkeypatch.setattr(flows, "run_gguf", lambda session, plan_in, *, start, verifier=None:
-                        calls.append("run") or ({"verdict": "passed", "bundle": "C:/b"}, object()))
-    monkeypatch.setattr(flows, "gguf_installer", lambda session, result, tag, exe, **kw: (lambda endpoint: {}))
-    monkeypatch.setattr(flows, "after_convert", lambda session, summary, **kw: calls.append(("after", kw["tag"])))
-
-    async def test(app: TemperumApp, pilot: Any) -> None:
-        await pilot.press(*"org/model --target gguf-hexagon --quant Q8_0", "enter")
-        await _until(pilot, lambda: app.pending is not None)
-        assert app.pending is not None and app.pending.text == "Proceed?"
-        assert any("the plan" in line for line in app.history) and any("! be careful" in line for line in app.history)
-        await pilot.press("enter")
-        await _until(pilot, lambda: app.busy is None)
-        assert calls == [("plan", "org/model", "Q8_0"), "run", ("after", "model:npu")]
-        await pilot.press(*"org/model --target gguf-hexagon", "enter")
-        await _until(pilot, lambda: app.pending is not None)
-        await pilot.press(*"n", "enter")
-        await _until(pilot, lambda: app.busy is None)
-        assert any(line.strip() == "cancelled" for line in app.history)
+        assert answers == [False, "default-name"]
+        assert app.screen.query_one("#stages", StageList).states == {"download": "done", "convert": "done"}
+        assert any("answer: default-name" in line for line in app.history)
+        await pilot.press("escape")
+        await _until(pilot, lambda: isinstance(app.screen, HomeScreen))
     _run(test)
 
 
@@ -123,69 +199,63 @@ def test_errors_in_a_job_are_shown_not_fatal() -> None:
         raise TemperumError("import", "EXE_REQUIRED", "Installing needs the fork executable.", hint="set it")
 
     async def test(app: TemperumApp, pilot: Any) -> None:
-        app.run_job("failing", job)
+        app.run_job("installing", job)
         await _until(pilot, lambda: app.busy is None)
-        assert any("[import/EXE_REQUIRED]" in line and "Installing needs" in line for line in app.history)
-        assert any("Hint: set it" in line for line in app.history)
-        await pilot.press(*"/config", "enter")
-        await _until(pilot, lambda: app.busy is None and any("ollama-exe" in line for line in app.history))
+        assert any("Error [import/EXE_REQUIRED]: Installing needs the fork executable." in line for line in app.history)
+        assert any("Hint: set it" in line for line in app.history) and app.is_running
+        assert not isinstance(app.screen, DoneScreen)
     _run(test)
 
 
-def test_up_and_down_walk_the_command_history_and_it_persists(tmp_path: Any) -> None:
-    async def test(app: TemperumApp, pilot: Any) -> None:
-        prompt = app.query_one("#prompt")
-        await pilot.press(*"/help", "enter")
-        await pilot.press(*"/bogus one", "enter")
-        await pilot.press(*"/bogus one", "enter")  # a repeat is kept once
-        await pilot.pause()
-        assert app.commands == ["/help", "/bogus one"]
-        await pilot.press(*"dra")  # a draft, kept while walking
+def test_up_and_down_walk_the_history_and_it_persists(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(TemperumApp, "start_model", lambda self, model, opts: None)
+
+    async def first(app: TemperumApp, pilot: Any) -> None:
+        await pilot.press(*"org/one", "enter")
+        await pilot.press(*"org/two", "enter")
+        await pilot.press(*"dra")
+        prompt = app.screen.query_one("#prompt", Input)
         await pilot.press("up")
-        assert prompt.value == "/bogus one"
+        assert prompt.value == "org/two"
         await pilot.press("up")
-        assert prompt.value == "/help"
-        await pilot.press("up")  # the oldest stays
-        assert prompt.value == "/help"
+        assert prompt.value == "org/one"
+        await pilot.press("up")
+        assert prompt.value == "org/one"  # the oldest
         await pilot.press("down", "down")
-        assert prompt.value == "dra"
-        await pilot.press("up", *"x")  # typing leaves the walk: Up next starts from the latest again
-        await pilot.pause()
-        assert prompt.value == "/bogus onex" and app._hist is None
+        assert prompt.value == "dra"  # back to what was being typed
+    _run(first)
+
+    async def second(app: TemperumApp, pilot: Any) -> None:
+        assert app.commands == ["org/one", "org/two"]
         await pilot.press("up")
-        assert prompt.value == "/bogus one"
-    _run(test)
-    saved = (tmp_path / "home" / "tui-history.txt").read_text(encoding="utf-8").splitlines()
-    assert saved == ["/help", "/bogus one"]
-
-    async def again(app: TemperumApp, pilot: Any) -> None:
-        assert app.commands == ["/help", "/bogus one"]
-        await pilot.press("up")
-        assert app.query_one("#prompt").value == "/bogus one"
-    _run(again)
+        assert app.screen.query_one("#prompt", Input).value == "org/two"
+    _run(second)
 
 
-def test_copy_takes_the_transcript_or_a_selection(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_selected_text_in_the_details_is_copied_with_ctrl_c(monkeypatch: pytest.MonkeyPatch) -> None:
     copied: list[tuple[str, str]] = []
     monkeypatch.setattr(TemperumApp, "copy_text", lambda self, text, what: copied.append((what, text)))
 
+    def job(session: TuiSession) -> None:
+        session.say("the first line of the details")
+        session.say("the second line of the details")
+
     async def test(app: TemperumApp, pilot: Any) -> None:
-        await pilot.press(*"/copy", "enter")
+        app.run_job("saying", job)
+        await _until(pilot, lambda: app.busy is None)
+        await pilot.mouse_down("#log", offset=(2, 1))  # inside the content, under the top border
+        await pilot.hover("#log", offset=(40, 2))
+        await pilot.mouse_up("#log", offset=(40, 2))
         await pilot.pause()
-        assert copied and copied[-1][0] == "the transcript" and "Temperum" in copied[-1][1]
-        transcript = app.query_one("#transcript")
-        await pilot.mouse_down("#transcript", offset=(1, 0))
-        await pilot.hover("#transcript", offset=(20, 1))
-        await pilot.mouse_up("#transcript", offset=(20, 1))
+        assert app.screen.get_selected_text()
+        await pilot.press("ctrl+c")
         await pilot.pause()
-        if app.screen.get_selected_text():  # the pilot's drag may not reach the widget headlessly
-            await pilot.press("ctrl+c")
-            await pilot.pause()
-            assert copied[-1][0] == "the selection" and copied[-1][1].strip()
-            assert transcript.text_selection is None and app.is_running
-        else:  # no selection: Ctrl+C with nothing running leaves
-            await pilot.press("ctrl+c")
-            await pilot.pause()
+        assert copied[-1][0] == "the selection" and "first line" in copied[-1][1]
+        assert app.is_running and app.screen.get_selected_text() in (None, "")
+        app.action_mouse()  # F2: the terminal gets the mouse (no driver methods headlessly, no crash)
+        assert app.native_mouse
+        app.action_mouse()
+        assert not app.native_mouse
     _run(test)
 
 
@@ -205,3 +275,20 @@ def test_leaving_abandons_a_pending_question() -> None:
         await pilot.pause()
     _run(test)
     assert outcome == {"cancelled": True}
+
+
+def test_commands_still_run_from_the_home_box(monkeypatch: pytest.MonkeyPatch) -> None:
+    table = Table("check", "state", box=None)
+    table.add_row("fork", "ready")
+    monkeypatch.setattr("temperum.cli.main._doctor_report", lambda: ({}, table))
+
+    async def test(app: TemperumApp, pilot: Any) -> None:
+        await pilot.press(*"/doctor", "enter")
+        await _until(pilot, lambda: isinstance(app.screen, WorkScreen) and app.busy is None)
+        assert any("fork" in line and "ready" in line for line in app.history)
+        await pilot.press("escape")
+        await _until(pilot, lambda: isinstance(app.screen, HomeScreen))
+        await pilot.press(*"/nonsense", "enter")
+        await pilot.pause()
+        assert isinstance(app.screen, HomeScreen)  # unknown commands only notify
+    _run(test)
