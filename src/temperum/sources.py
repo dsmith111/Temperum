@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from temperum import templates
 from temperum.core.errors import TemperumError
 
 # Weights, configs, tokenizers and licence/card files; never pickles or remote code.
@@ -49,6 +50,7 @@ class ResolvedModel:
     config: dict[str, Any]
     weight_bytes: int | None
     files: list[str] = field(default_factory=list)
+    chat_template: str | None = None  # the model's own Jinja template; None: a base model with no chat format
 
     @property
     def name(self) -> str:
@@ -70,7 +72,8 @@ class ResolvedModel:
         return {"kind": self.ref.kind, "repo": self.ref.repo, "revision": self.ref.revision,
                 "path": str(self.ref.path) if self.ref.path else None, "commit": self.commit,
                 "gated": self.gated, "license": self.license, "architecture": self.architecture,
-                "model_type": self.model_type, "weight_bytes": self.weight_bytes}
+                "model_type": self.model_type, "weight_bytes": self.weight_bytes,
+                "has_chat_template": self.chat_template is not None}
 
 
 def draft_model_reason(config: dict[str, Any], tags: list[str] | None = None) -> str | None:
@@ -143,6 +146,17 @@ def _hf_error(exc: Exception, ref: ModelRef) -> TemperumError:
                          hint="Check the network or proxy settings and retry.", cause=exc)
 
 
+def _hub_chat_template(repo: str, sha: str, files: list[str], download: Callable[..., str]) -> str | None:
+    """The chat template of a hub model, from the two small files that can carry it (no weights)."""
+    if "chat_template.jinja" in files:
+        text = Path(download(repo, "chat_template.jinja", revision=sha)).read_text(encoding="utf-8")
+        return text if text.strip() else None
+    if "tokenizer_config.json" in files:
+        config = json.loads(Path(download(repo, "tokenizer_config.json", revision=sha)).read_text(encoding="utf-8"))
+        return templates.chat_template_in(config)
+    return None
+
+
 def resolve(ref: ModelRef, api: Any = None, download: Callable[..., str] | None = None) -> ResolvedModel:
     """Metadata only: immutable commit, licence, gating and config.json (no weights downloaded)."""
     if ref.kind == "local":
@@ -152,7 +166,7 @@ def resolve(ref: ModelRef, api: Any = None, download: Callable[..., str] | None 
         weights = sum(p.stat().st_size for p in ref.path.glob("*.safetensors"))
         _refuse_draft(ref, config, None)
         return ResolvedModel(ref, commit=None, gated=False, license=None, config=config,
-                             weight_bytes=weights or None, files=files)
+                             weight_bytes=weights or None, files=files, chat_template=templates.load_jinja(ref.path))
     from huggingface_hub import HfApi, hf_hub_download
 
     api = api or HfApi()
@@ -172,9 +186,13 @@ def resolve(ref: ModelRef, api: Any = None, download: Callable[..., str] | None 
                             hint="Only safetensors checkpoints are converted (pickled weights are never loaded).")
     config = json.loads(Path(config_path).read_text(encoding="utf-8"))
     _refuse_draft(ref, config, [str(t) for t in (getattr(info, "tags", None) or [])])
+    try:
+        jinja = _hub_chat_template(str(ref.repo), info.sha, files, download)
+    except Exception as exc:  # noqa: BLE001
+        raise _hf_error(exc, ref) from exc
     return ResolvedModel(ref, commit=info.sha, gated=bool(getattr(info, "gated", False)),
                          license=str(license_id) if license_id else None, config=config,
-                         weight_bytes=weights or None, files=files)
+                         weight_bytes=weights or None, files=files, chat_template=jinja)
 
 
 def fetch(model: ResolvedModel, root: Path, snapshot: Callable[..., str] | None = None) -> Path:

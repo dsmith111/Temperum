@@ -99,7 +99,7 @@ def test_a_bare_model_id_converts_through_the_shared_flow(monkeypatch: pytest.Mo
     monkeypatch.setattr(flows, "gguf_plan_table", lambda plan_in: "the plan")
     monkeypatch.setattr(flows, "run_gguf", lambda session, plan_in, *, start, verifier=None:
                         calls.append("run") or ({"verdict": "passed", "bundle": "C:/b"}, object()))
-    monkeypatch.setattr(flows, "gguf_installer", lambda session, result, tag, exe: (lambda endpoint: {}))
+    monkeypatch.setattr(flows, "gguf_installer", lambda session, result, tag, exe, **kw: (lambda endpoint: {}))
     monkeypatch.setattr(flows, "after_convert", lambda session, summary, **kw: calls.append(("after", kw["tag"])))
 
     async def test(app: TemperumApp, pilot: Any) -> None:

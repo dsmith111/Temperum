@@ -17,7 +17,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from temperum import settings, ui
+from temperum import settings, templates, ui
 from temperum.core.errors import TemperumError
 
 Transfer = tuple[Callable[[str, int, int], None], Callable[[], None]]
@@ -184,6 +184,7 @@ def gguf_plan_table(plan: Any) -> Table:
     table.add_row("Runtime", escape(f"{plan.runtime.description} ({plan.payload.root})"))
     table.add_row("NPU libraries", escape(str(plan.payload.htp)))
     table.add_row("Format", escape(f"GGUF {plan.quant}, context {plan.context}"))
+    table.add_row("Chat", escape(templates.describe(plan.model.chat_template)))
     table.add_row("Verification", escape(plan.verify_level))
     table.add_row("Output", escape(str(plan.destination)))
     table.add_row("Estimate", escape(f"~{est['minutes']:.0f} min, ~{est['ram_gb']} GB RAM, ~{est['disk_gb']} GB "
@@ -219,6 +220,7 @@ def gguf_summary(result: Any, start: float) -> dict[str, Any]:
     ppl = report.get("quality", {}).get("perplexity", {})
     if ppl:
         summary["perplexity_ratio"] = ppl.get("ratio")
+    summary["base_model"] = report.get("template", {}).get("modelfile") == "raw"
     return summary
 
 
@@ -240,18 +242,23 @@ def ready_lines(summary: dict[str, Any]) -> list[str]:
                   if speed.get("long_prompt_tokens_per_s") else
                   f"{speed.get('median_prompt_tokens_per_s') or 0:.0f} tokens/s")
         lines.append(f"  decode: {speed['median_tokens_per_s']:.0f} tokens/s, prompt: {prompt}")
+    if summary.get("base_model"):
+        lines.append("  a base model with no chat template: installed as a completion model, the prompt is sent as "
+                     "it is")
     return lines
 
 
-def gguf_installer(session: Session, result: Any, tag: str, exe: Optional[Path]) -> Callable[[str], dict[str, Any]]:
-    """What `after_convert` calls to install a GGUF bundle into the fork at an endpoint."""
+def gguf_installer(session: Session, result: Any, tag: str, exe: Optional[Path],
+                   overwrite: bool = False) -> Callable[[str], dict[str, Any]]:
+    """What `after_convert` calls to install a GGUF bundle into the fork at an endpoint. `overwrite`: the
+    conversion replaced its bundle, so the tag of the same name is replaced too (a rebuild, not a clash)."""
     from temperum.install.ollama_import import install_gguf
 
     def installer(endpoint: str) -> dict[str, Any]:
         if exe is None:
             raise TemperumError("import", "EXE_REQUIRED", "Installing needs the fork executable.",
                                 hint="Run `temperum setup --ollama-exe PATH` once, or pass --ollama-exe PATH.")
-        return install_gguf(result.bundle, tag, executable=exe, host=endpoint,
+        return install_gguf(result.bundle, tag, executable=exe, host=endpoint, overwrite=overwrite,
                             work_dir=result.job_dir / "install", say=session.say)
     return installer
 
@@ -315,7 +322,8 @@ def after_convert(session: Session, summary: dict[str, Any], *, tag: str,
         validate = session.confirm("Validate it through the fork (load it, time a generation, watch the CPU)?",
                                    default=True)
     if validate:
-        report = validate_model(endpoint, tag, fork_dir=exe.parent if exe else None, say=session.say)
+        report = validate_model(endpoint, tag, fork_dir=exe.parent if exe else None, say=session.say,
+                                completion=summary.get("base_model"))
         summary["validation"] = report
         session.show(ui.validation_table(report))
     if interactive and not push:

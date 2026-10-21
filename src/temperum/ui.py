@@ -207,6 +207,8 @@ def ready_panel(summary: dict[str, Any]) -> Panel:
         prompt = (f", prompt {speed['long_prompt_tokens_per_s']:.0f} tok/s ({speed['long_prompt_tokens']} tokens)"
                   if speed.get("long_prompt_tokens_per_s") else "")
         grid.add_row("Speed", escape(f"decode {speed['median_tokens_per_s']:.0f} tok/s{prompt}"))
+    if summary.get("base_model"):
+        grid.add_row("Chat", "none: a base model, installed as a completion model (the prompt is sent as it is)")
     if summary.get("minutes") is not None:
         grid.add_row("Took", escape(f"{summary['minutes']} min"))
     title = {"passed": "Model ready", "warning": "Model ready, with warnings"}.get(verdict, "Conversion failed")
@@ -228,10 +230,17 @@ def validation_table(report: dict[str, Any]) -> Table:
         table.add_row("Load", escape(f"{report['load_s']} s"))
     chat = report.get("chat") or {}
     if chat:
-        ran_on = (f" ({chat['ran_on']} of {chat.get('of')} hit the {chat.get('limit')}-token limit: the model does "
-                  "not stop by itself, so its answers run on)" if chat.get("ran_on") else "")
-        table.add_row("Chat", escape(f"{chat.get('correct')}/{chat.get('of')} answers as expected: "
-                                     + ", ".join(repr(a.strip()[:40]) for a in chat.get("answers", [])) + ran_on))
+        answers = ", ".join(repr(a.strip()[:40]) for a in chat.get("answers", []))
+        if chat.get("mode") == "completion":  # a base model: scored on how it continues a sentence
+            ran_on = (f" ({chat['ran_on']} of {chat.get('of')} ran to the {chat.get('limit')}-token limit: a base "
+                      "model does not stop by itself)" if chat.get("ran_on") else "")
+            table.add_row("Completion", escape(f"{chat.get('correct')}/{chat.get('of')} continuations on topic: "
+                                               f"{answers}{ran_on}"))
+        else:
+            ran_on = (f" ({chat['ran_on']} of {chat.get('of')} hit the {chat.get('limit')}-token limit: the model "
+                      "does not stop by itself, so its answers run on)" if chat.get("ran_on") else "")
+            table.add_row("Chat", escape(f"{chat.get('correct')}/{chat.get('of')} answers as expected: "
+                                         f"{answers}{ran_on}"))
     speed = report.get("speed") or {}
     if speed.get("decode_tokens_per_s"):
         table.add_row("Speed", escape(f"decode {speed['decode_tokens_per_s']} tok/s, prompt "

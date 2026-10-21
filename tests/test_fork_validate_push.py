@@ -284,3 +284,32 @@ def test_restart_leaves_other_servers_alone(tmp_path: Path, monkeypatch: pytest.
     monkeypatch.setattr(fork, "listener", lambda endpoint, run=None: None)
     with pytest.raises(TemperumError):
         fork.restart_with_switch("http://127.0.0.1:18799", exe, lambda _m: None, log_dir=tmp_path)
+
+
+def test_validate_scores_continuations_for_a_base_model() -> None:
+    from temperum.install import validate as validate_module
+
+    calls: list[tuple[str, dict[str, Any] | None]] = []
+
+    def api(endpoint: str, path: str, timeout: float, body: dict[str, Any] | None = None) -> dict[str, Any]:
+        calls.append((path, body))
+        if path == "/api/show":
+            return {"template": "{{ .Prompt }}"}
+        if path == "/api/ps":
+            return {"models": []}
+        if path == "/api/generate" and body and str(body.get("prompt", "")).startswith("The capital of"):
+            return {"response": " Paris." if "France" in str(body["prompt"]) else " the German capital",
+                    "done_reason": "length"}
+        if path == "/api/generate" and body and body.get("prompt") == validate_module.LONG_PROMPT:
+            return {"response": "blue " * 100, "eval_count": 120, "eval_duration": 6_000_000_000,
+                    "prompt_eval_count": 20, "prompt_eval_duration": 50_000_000}
+        return {}
+
+    report = validate("http://127.0.0.1:1", "gpt2:npu", fork_dir=None, say=lambda _m: None, api=api,
+                      cpu=lambda _d: None)
+    assert report["chat"] == {"answers": [" Paris.", " the German capital"], "correct": 2, "of": 2, "ran_on": 2,
+                              "limit": 256, "mode": "completion"}
+    assert not any(p == "/api/chat" for p, _ in calls) and report["speed"]["decode_tokens_per_s"] == 20.0
+    assert validate_module.is_plain_template("{{- if .System }}{{ .System }}\n\n{{ end }}{{ .Prompt }}")
+    assert not validate_module.is_plain_template("{{- range .Messages }}{{ .Content }}{{ end }}")
+    assert not validate_module.is_plain_template("")

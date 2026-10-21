@@ -85,3 +85,12 @@ def test_validation_table_says_when_answers_ran_to_the_limit() -> None:
         "answers": ["Paris is the capital...", "Berlin..."], "correct": 2, "of": 2, "ran_on": 2, "limit": 256}}))
     text = console.file.getvalue()  # type: ignore[attr-defined]
     assert "2/2 answers" in text and "2 of 2 hit the 256-token limit" in text and "does not stop by itself" in text
+
+
+def test_validation_table_scores_continuations_for_a_base_model() -> None:
+    console = Console(file=io.StringIO(), force_terminal=False, width=240)
+    console.print(ui.validation_table({"placement": {"where": "npu", "npu_mib": 126}, "chat": {
+        "answers": [" Paris.", " Berlin"], "correct": 2, "of": 2, "ran_on": 2, "limit": 256, "mode": "completion"}}))
+    text = console.file.getvalue()  # type: ignore[attr-defined]
+    assert "Completion" in text and "2/2 continuations on topic" in text
+    assert "a base model does not stop by itself" in text

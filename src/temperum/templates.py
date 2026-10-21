@@ -17,6 +17,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from temperum.core.errors import TemperumError
 
@@ -139,6 +140,15 @@ _CHATML_SYSTEM = re.compile(r"<\|im_start\|>system(?:\\n|\n)([^'\"{}<>+\\]+?)<\|
 _PHI_ROLE_TAG = re.compile(r"""['"]<\|['"]\s*\+\s*message\[['"]role['"]\]\s*\+\s*['"]\|>""")
 
 
+def chat_template_in(config: dict[str, Any]) -> str | None:
+    """The chat template a tokenizer_config.json carries (the default one of a named set), if any."""
+    template = config.get("chat_template")
+    if isinstance(template, list):  # named templates; use the default one
+        named = {item.get("name"): item.get("template") for item in template if isinstance(item, dict)}
+        template = named.get("default")
+    return template if isinstance(template, str) and template.strip() else None
+
+
 def load_jinja(model_dir: Path) -> str | None:
     """The model's chat template: chat_template.jinja, else tokenizer_config.json."""
     standalone = model_dir / "chat_template.jinja"
@@ -148,11 +158,20 @@ def load_jinja(model_dir: Path) -> str | None:
         config = json.loads((model_dir / "tokenizer_config.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    template = config.get("chat_template")
-    if isinstance(template, list):  # named templates; use the default one
-        named = {item.get("name"): item.get("template") for item in template if isinstance(item, dict)}
-        template = named.get("default")
-    return template if isinstance(template, str) and template.strip() else None
+    return chat_template_in(config)
+
+
+def describe(jinja: str | None) -> str:
+    """One line for a plan: the chat format the model has, and what the converter does with it."""
+    if jinja is None:
+        return ("none: a base model that continues text rather than answering; installed as a completion "
+                "model (the prompt is sent as it is)")
+    try:
+        chat = from_jinja(jinja)
+    except TemperumError:
+        return "the model's own, in a format the converter does not recognize (the fork renders it)"
+    variant = f" ({chat.variant})" if chat.variant else ""
+    return f"{chat.family}{variant}, checked against the model's own template during verification"
 
 
 def from_jinja(jinja: str | None) -> ChatTemplate:

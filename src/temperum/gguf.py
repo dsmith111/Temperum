@@ -44,6 +44,7 @@ Runner = Callable[..., "subprocess.CompletedProcess[str]"]
 QUANT_TYPES = ("Q4_0", "Q8_0", "Q4_K_M")  # all run on the Hexagon backend; Q4_0 is its best-supported type
 DEFAULT_QUANT = "Q4_0"
 DEFAULT_CONTEXT = 4096
+CONTEXT_KEYS = ("max_position_embeddings", "n_positions", "n_ctx", "seq_length", "max_sequence_length")
 MANIFEST = "temperum_manifest.json"
 LICENSE_PREFIXES = ("license", "notice", "use_policy", "readme")
 HTP_LIBRARIES = ("libggml-htp-v73.so", "libggml-htp-v75.so", "libggml-htp-v79.so", "libggml-htp-v81.so",
@@ -158,6 +159,16 @@ def estimates(model: ResolvedModel, quant: str, *, cached: bool = False, verify:
             "minutes": round(2 + 3 * params / 1e9)}
 
 
+def trained_context(config: dict[str, Any]) -> int | None:
+    """The longest context the model was trained for, under whichever key its config uses (GPT-2: n_positions).
+    Positions past it are garbage, and out of range for learned position embeddings."""
+    for key in CONTEXT_KEYS:
+        value = config.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    return None
+
+
 def job_id(model: ResolvedModel, target: TargetProfile, runtime: LlamaRuntimeProfile, quant: str,
            context: int | None) -> str:
     identity = {"model": model.ref.repo or str(model.ref.path), "commit": model.commit, "target": target.id,
@@ -224,10 +235,11 @@ def plan(model: ResolvedModel, host: HostInfo, target: TargetProfile, *, ollama_
     elif not runtime.llama_cpp_commit.startswith(commit):
         warnings.append(f"the runtime's llama.cpp is {commit}, but this converter pins {runtime.llama_cpp_commit[:9]} "
                         f"({runtime.llama_cpp_tag}); the HTP libraries and file format follow the runtime")
-    maximum = model.config.get("max_position_embeddings")
-    ctx = context or min(int(maximum) if isinstance(maximum, int) else DEFAULT_CONTEXT, DEFAULT_CONTEXT)
-    if isinstance(maximum, int) and not 128 <= ctx <= maximum:
-        raise TemperumError("plan", "BAD_CONTEXT", f"--context {ctx} is outside 128..{maximum}.")
+    maximum = trained_context(model.config)
+    ctx = context or min(maximum or DEFAULT_CONTEXT, DEFAULT_CONTEXT)
+    if maximum is not None and not 128 <= ctx <= maximum:
+        raise TemperumError("plan", "BAD_CONTEXT",
+                            f"--context {ctx} is outside 128..{maximum}, the model's trained length.")
     destination = out or paths.models_dir() / f"{model.name}-{target.id}"
     if destination.exists() and not overwrite:
         raise TemperumError("plan", "DESTINATION_EXISTS", f"{destination} already exists.",
@@ -333,12 +345,13 @@ def quantize(payload: LlamaPayload, src: Path, out: Path, quant: str, log: Path,
 
 
 def derived_template(snapshot: Path) -> ChatTemplate | None:
-    """The converter's Ollama template for the model's chat format (None if the format is not recognized)."""
+    """The converter's Ollama template: the model's chat format when recognized; the plain prompt (family
+    "raw") for a base model with no chat template, so the fork cannot chat with it in a built-in format it
+    never saw; None when the format is not recognized (the fork decides)."""
     try:
-        chat = from_jinja(load_jinja(snapshot))
+        return from_jinja(load_jinja(snapshot))
     except TemperumError:
         return None
-    return None if chat.family == "raw" else chat
 
 
 def modelfile(context: int, chat: ChatTemplate | None = None) -> str:
@@ -363,7 +376,9 @@ def set_template(bundle: Path, chat: ChatTemplate, context: int) -> None:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["files"]["Modelfile"] = {"size": path.stat().st_size, "sha256": _sha256(path)}
     manifest["ollama_template"] = {"family": chat.family, "variant": chat.variant or None,
-                                   "checked_against": "the model's own chat template (transformers)"}
+                                   "checked_against": ("nothing: the model has no chat template, so the prompt "
+                                                       "is sent as it is" if chat.family == "raw" else
+                                                       "the model's own chat template (transformers)")}
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
 
@@ -463,9 +478,12 @@ def run(gguf_plan: GgufPlan, progress: Progress | None = None,
         if verifier is not None and gguf_plan.verify_level != "none":
             report = verifier(bundle, snapshot, gguf_plan, chains, job.dir / "verify", say, reference_gguf=converted,
                               chat=chat)
-        if chat is not None and report.get("template", {}).get("ollama", {}).get("status") == "match":
+        checked = report.get("template", {}).get("ollama", {}).get("status") == "match"
+        if chat is not None and (chat.family == "raw" or checked):
+            # raw: a base model with no chat template; the plain template keeps the fork from chatting with
+            # it in a built-in format it never saw (llama-server's default ChatML)
             set_template(bundle, chat, gguf_plan.context)
-            report["template"]["modelfile"] = chat.family
+            report.setdefault("template", {})["modelfile"] = chat.family
         report["created"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
         (bundle / "temperum_verification.json").write_text(json.dumps(report, indent=2, ensure_ascii=False),
                                                             encoding="utf-8")

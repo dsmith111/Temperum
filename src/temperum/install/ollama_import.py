@@ -434,6 +434,10 @@ def install_gguf(bundle: Path, name: str, *, executable: Path, host: str | None,
     if result["template"] == "fork built-in":
         result["warnings"].append("the fork replaced the model's chat template with a similar built-in one, which "
                                   "the converter did not check; chats may be formatted differently")
+    elif result["template"] == "default":
+        result["warnings"].append("the model has no chat template and the bundle sets none, so the fork chats with "
+                                  "it in a built-in format it never saw; rebuild the bundle with this converter "
+                                  "(temperum convert --overwrite) to send prompts as they are")
     say("loading it once to see where the fork runs it")
     try:
         result["placement"] = npu_placement(endpoint, tag)
@@ -488,4 +492,6 @@ def template_source(modelfile_text: str, shown: str | None) -> str:
         return "none"
     if re.search(r"^TEMPLATE ", modelfile_text, re.MULTILINE):
         return "bundle"  # the converter's checked template
+    if shown.strip() == "{{ .Prompt }}":
+        return "default"  # no template anywhere: the fork's placeholder, and chats go to llama-server's ChatML
     return "fork built-in"

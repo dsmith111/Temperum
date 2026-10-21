@@ -128,6 +128,11 @@ the sign-in link when the server is not linked to an account yet.
   fetched archive is verified against its pin and recorded in the bundle's manifest. First one:
   the GPT-2 converter at b11644 tried to map the old checkpoints' causal-mask buffers
   (`h.N.attn.bias`) and failed; the patch skips them, as the comment above that code intended.
+- **Base models with no chat template** (GPT-2 and the like) convert as completion models: the
+  bundle's Modelfile sends the prompt as it is, the plan says so up front, and verification and
+  validation score continuations instead of answers. Left to itself the fork would chat with such a
+  model in a built-in format it never saw. The context defaults to the model's trained length when
+  that is below 4096 (GPT-2: 1024), whichever config key declares it.
 - **Not convertible: speculative-decoding draft models** (DFlash, EAGLE, Medusa heads, anything
   tagged `draft-model`). They propose tokens for a larger target model and cannot answer on
   their own, so `temperum` refuses them at the plan and names the target model to convert.

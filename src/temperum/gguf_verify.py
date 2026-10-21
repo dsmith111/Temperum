@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from temperum import calib, paths
-from temperum.gguf import GgufPlan, LlamaPayload, _exe
+from temperum.gguf import GgufPlan, LlamaPayload, _exe, last_error_line
 from temperum.templates import ChatTemplate
 from temperum.verify import (CONVERSATIONS, NEEDLE, PPL_PASS, PROMPTS, SETTINGS, reference_dtype, run_script,
                               template_check, verdict)
@@ -228,7 +228,7 @@ def verify_gguf(bundle: Path, snapshot: Path, plan: GgufPlan, chains: Any, work:
         if code == 0 and out.is_file():
             reference = json.loads(out.read_text(encoding="utf-8"))
         else:
-            quality["skipped"] = f"reference run failed: {tail[-400:]}"
+            quality["skipped"] = f"reference run failed: {last_error_line(tail) or tail[-400:]}"
 
     say("loading the bundle on the NPU with llama-server")
     rows: list[dict[str, Any]] = []
@@ -261,7 +261,7 @@ def verify_gguf(bundle: Path, snapshot: Path, plan: GgufPlan, chains: Any, work:
                     same = next((i for i in range(min(len(tokens), len(want))) if tokens[i] != want[i]),
                                 min(len(tokens), len(want)))
                     row.update({"reference": ref["output"], "matching_prefix": same, "reference_tokens": len(want),
-                                "exact": tokens == want})
+                                "exact": tokens == want, "reference_degenerate": _degenerate(want)})
                 rows.append(row)
             needles = []
             for needle in (reference or {}).get("needle", []):
@@ -322,13 +322,23 @@ def verify_gguf(bundle: Path, snapshot: Path, plan: GgufPlan, chains: Any, work:
         report["verdict"] = "failed"
         report["reasons"] = ["the model did not run on the NPU (no layers on an HTP device)"] + report["reasons"]
     if report["verdict"] != "failed" and rows and all(r.get("stop") == "limit" for r in rows):
-        # Every answer ran to the token limit: the model does not end its turns (a base model, or a chat
-        # format it was not trained on). Through the fork its answers run on until the context is full.
-        report["verdict"] = "warning"
-        report["reasons"].append(f"no answer ended by itself within {settings.max_new} tokens: the model keeps "
-                                 "generating after its reply (a base model, or a chat format it was not trained "
-                                 "on), so answers through the fork run on")
+        if chat is not None and chat.family == "raw":  # expected of a base model: it continues text
+            report["reasons"].append(f"a base model with no chat template: every answer ran to the "
+                                     f"{settings.max_new}-token limit, as it does not end its turns by itself")
+        else:
+            # Every answer ran to the token limit: the model does not end its turns (a chat format it was not
+            # trained on, or a base model the converter did not recognize as one). Through the fork its
+            # answers run on until the context is full.
+            report["verdict"] = "warning"
+            report["reasons"].append(f"no answer ended by itself within {settings.max_new} tokens: the model "
+                                     "keeps generating after its reply (a base model, or a chat format it was "
+                                     "not trained on), so answers through the fork run on")
     ratio = quality.get("perplexity", {}).get("ratio")
-    if report["verdict"] == "warning" and plan.quant == "Q4_0" and ratio and ratio > PPL_PASS:
-        report["reasons"].append("Q4_0 is the fastest type; --quant Q4_K_M or Q8_0 keep more quality")
+    lost = report["verdict"] == "failed" and any(r["degenerate"] and not r.get("reference_degenerate")
+                                                   for r in rows)
+    if ((report["verdict"] == "warning" and ratio and ratio > PPL_PASS) or lost) and plan.quant == "Q4_0":
+        small = plan.estimates["params_billions"] < 0.5
+        report["reasons"].append("Q4_0 is the fastest type; --quant Q4_K_M or Q8_0 keep more quality"
+                                 + (" (a model this small loses a lot at 4 bits, and its file is tiny anyway)"
+                                    if small else ""))
     return report

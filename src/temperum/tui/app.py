@@ -480,7 +480,8 @@ class TemperumApp(App[None]):
             tag = opts.get("--name") or f"{plan.model.name}:npu"
             flows.after_convert(session, summary, tag=tag, install=False, validate=False, push=False, push_as=None,
                                 exe=exe, host=opts.get("--host"),
-                                installer=flows.gguf_installer(session, result, tag, exe))
+                                installer=flows.gguf_installer(session, result, tag, exe,
+                                                               overwrite="--overwrite" in opts))
         return f"converting {model}", job
 
     def cmd_install(self, args: list[str]) -> tuple[str, Job]:

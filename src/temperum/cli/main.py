@@ -112,7 +112,8 @@ def convert_command(
     stop: list[str] = typer.Option([], "--stop", help="Stop sequence for --template (repeatable)"),
     num_splits: Optional[int] = typer.Option(None, "--num-splits", help="Advanced: NPU graph splits"),
     keep_cache: bool = typer.Option(False, "--keep-cache", help="Keep Olive's intermediate cache"),
-    overwrite: bool = typer.Option(False, "--overwrite", help="Replace an existing bundle folder"),
+    overwrite: bool = typer.Option(False, "--overwrite",
+                                   help="Replace an existing bundle folder, and the installed tag of that name"),
     python: Optional[Path] = typer.Option(None, "--python", help="Native Python for toolchains (default: uv)"),
     plan_only: bool = typer.Option(False, "--plan", help="Show the plan and stop"),
     yes: bool = typer.Option(False, "--yes", "-y", help="Run without asking (accepts the plan and licence notice)"),
@@ -255,7 +256,7 @@ def _convert_gguf(model: str, target_id: str, *, quant: str, context: Optional[i
         if summary["verdict"] != "failed":
             flows.after_convert(session, summary, tag=tag, install=install, validate=validate, push=push,
                                 push_as=push_as, exe=exe, host=host,
-                                installer=flows.gguf_installer(session, result, tag, exe))
+                                installer=flows.gguf_installer(session, result, tag, exe, overwrite=overwrite))
     except flows.Cancelled:
         raise typer.Exit(code=1) from None
     if as_json:

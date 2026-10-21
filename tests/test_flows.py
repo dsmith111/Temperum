@@ -78,7 +78,7 @@ def test_after_convert_asks_installs_offers_the_switch_and_validates(monkeypatch
                         restarted.append(endpoint))
     monkeypatch.setattr("temperum.install.ollama_import.npu_placement",
                         lambda endpoint, tag: {"where": "npu", "npu_mib": 900})
-    monkeypatch.setattr("temperum.install.validate.validate", lambda endpoint, tag, *, fork_dir, say: {
+    monkeypatch.setattr("temperum.install.validate.validate", lambda endpoint, tag, *, fork_dir, say, **kw: {
         "placement": {"where": "npu", "npu_mib": 900}, "speed": {"decode_tokens_per_s": 30.0, "tokens": 120},
         "cpu": {"cores": 0.1, "processes": 2}})
     session = FakeSession(answers=[True, True, True, False])  # install, restart, validate, upload
@@ -200,3 +200,15 @@ def test_console_session_stamps_progress_lines() -> None:
     session.note("careful", warning=True)
     text = console.file.getvalue()  # type: ignore[attr-defined]
     assert "fetching org/model" in text and "! careful" in text and session.interactive
+
+
+def test_gguf_installer_replaces_the_tag_when_the_conversion_was_an_overwrite(monkeypatch: pytest.MonkeyPatch,
+                                                                            tmp_path: Path) -> None:
+    seen: list[dict[str, Any]] = []
+    monkeypatch.setattr("temperum.install.ollama_import.install_gguf",
+                        lambda bundle, tag, **kw: seen.append({"tag": tag, **kw}) or {"name": tag})
+    result = SimpleNamespace(bundle=tmp_path / "bundle", job_dir=tmp_path / "job")
+    flows.gguf_installer(FakeSession(), result, "gpt2:npu", tmp_path / "ollama.exe", overwrite=True)("http://h")
+    assert seen[0]["overwrite"] is True and seen[0]["host"] == "http://h"
+    flows.gguf_installer(FakeSession(), result, "gpt2:npu", tmp_path / "ollama.exe")("http://h")
+    assert seen[1]["overwrite"] is False

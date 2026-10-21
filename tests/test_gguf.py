@@ -173,8 +173,14 @@ def test_assemble_writes_model_modelfile_licence_and_manifest(tmp_path: Path) ->
     assert manifest["format"] == "gguf" and manifest["precision"] == "Q4_0"
     assert manifest["runtime"]["llama_cpp"].startswith("e467e5b") and "model.gguf" in manifest["files"]
 
-    # No chat template in this snapshot: nothing to derive, so the fork decides.
-    assert gguf.derived_template(snapshot) is None
+    # No chat template in this snapshot: a base model, so the prompt goes to it as it is (the fork would
+    # otherwise chat with it through llama-server's default ChatML, which it never saw).
+    raw = gguf.derived_template(snapshot)
+    assert raw is not None and raw.family == "raw" and raw.stops == ()
+    gguf.set_template(bundle, raw, plan.context)
+    assert (bundle / "Modelfile").read_text(encoding="utf-8").endswith('{{ .Prompt }}"""\n')
+    manifest = json.loads((bundle / gguf.MANIFEST).read_text(encoding="utf-8"))
+    assert "no chat template" in manifest["ollama_template"]["checked_against"]
     # A checked template goes into the Modelfile, so `ollama create` keeps it instead of a built-in one.
     (snapshot / "tokenizer_config.json").write_text(json.dumps({"chat_template": (
         "{% for m in messages %}{% if loop.first and messages[0]['role'] != 'system' %}"
@@ -197,6 +203,7 @@ def test_assemble_writes_model_modelfile_licence_and_manifest(tmp_path: Path) ->
     ("FROM ./model.gguf\nTEMPLATE \"\"\"{{ .Prompt }}\"\"\"\n", "{%- if tools %}...", "gguf"),
     ("FROM ./model.gguf\n", "{%- for message in messages %}...", "gguf"),
     ("FROM ./model.gguf\n", "{{- range .Messages }}<|im_start|>{{ .Role }}", "fork built-in"),
+    ("FROM ./model.gguf\n", "{{ .Prompt }}", "default"),  # no template anywhere: not a chat format
     ("FROM ./model.gguf\n", None, "unknown"),
 ])
 def test_install_reports_which_chat_template_the_fork_kept(modelfile: str, shown: str | None, expected: str) -> None:
@@ -347,3 +354,76 @@ def test_install_reads_where_the_fork_put_the_model(size: int, on_device: int, w
     from temperum.install.ollama_import import placement_of
 
     assert placement_of(size, on_device)["where"] == where
+
+
+def test_plan_context_follows_the_models_trained_length(tmp_path: Path) -> None:
+    # GPT-2 declares n_positions, not max_position_embeddings: a 4096 default crashed the reference run
+    # (its position embeddings stop at 1024) and llama.cpp would read past them too.
+    exe = _payload(tmp_path / "fork")
+    model = ResolvedModel(ModelRef("hf", repo="openai-community/gpt2"), commit="607a30d783df", gated=False,
+                          license="mit", weight_bytes=548_105_171,
+                          config={"architectures": ["GPT2LMHeadModel"], "model_type": "gpt2", "n_positions": 1024})
+    plan = gguf.plan(model, X_ELITE, get_target("gguf-hexagon"), ollama_exe=exe, run=_version(""))
+    assert plan.context == 1024
+    with pytest.raises(TemperumError) as exc:
+        gguf.plan(model, X_ELITE, get_target("gguf-hexagon"), ollama_exe=exe, context=2048, run=_version(""))
+    assert exc.value.reason_code == "BAD_CONTEXT" and "1024" in str(exc.value)
+    assert gguf.trained_context({"max_position_embeddings": 32768, "n_positions": 1024}) == 32768
+    assert gguf.trained_context({"n_positions": True}) is None and gguf.trained_context({}) is None
+
+
+def test_plan_describes_the_chat_format() -> None:
+    from temperum import templates
+
+    assert templates.describe(None).startswith("none: a base model")
+    chatml = "{% for m in messages %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>{% endfor %}"
+    assert templates.describe(chatml).startswith("chatml, checked against")
+    assert "does not recognize" in templates.describe("{{ something else }}")
+
+
+def test_a_base_model_runs_on_without_a_warning_and_a_failed_reference_says_why(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    from temperum import gguf_verify
+    from temperum.templates import from_jinja
+
+    heldout = tmp_path / "heldout.jsonl"
+    heldout.write_text(json.dumps({"text": "Some held-out text."}) + "\n", encoding="utf-8")
+    monkeypatch.setattr(gguf_verify.calib, "ensure_corpus", lambda *_a: SimpleNamespace(path=heldout))
+
+    def run_script(_python: Path, script: str, args: list[str], *_rest: Any) -> tuple[int, str]:
+        return 1, ("Traceback (most recent call last):\n  File \"functional.py\", line 2621, in embedding\n"
+                   "    return torch.embedding(weight, input, padding_idx)\n"
+                   "IndexError: index out of range in self")
+
+    class FakeServer:
+        def __init__(self, *_args: Any) -> None: ...
+        def __enter__(self) -> FakeServer: return self
+        def __exit__(self, *_exc: object) -> None: ...
+        def text(self) -> str:
+            return ("load_tensors: offloaded 13/13 layers to GPU\n"
+                    "load_tensors:         HTP0 model buffer size =    78.00 MiB\n")
+        def bos_text(self) -> str | None:
+            return None
+        def apply_template(self, messages: list[dict[str, str]]) -> str:
+            return messages[-1]["content"]
+        def complete(self, prompt: Any, n_predict: int) -> dict[str, Any]:
+            return {"content": " Paris is a city", "tokens": [1, 2, 3, 4], "stop_type": "limit",
+                    "timings": {"predicted_per_second": 200.0, "prompt_ms": 20.0}}
+
+    monkeypatch.setattr(gguf_verify, "run_script", run_script)
+    monkeypatch.setattr(gguf_verify, "LlamaServer", FakeServer)
+    monkeypatch.setattr(gguf_verify, "perplexity", lambda *_a, npu, **_k: 10.9 if npu else 10.0)
+    plan = SimpleNamespace(verify_level="standard", payload=None, context=1024, quant="Q4_0",
+                           estimates={"params_billions": 0.12},
+                           host=SimpleNamespace(available_ram_gb=6.0, total_ram_gb=16.0))
+    chains = SimpleNamespace(python_exe=lambda _role: Path("python"))
+    report = gguf_verify.verify_gguf(tmp_path / "bundle", tmp_path / "source", plan,  # type: ignore[arg-type]
+                                     chains, tmp_path / "work", lambda _message: None,
+                                     reference_gguf=tmp_path / "model-Q8_0.gguf", chat=from_jinja(None))
+    # the traceback's last line is what a person needs, not 400 characters of frames
+    assert report["quality"]["skipped"] == "reference run failed: IndexError: index out of range in self"
+    assert report["verdict"] == "warning"  # answers were not compared
+    assert not any("no answer ended by itself" in r for r in report["reasons"])  # running on is what a base model does
+    assert any(r.startswith("a base model with no chat template") for r in report["reasons"])

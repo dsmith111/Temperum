@@ -24,6 +24,8 @@ def _report(**overrides: Any) -> dict[str, Any]:
     (_report(), "standard", "passed"),
     (_report(load={"ok": False, "error": "QNN failed"}), "standard", "failed"),
     (_report(prompts=[{"tokens": 32, "degenerate": True}]), "quick", "failed"),
+    # the source model repeats itself on that prompt too: the conversion is faithful, not broken
+    (_report(prompts=[{"tokens": 32, "degenerate": True, "reference_degenerate": True}]), "quick", "passed"),
     (_report(prompts=[]), "quick", "failed"),
     (_report(quality={}), "quick", "passed"),
     (_report(quality={"perplexity": {"ratio": 1.3}}), "standard", "warning"),
@@ -170,3 +172,14 @@ def test_none_level_and_unknown_levels(tmp_path: Path) -> None:
     with pytest.raises(TemperumError):
         verify(_bundle(tmp_path / "x"), tmp_path, CHATML, "thorough", quantize_python=None, verify_python=Path(),
                work=tmp_path, heldout=None, params=None, available_gb=None)
+
+
+def test_a_degenerate_answer_names_the_prompt_and_the_source_models_behaviour() -> None:
+    status, reasons = verdict(_report(prompts=[
+        {"prompt": "Write a Python function that returns the square of a number.", "tokens": 32,
+         "degenerate": True, "reference": ">>> from math import square", "reference_degenerate": False},
+        {"prompt": "Hi", "tokens": 0, "degenerate": False}]), "quick")
+    assert status == "failed"
+    assert reasons == ["generation repeated one token for 'Write a Python function that returns the' where the "
+                       "source model did not (and 1 more)"]
+    assert verdict(_report(prompts=[]), "quick") == ("failed", ["no generation was produced"])

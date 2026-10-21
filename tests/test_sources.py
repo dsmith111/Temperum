@@ -136,3 +136,22 @@ def test_local_model_resolves_without_network(tmp_path: Path) -> None:
     model = resolve(parse_ref(str(tmp_path)))
     assert model.commit is None and model.weight_bytes == 3 and model.model_type == "qwen2"
     assert fetch(model, tmp_path / "unused") == tmp_path.resolve()
+
+
+def test_resolve_reads_the_chat_template_from_the_small_tokenizer_files(tmp_path: Path) -> None:
+    def download(repo: str, filename: str, revision: str | None = None) -> str:
+        path = tmp_path / filename
+        content = {"chat_template": "{{ messages }}"} if filename == "tokenizer_config.json" else CONFIG
+        path.write_text(json.dumps(content), encoding="utf-8")
+        return str(path)
+
+    api = FakeApi(files=("config.json", "model.safetensors", "tokenizer_config.json"))
+    assert resolve(parse_ref("org/chat"), api=api, download=download).chat_template == "{{ messages }}"
+    # a base model carries no template in either file: the plan and the install treat it as one
+    base = resolve(parse_ref("openai-community/gpt2"), api=FakeApi(), download=download)
+    assert base.chat_template is None and base.to_dict()["has_chat_template"] is False
+    folder = tmp_path / "local"
+    folder.mkdir()
+    (folder / "config.json").write_text(json.dumps(CONFIG), encoding="utf-8")
+    (folder / "chat_template.jinja").write_text("{{ bos }}", encoding="utf-8")
+    assert resolve(parse_ref(str(folder))).chat_template == "{{ bos }}"

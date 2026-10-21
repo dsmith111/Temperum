@@ -131,8 +131,18 @@ def verdict(report: dict[str, Any], level: str) -> tuple[str, list[str]]:
     if not load.get("ok"):
         return "failed", [f"bundle did not load on the NPU: {load.get('error', 'unknown error')}"]
     prompts = report.get("prompts", [])
-    if not prompts or any(p["tokens"] == 0 or p["degenerate"] for p in prompts):
-        return "failed", ["generation was empty or degenerate (repeating one token)"]
+    if not prompts:
+        return "failed", ["no generation was produced"]
+    # an answer that repeats one token is a conversion failure unless the source model's own answer to the
+    # same prompt does the same (a base model continuing text, or a prompt the model cannot handle)
+    bad = [p for p in prompts if p["tokens"] == 0 or (p["degenerate"] and not p.get("reference_degenerate"))]
+    if bad:
+        first = bad[0]
+        what = "produced nothing" if first["tokens"] == 0 else "repeated one token"
+        where = f" for {first['prompt'][:40]!r}" if first.get("prompt") else ""
+        source = " where the source model did not" if "reference" in first else ""
+        more = f" (and {len(bad) - 1} more)" if len(bad) > 1 else ""
+        return "failed", [f"generation {what}{where}{source}{more}"]
     status = "passed"
     quality = report.get("quality", {})
     if level in ("standard", "full"):
