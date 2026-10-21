@@ -228,8 +228,10 @@ def validation_table(report: dict[str, Any]) -> Table:
         table.add_row("Load", escape(f"{report['load_s']} s"))
     chat = report.get("chat") or {}
     if chat:
+        ran_on = (f" ({chat['ran_on']} of {chat.get('of')} hit the {chat.get('limit')}-token limit: the model does "
+                  "not stop by itself, so its answers run on)" if chat.get("ran_on") else "")
         table.add_row("Chat", escape(f"{chat.get('correct')}/{chat.get('of')} answers as expected: "
-                                     + ", ".join(repr(a.strip()[:40]) for a in chat.get("answers", []))))
+                                     + ", ".join(repr(a.strip()[:40]) for a in chat.get("answers", [])) + ran_on))
     speed = report.get("speed") or {}
     if speed.get("decode_tokens_per_s"):
         table.add_row("Speed", escape(f"decode {speed['decode_tokens_per_s']} tok/s, prompt "

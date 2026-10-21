@@ -115,14 +115,16 @@ def test_validate_measures_through_the_fork() -> None:
             n = sum(1 for p, _ in calls if p == "/api/chat")
             content = {1: "Paris.", 2: "Berlin."}.get(n, "The sky is blue because of Rayleigh scattering. " * 10)
             return {"message": {"role": "assistant", "content": content}, "eval_count": 120,
-                    "eval_duration": 6_000_000_000, "prompt_eval_count": 20, "prompt_eval_duration": 50_000_000}
+                    "eval_duration": 6_000_000_000, "prompt_eval_count": 20, "prompt_eval_duration": 50_000_000,
+                    "done_reason": "length" if n == 2 else "stop"}
         return {}
 
     cpu = iter([(10.0, 2), (10.6, 2)])
     report = validate("http://127.0.0.1:1", "m:npu", fork_dir=Path("C:/fork"), say=lambda _m: None, api=api,
                       cpu=lambda _d: next(cpu))
     assert report["placement"]["where"] == "npu" and report["placement"]["accelerator"] == "NPU"
-    assert report["chat"] == {"answers": ["Paris.", "Berlin."], "correct": 2, "of": 2}
+    assert report["chat"] == {"answers": ["Paris.", "Berlin."], "correct": 2, "of": 2, "ran_on": 1, "limit": 256}
+    assert [b for p, b in calls if p == "/api/chat"][0]["options"]["num_predict"] == 256  # bounded answers
     assert report["speed"]["decode_tokens_per_s"] == 20.0 and report["speed"]["prompt_tokens_per_s"] == 400.0
     assert report["cpu"]["processes"] == 2 and report["cpu"]["cores"] > 0
     assert calls[-1] == ("/api/generate", {"model": "m:npu", "keep_alive": 0})

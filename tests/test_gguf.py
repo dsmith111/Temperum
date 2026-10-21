@@ -315,7 +315,7 @@ def test_a_model_too_large_to_run_here_is_still_checked_with_its_tokenizer(tmp_p
         def complete(self, prompt: Any, n_predict: int) -> dict[str, Any]:
             sent.append(prompt)
             long = len(prompt) > 100
-            return {"content": "4721" if long else "Paris", "tokens": [1, 2, 3],
+            return {"content": "4721" if long else "Paris", "tokens": [1, 2, 3], "stop_type": "limit",
                     "timings": {"predicted_per_second": 20.0, "prompt_ms": 1760.0 if long else 50.0}}
 
     monkeypatch.setattr(gguf_verify, "run_script", run_script)
@@ -338,6 +338,7 @@ def test_a_model_too_large_to_run_here_is_still_checked_with_its_tokenizer(tmp_p
     assert report["verdict"] == "warning"
     assert any(r.startswith("answers not compared with the source model") for r in report["reasons"])
     assert any("--quant Q4_K_M" in r for r in report["reasons"])
+    assert any("no answer ended by itself within" in r for r in report["reasons"])  # every stop_type was limit
 
 
 @pytest.mark.parametrize("size,on_device,where", [(1079 << 20, 1079 << 20, "npu"), (3762 << 20, 1887 << 20, "split"),

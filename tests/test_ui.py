@@ -77,3 +77,11 @@ def test_ready_panel_and_validation_table_render_the_facts() -> None:
     console.print(ui.validation_table({"placement": {"where": "cpu"}, "cpu": {"skipped": "no fork processes"}}))
     text = console.file.getvalue()  # type: ignore[attr-defined]
     assert "on the CPU" in text and "not measured: no fork processes" in text
+
+
+def test_validation_table_says_when_answers_ran_to_the_limit() -> None:
+    console = Console(file=io.StringIO(), force_terminal=False, width=240)
+    console.print(ui.validation_table({"placement": {"where": "npu", "npu_mib": 218}, "chat": {
+        "answers": ["Paris is the capital...", "Berlin..."], "correct": 2, "of": 2, "ran_on": 2, "limit": 256}}))
+    text = console.file.getvalue()  # type: ignore[attr-defined]
+    assert "2/2 answers" in text and "2 of 2 hit the 256-token limit" in text and "does not stop by itself" in text

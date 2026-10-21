@@ -224,6 +224,17 @@ def plan_import(
                       fingerprint, processor_name)
 
 
+def error_text(data: bytes) -> str:
+    """What the server said in an error response (Ollama answers {"error": "..."}), one line, bounded."""
+    try:
+        value = json.loads(data[:MAX_RESPONSE])
+        message = value.get("error") if isinstance(value, dict) else None
+    except ValueError:
+        message = None
+    text = message if isinstance(message, str) else data[:400].decode("utf-8", "replace")
+    return " ".join(text.split())[:400]
+
+
 def _api(endpoint: str, path: str, timeout: float, body: dict[str, Any] | None = None) -> dict[str, Any]:
     url = urlsplit(endpoint)
     connection = http.client.HTTPConnection(str(url.hostname), url.port, timeout=timeout)
@@ -237,7 +248,9 @@ def _api(endpoint: str, path: str, timeout: float, body: dict[str, Any] | None =
         response = connection.getresponse()
         data = response.read(MAX_RESPONSE + 1)
         if response.status != 200:
-            _fail("LOCAL_SERVER_ERROR", f"Local Ollama {path} returned HTTP {response.status}; no redirects/auth retry.")
+            said = error_text(data)
+            _fail("LOCAL_SERVER_ERROR", f"Local Ollama {path} returned HTTP {response.status}"
+                  + (f": {said}" if said else "") + "; no redirects/auth retry.")
         if len(data) > MAX_RESPONSE:
             _fail("LOCAL_SERVER_ERROR", "Local Ollama response exceeds 4 MiB.")
         value = json.loads(data)

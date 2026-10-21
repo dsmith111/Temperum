@@ -18,6 +18,7 @@ CHAT: tuple[tuple[str, str], ...] = (("What is the capital of France? Answer in 
                                      ("And of Germany? Answer in one word.", "berlin"))
 LONG_PROMPT = "Explain in about 150 words why the sky is blue."
 TOKENS = 120
+CHAT_TOKENS = 256  # room for a short answer; a model that never stops hits it instead of filling the context
 REQUEST_TIMEOUT = 900.0
 Api = Callable[..., dict[str, Any]]
 CpuProbe = Callable[[Path | None], "tuple[float, int] | None"]
@@ -63,16 +64,19 @@ def validate(endpoint: str, tag: str, *, fork_dir: Path | None, say: Callable[[s
     say("asking two questions")
     messages: list[dict[str, str]] = []
     answers: list[str] = []
-    correct = 0
+    correct = ran_on = 0
     for question, expected in CHAT:
         messages.append({"role": "user", "content": question})
         reply = api(endpoint, "/api/chat", REQUEST_TIMEOUT, {"model": tag, "messages": messages, "stream": False,
-                                                             "options": {"temperature": 0}})
+                                                             "options": {"temperature": 0,
+                                                                         "num_predict": CHAT_TOKENS}})
         content = str((reply.get("message") or {}).get("content", ""))
         messages.append({"role": "assistant", "content": content})
         answers.append(content)
         correct += int(expected in content.lower())
-    report["chat"] = {"answers": answers, "correct": correct, "of": len(CHAT)}
+        ran_on += int(str(reply.get("done_reason") or "") == "length")  # hit the limit: never stopped
+    report["chat"] = {"answers": answers, "correct": correct, "of": len(CHAT), "ran_on": ran_on,
+                      "limit": CHAT_TOKENS}
     say(f"generating {TOKENS} tokens and watching the CPU")
     before = cpu(fork_dir)
     started = time.monotonic()

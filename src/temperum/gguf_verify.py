@@ -254,7 +254,8 @@ def verify_gguf(bundle: Path, snapshot: Path, plan: GgufPlan, chains: Any, work:
                 if timings.get("predicted_per_second") and len(tokens) > 1:
                     decode_rates.append(float(timings["predicted_per_second"]))
                 row = {"prompt": question, "output": result.get("content", ""), "tokens": len(tokens),
-                       "degenerate": _degenerate(tokens), "prompt_ms": timings.get("prompt_ms")}
+                       "degenerate": _degenerate(tokens), "prompt_ms": timings.get("prompt_ms"),
+                       "stop": result.get("stop_type")}  # eos | word | limit: how the answer ended
                 if ref is not None and "output_ids" in ref:  # tokenizer-only references have no answers
                     want = ref["output_ids"]
                     same = next((i for i in range(min(len(tokens), len(want))) if tokens[i] != want[i]),
@@ -320,6 +321,13 @@ def verify_gguf(bundle: Path, snapshot: Path, plan: GgufPlan, chains: Any, work:
     if report["verdict"] != "failed" and report["npu_placement"].get("status") != "weights-on-npu":
         report["verdict"] = "failed"
         report["reasons"] = ["the model did not run on the NPU (no layers on an HTP device)"] + report["reasons"]
+    if report["verdict"] != "failed" and rows and all(r.get("stop") == "limit" for r in rows):
+        # Every answer ran to the token limit: the model does not end its turns (a base model, or a chat
+        # format it was not trained on). Through the fork its answers run on until the context is full.
+        report["verdict"] = "warning"
+        report["reasons"].append(f"no answer ended by itself within {settings.max_new} tokens: the model keeps "
+                                 "generating after its reply (a base model, or a chat format it was not trained "
+                                 "on), so answers through the fork run on")
     ratio = quality.get("perplexity", {}).get("ratio")
     if report["verdict"] == "warning" and plan.quant == "Q4_0" and ratio and ratio > PPL_PASS:
         report["reasons"].append("Q4_0 is the fastest type; --quant Q4_K_M or Q8_0 keep more quality")
