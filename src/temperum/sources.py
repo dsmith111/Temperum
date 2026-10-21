@@ -21,6 +21,9 @@ SNAPSHOT_PATTERNS = [
     "LICENSE*", "NOTICE*", "README*", "USE_POLICY*",
 ]
 _REPO_RE = re.compile(r"^[A-Za-z0-9][\w.-]*/[\w.-]+$")
+# Config keys only speculative-decoding draft checkpoints carry (DFlash, EAGLE, Medusa).
+DRAFT_KEYS = ("dflash_config", "eagle_config", "draft_config", "target_layer_ids", "num_target_layers",
+              "draft_vocab_size", "target_hidden_size", "medusa_num_heads")
 
 
 @dataclass(frozen=True)
@@ -70,6 +73,40 @@ class ResolvedModel:
                 "model_type": self.model_type, "weight_bytes": self.weight_bytes}
 
 
+def draft_model_reason(config: dict[str, Any], tags: list[str] | None = None) -> str | None:
+    """Why a checkpoint is a speculative-decoding draft (a helper for a larger target model), or None."""
+    archs = [str(a) for a in (config.get("architectures") or [])]
+    if any("draft" in a.lower() for a in archs):
+        return f"architecture {archs[0]}"
+    keys = [k for k in DRAFT_KEYS if k in config]
+    if keys:
+        return "config has " + ", ".join(keys)
+    if "draft-model" in (tags or []):
+        return "tagged draft-model on Hugging Face"
+    return None
+
+
+def base_model_tag(tags: list[str] | None) -> str | None:
+    """The repo a Hugging Face `base_model:org/name` tag names, if any."""
+    for tag in tags or []:
+        if tag.startswith("base_model:") and tag.count(":") == 1:
+            return tag.split(":", 1)[1]
+    return None
+
+
+def _refuse_draft(ref: ModelRef, config: dict[str, Any], tags: list[str] | None) -> None:
+    reason = draft_model_reason(config, tags)
+    if reason is None:
+        return
+    base = base_model_tag(tags)
+    raise TemperumError("source", "DRAFT_MODEL",
+                        f"{ref.display} is a speculative-decoding draft model ({reason}): a helper that proposes "
+                        "tokens for a larger target model and cannot answer on its own.",
+                        hint=(f"Convert the target model instead: {base}" if base else
+                              "Convert the target model it was trained for instead")
+                        + " (check its size against this machine first: `temperum convert MODEL --plan`).")
+
+
 def parse_ref(text: str) -> ModelRef:
     """`org/name[@rev]`, `hf:org/name[@rev]`, or a local folder containing config.json."""
     raw = text.strip()
@@ -113,6 +150,7 @@ def resolve(ref: ModelRef, api: Any = None, download: Callable[..., str] | None 
         config = json.loads((ref.path / "config.json").read_text(encoding="utf-8"))
         files = sorted(p.name for p in ref.path.iterdir() if p.is_file())
         weights = sum(p.stat().st_size for p in ref.path.glob("*.safetensors"))
+        _refuse_draft(ref, config, None)
         return ResolvedModel(ref, commit=None, gated=False, license=None, config=config,
                              weight_bytes=weights or None, files=files)
     from huggingface_hub import HfApi, hf_hub_download
@@ -133,6 +171,7 @@ def resolve(ref: ModelRef, api: Any = None, download: Callable[..., str] | None 
         raise TemperumError("source", "NO_SAFETENSORS", f"{ref.repo} has no .safetensors weights.",
                             hint="Only safetensors checkpoints are converted (pickled weights are never loaded).")
     config = json.loads(Path(config_path).read_text(encoding="utf-8"))
+    _refuse_draft(ref, config, [str(t) for t in (getattr(info, "tags", None) or [])])
     return ResolvedModel(ref, commit=info.sha, gated=bool(getattr(info, "gated", False)),
                          license=str(license_id) if license_id else None, config=config,
                          weight_bytes=weights or None, files=files)

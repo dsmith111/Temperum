@@ -286,6 +286,14 @@ def _stream(cmd: list[str], env: dict[str, str] | None, log: Path, say: Progress
     return code, "\n".join(tail)
 
 
+def last_error_line(tail: str) -> str | None:
+    """The last `SomethingError: ...` line of a Python traceback: the part a person needs first."""
+    for line in reversed(tail.splitlines()):
+        if re.match(r"^\s*[A-Za-z_.]*(Error|Exception)\b", line):
+            return line.strip()[:300]
+    return None
+
+
 def convert(python: Path, source: ConverterSource, snapshot: Path, out: Path, log: Path, say: Progress,
             popen: Callable[..., Any] = subprocess.Popen) -> Path:
     """HF snapshot -> Q8_0 GGUF (convert_hf_to_gguf --outtype q8_0).
@@ -300,7 +308,9 @@ def convert(python: Path, source: ConverterSource, snapshot: Path, out: Path, lo
                           "--outtype", "q8_0"], source.environment(), log, say,
                          lambda line: "Model successfully exported" in line, popen)
     if code != 0 or not partial.is_file():
-        raise TemperumError("convert", "GGUF_CONVERT_FAILED", f"llama.cpp's converter failed (exit {code}).",
+        reason = last_error_line(tail)
+        raise TemperumError("convert", "GGUF_CONVERT_FAILED",
+                            f"llama.cpp's converter failed (exit {code})" + (f": {reason}" if reason else "."),
                             hint=f"Log: {log}\n{tail[-800:]}")
     partial.replace(out)
     return out

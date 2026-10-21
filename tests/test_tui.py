@@ -132,6 +132,63 @@ def test_errors_in_a_job_are_shown_not_fatal() -> None:
     _run(test)
 
 
+def test_up_and_down_walk_the_command_history_and_it_persists(tmp_path: Any) -> None:
+    async def test(app: TemperumApp, pilot: Any) -> None:
+        prompt = app.query_one("#prompt")
+        await pilot.press(*"/help", "enter")
+        await pilot.press(*"/bogus one", "enter")
+        await pilot.press(*"/bogus one", "enter")  # a repeat is kept once
+        await pilot.pause()
+        assert app.commands == ["/help", "/bogus one"]
+        await pilot.press(*"dra")  # a draft, kept while walking
+        await pilot.press("up")
+        assert prompt.value == "/bogus one"
+        await pilot.press("up")
+        assert prompt.value == "/help"
+        await pilot.press("up")  # the oldest stays
+        assert prompt.value == "/help"
+        await pilot.press("down", "down")
+        assert prompt.value == "dra"
+        await pilot.press("up", *"x")  # typing leaves the walk: Up next starts from the latest again
+        await pilot.pause()
+        assert prompt.value == "/bogus onex" and app._hist is None
+        await pilot.press("up")
+        assert prompt.value == "/bogus one"
+    _run(test)
+    saved = (tmp_path / "home" / "tui-history.txt").read_text(encoding="utf-8").splitlines()
+    assert saved == ["/help", "/bogus one"]
+
+    async def again(app: TemperumApp, pilot: Any) -> None:
+        assert app.commands == ["/help", "/bogus one"]
+        await pilot.press("up")
+        assert app.query_one("#prompt").value == "/bogus one"
+    _run(again)
+
+
+def test_copy_takes_the_transcript_or_a_selection(monkeypatch: pytest.MonkeyPatch) -> None:
+    copied: list[tuple[str, str]] = []
+    monkeypatch.setattr(TemperumApp, "copy_text", lambda self, text, what: copied.append((what, text)))
+
+    async def test(app: TemperumApp, pilot: Any) -> None:
+        await pilot.press(*"/copy", "enter")
+        await pilot.pause()
+        assert copied and copied[-1][0] == "the transcript" and "Temperum" in copied[-1][1]
+        transcript = app.query_one("#transcript")
+        await pilot.mouse_down("#transcript", offset=(1, 0))
+        await pilot.hover("#transcript", offset=(20, 1))
+        await pilot.mouse_up("#transcript", offset=(20, 1))
+        await pilot.pause()
+        if app.screen.get_selected_text():  # the pilot's drag may not reach the widget headlessly
+            await pilot.press("ctrl+c")
+            await pilot.pause()
+            assert copied[-1][0] == "the selection" and copied[-1][1].strip()
+            assert transcript.text_selection is None and app.is_running
+        else:  # no selection: Ctrl+C with nothing running leaves
+            await pilot.press("ctrl+c")
+            await pilot.pause()
+    _run(test)
+
+
 def test_leaving_abandons_a_pending_question() -> None:
     outcome: dict[str, Any] = {}
 

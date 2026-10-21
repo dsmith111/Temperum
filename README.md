@@ -14,7 +14,9 @@ takes a model id or a `/command`, questions answered right there, and a stage ba
 time left. Type a model id, confirm the plan, watch the stages, and it asks whether to
 install the model into the fork (starting the fork's server if none runs), validate it
 there, and upload it to ollama.com. `/validate TAG`, `/push TAG`, `/doctor`, `/models` and
-`/config` do the rest; `/help` lists them. `temperum convert MODEL` does the same in a plain
+`/config` do the rest; `/help` lists them. Up and Down recall earlier commands (kept between
+sessions); select text with the mouse and Ctrl+C copies it, `/copy` copies the whole
+transcript. `temperum convert MODEL` does the same in a plain
 terminal, with a progress bar and the same questions, and scripts get it with
 `--install --validate --push` and `--yes`, or `--json`.
 
@@ -118,6 +120,9 @@ the sign-in link when the server is not linked to an account yet.
 - **Models whose source is too large to run here** (the 3.8B Phi models and Qwen2.5-7B on
   16 GB) are still checked against their tokenizer and chat template; the verdict says what
   was not compared.
+- **Not convertible: speculative-decoding draft models** (DFlash, EAGLE, Medusa heads, anything
+  tagged `draft-model`). They propose tokens for a larger target model and cannot answer on
+  their own, so `temperum` refuses them at the plan and names the target model to convert.
 
 ## QNN bundles (`--target qnn-x-elite`)
 
@@ -157,7 +162,7 @@ implemented but not yet tested.
 
 | Command | Purpose |
 |---|---|
-| `temperum` (no arguments) | The full-screen interface, also `temperum tui`: a model id or `/convert MODEL` converts, then install, validate and upload are asked; `/install BUNDLE`, `/validate TAG`, `/push TAG [--as NAME]`, `/doctor`, `/models`, `/config [KEY [VALUE]]`, `/help`, `/quit` |
+| `temperum` (no arguments) | The full-screen interface, also `temperum tui`: a model id or `/convert MODEL` converts, then install, validate and upload are asked; `/install BUNDLE`, `/validate TAG`, `/push TAG [--as NAME]`, `/doctor`, `/models`, `/config [KEY [VALUE]]`, `/copy`, `/help`, `/quit`; Up and Down recall commands, mouse selection and Ctrl+C copy |
 | `temperum convert MODEL` | Plan, convert and verify; in a terminal, then asks to install, validate and upload. `--install`, `--validate`, `--push [--as NAME]` do that without asking; `--plan` stops after the plan; `--yes` skips every question; `--quant Q4_0\|Q4_K_M\|Q8_0`, `--context N`, `--verify quick\|standard\|full\|none`, `--out DIR`, `--target qnn-x-elite` (QNN only: `--quality`, `--device`, `--template FILE --stop S`) |
 | `temperum setup` | Create or check (`--check`) what conversions need; `--target qnn-x-elite` adds the QNN toolchains |
 | `temperum doctor` | Target, the fork's NPU runtime and switch, memory, disk, toolchain health |

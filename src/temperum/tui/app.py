@@ -9,7 +9,11 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 import shlex
+import subprocess
+import sys
+import tempfile
 import threading
 import time
 import webbrowser
@@ -25,6 +29,8 @@ from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
+from textual.selection import Selection
+from textual.strip import Strip
 from textual.timer import Timer
 from textual.widgets import Input, Label, ProgressBar, RichLog, Static
 
@@ -33,6 +39,8 @@ from temperum.core.errors import TemperumError
 
 _SCALE = 1000
 PROMPT_HINT = "Hugging Face model id to convert, or /help"
+HISTORY_FILE = "tui-history.txt"
+HISTORY_KEEP = 200
 COMMANDS: tuple[tuple[str, str], ...] = (
     ("/convert MODEL [--quant Q4_0|Q8_0|Q4_K_M] [--context N] [--name TAG] [--verify LEVEL] [--overwrite]",
      "convert a Hugging Face model (a bare model id does the same), then install, validate, upload"),
@@ -42,11 +50,64 @@ COMMANDS: tuple[tuple[str, str], ...] = (
     ("/doctor", "this machine, the fork, the toolchains"),
     ("/models", "conversions verified on hardware"),
     ("/config [KEY [VALUE]]", "what temperum remembers: ollama-exe, target, host"),
+    ("/copy", "copy the whole transcript to the clipboard"),
     ("/help", "this list"),
     ("/quit", "leave (Ctrl+C); a running job stops at its current step"),
 )
+HELP_NOTES = ("Up and Down recall earlier commands (kept between sessions). Select text with the mouse and press "
+              "Ctrl+C to copy it; holding Shift while dragging selects through the terminal instead.")
 
 Job = Callable[["TuiSession"], None]
+
+
+class Transcript(RichLog):
+    """A RichLog whose text can be selected with the mouse and copied (Textual gives that to Log, not RichLog)."""
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        return selection.extract("\n".join(strip.text for strip in self.lines)), "\n"
+
+    def selection_updated(self, selection: Selection | None) -> None:
+        self.refresh()
+
+    def _render_line(self, y: int, scroll_x: int, width: int) -> Strip:
+        selection = self.text_selection
+        span = selection.get_span(y) if selection is not None and y < len(self.lines) else None
+        if span is None:
+            return super()._render_line(y, scroll_x, width)
+        start, end = span
+        text = Text(no_wrap=True)
+        for segment in self.lines[y]:
+            text.append(segment.text, segment.style)
+        text.stylize(self.screen.get_component_rich_style("screen--selection"), start,
+                     len(text) if end == -1 else end)
+        return Strip(text.render(self.app.console), text.cell_len).crop_extend(scroll_x, scroll_x + width,
+                                                                               self.rich_style)
+
+
+class PromptInput(Input):
+    """The prompt: Up and Down walk through earlier commands, like a shell."""
+
+    BINDINGS = [Binding("up", "history(-1)", "Earlier command", show=False),
+                Binding("down", "history(1)", "Later command", show=False)]
+
+    def action_history(self, step: int) -> None:
+        app = self.app
+        if isinstance(app, TemperumApp):
+            app.history_step(step)
+
+
+def _windows_clipboard(text: str) -> None:
+    """Set the Windows clipboard through PowerShell, for terminals that ignore the OSC 52 sequence."""
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".txt", delete=False) as handle:
+            handle.write(text)
+            path = handle.name
+        subprocess.run(["powershell", "-NoProfile", "-Command",
+                        f"Get-Content -Raw -Encoding UTF8 -LiteralPath '{path}' | Set-Clipboard"],
+                       capture_output=True, timeout=20)
+        os.unlink(path)
+    except Exception:  # noqa: BLE001  (best effort: the OSC 52 copy may have worked)
+        pass
 
 
 class UsageError(Exception):
@@ -183,29 +244,87 @@ class TemperumApp(App[None]):
         self.pending: Optional[Question] = None
         self.busy: Optional[str] = None  # the running job's label
         self.history: list[str] = []  # plain text of everything in the transcript
+        self.commands: list[str] = []  # earlier commands, oldest first
         self.fork_state = "checking"
         self._tracker: Optional[ui.StageTracker] = None
         self._timer: Optional[Timer] = None
         self._leave_asked = 0.0
+        self._hist: Optional[int] = None  # index into commands while walking the history, else None
+        self._draft = ""  # what was typed before walking the history
+        self._history_value: Optional[str] = None  # the prompt value the history last set
 
     # -- layout ------------------------------------------------------------------------------------
     def compose(self) -> ComposeResult:
         yield Static(f" Temperum {__version__}", id="title")
-        yield RichLog(id="transcript", markup=True, wrap=True, highlight=False)
+        yield Transcript(id="transcript", markup=True, wrap=True, highlight=False)
         with Horizontal(id="stage"):
             yield Label("", id="stage-label")
             yield ProgressBar(total=_SCALE, show_eta=False, id="bar")
             yield Label("", id="stage-eta")
-        yield Input(placeholder=PROMPT_HINT, id="prompt")
+        yield PromptInput(placeholder=PROMPT_HINT, id="prompt")
         yield Static("", id="status")
 
     def on_mount(self) -> None:
+        self.commands = self._load_history()
         self.write(f"[bold]Temperum[/bold] {__version__}: convert a Hugging Face model for this machine's NPU, install "
                    "it into the Ollama NPU fork, validate it there, share it on ollama.com.")
         self.write("Type a model id (for example [bold]Qwen/Qwen2.5-0.5B-Instruct[/bold]) and press Enter, or /help.")
         self.refresh_status()
         self.query_one("#prompt", Input).focus()
         self.run_worker(self._status_job, thread=True, group="status", exit_on_error=False)
+
+    # -- command history ---------------------------------------------------------------------------
+    def _history_path(self) -> Path:
+        return home_dir() / HISTORY_FILE
+
+    def _load_history(self) -> list[str]:
+        try:
+            lines = self._history_path().read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+        return [line for line in lines if line.strip()][-HISTORY_KEEP:]
+
+    def remember(self, command: str) -> None:
+        if not self.commands or self.commands[-1] != command:
+            self.commands.append(command)
+            del self.commands[:-HISTORY_KEEP]
+            try:
+                path = self._history_path()
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("\n".join(self.commands) + "\n", encoding="utf-8")
+            except OSError:
+                pass
+        self._hist = None
+
+    def history_step(self, step: int) -> None:
+        """Up (-1) walks to earlier commands, Down (+1) back towards what was being typed."""
+        if not self.commands:
+            return
+        prompt = self.query_one("#prompt", Input)
+        if self._hist is None:
+            self._draft = prompt.value
+            index = len(self.commands)
+        else:
+            index = self._hist
+        index = max(0, min(len(self.commands), index + step))
+        self._hist = None if index == len(self.commands) else index
+        value = self._draft if self._hist is None else self.commands[index]
+        self._history_value = value
+        prompt.value = value
+        prompt.cursor_position = len(value)
+
+    @on(Input.Changed, "#prompt")
+    def typed(self, event: Input.Changed) -> None:
+        if event.value != self._history_value:  # typing leaves the history walk
+            self._hist = None
+            self._history_value = None
+
+    # -- the clipboard -----------------------------------------------------------------------------
+    def copy_text(self, text: str, what: str) -> None:
+        self.copy_to_clipboard(text)  # OSC 52, for terminals that honour it (Windows Terminal does)
+        if sys.platform == "win32":
+            threading.Thread(target=_windows_clipboard, args=(text,), daemon=True).start()
+        self.notify(f"Copied {what} ({len(text)} characters)", timeout=3)
 
     def _status_job(self) -> None:
         """The fork, the target and the switch, found in a worker so the prompt is usable at once."""
@@ -253,6 +372,7 @@ class TemperumApp(App[None]):
         if not text:
             return
         self.write(f"[bold green]>[/bold green] {escape(text)}")
+        self.remember(text)
         self.dispatch(text)
 
     def pose(self, question: Question) -> None:
@@ -277,6 +397,9 @@ class TemperumApp(App[None]):
             return
         if command == "/help":
             self.action_help()
+            return
+        if command == "/copy":
+            self.copy_text("\n".join(self.history), "the transcript")
             return
         handler = {"/convert": self.cmd_convert, "/install": self.cmd_install, "/validate": self.cmd_validate,
                    "/push": self.cmd_push, "/doctor": self.cmd_doctor, "/models": self.cmd_models,
@@ -479,8 +602,16 @@ class TemperumApp(App[None]):
         for usage, meaning in COMMANDS:
             table.add_row(escape(usage), meaning)
         self.write(table)
+        self.write(f"[dim]{HELP_NOTES}[/dim]")
 
     def action_leave(self, force: bool = False) -> None:
+        """Ctrl+C: copy a selection when there is one, else quit (asking first while a job runs)."""
+        if not force:
+            selected = self.screen.get_selected_text() or self.query_one("#prompt", Input).selected_text
+            if selected:
+                self.copy_text(selected, "the selection")
+                self.screen.clear_selection()
+                return
         if self.busy and not force and time.time() - self._leave_asked > 3:
             self._leave_asked = time.time()
             self.write(f"[yellow]{escape(self.busy)} is running. Press Ctrl+C again within 3 s to quit anyway; the "
