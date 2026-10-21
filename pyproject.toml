@@ -39,7 +39,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "temperum.recipes" = ["upstream/*.json", "verified.json"]
-"temperum.toolchains" = ["locks/*/*.txt", "llama_cpp_pins/*.json"]
+"temperum.toolchains" = ["locks/*/*.txt", "llama_cpp_pins/*.json", "llama_cpp_patches/*/*/*.py"]
 
 [tool.ruff]
 line-length = 110
@@ -55,6 +55,8 @@ warn_return_any = true
 warn_unused_ignores = true
 disallow_untyped_defs = true
 no_implicit_optional = true
+# llama.cpp's own code, carried as patches to the pinned converter
+exclude = "llama_cpp_patches"
 
 # Heavy toolchain packages live in separate role environments, not in the CLI's own
 # environment; scripts that run inside those environments import them dynamically.

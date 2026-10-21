@@ -124,6 +124,10 @@ the sign-in link when the server is not linked to an account yet.
   (the download itself stays as pinned), and the bundle's manifest records each repair. First one:
   a `tokenizer_config.json` whose `extra_special_tokens` is a list, which the pinned transformers
   cannot read; the tokens move to `additional_special_tokens`.
+- **Bugs in the pinned llama.cpp converter are patched** by files Temperum ships, applied after the
+  fetched archive is verified against its pin and recorded in the bundle's manifest. First one:
+  the GPT-2 converter at b11644 tried to map the old checkpoints' causal-mask buffers
+  (`h.N.attn.bias`) and failed; the patch skips them, as the comment above that code intended.
 - **Not convertible: speculative-decoding draft models** (DFlash, EAGLE, Medusa heads, anything
   tagged `draft-model`). They propose tokens for a larger target model and cannot answer on
   their own, so `temperum` refuses them at the plan and names the target model to convert.

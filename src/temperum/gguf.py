@@ -437,7 +437,7 @@ def run(gguf_plan: GgufPlan, progress: Progress | None = None,
             raise TemperumError("convert", "UNSUPPORTED_ARCHITECTURE",
                                 f"llama.cpp {source.tag} cannot convert {architecture}.",
                                 hint="Try the QNN target, or a model with a supported architecture.")
-        job.record("converter", "done", tag=source.tag, commit=source.commit)
+        job.record("converter", "done", tag=source.tag, commit=source.commit, patches=sorted(source.patches))
 
         log = job.dir / "gguf.log"
         converted = job.dir / "model-Q8_0.gguf"  # also the perplexity reference
@@ -453,6 +453,7 @@ def run(gguf_plan: GgufPlan, progress: Progress | None = None,
 
         say("assembling the bundle")
         bundle = assemble(quantized, snapshot, gguf_plan, {"converter_source": source.commit,
+                                                           "converter_patches": sorted(source.patches),
                                                            "quantize": str(gguf_plan.payload.quantize),
                                                            "repairs": repairs})
         job.record("assemble", "done", bundle=str(bundle))

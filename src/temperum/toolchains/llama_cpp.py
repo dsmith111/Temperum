@@ -3,7 +3,9 @@
 The converter is plain Python (convert_hf_to_gguf.py, its `conversion` package and the `gguf`
 package). It is fetched once from the source archive of the pinned commit, and every file is
 checked against a vendored manifest (llama_cpp_pins/<tag>.json, made from the git objects), so a
-changed archive cannot change what runs. It runs in the quantize environment, which already
+changed archive cannot change what runs. Files under llama_cpp_patches/<tag>/ then replace their
+upstream counterparts: small fixes the pinned converter needs (each says why), recorded in every
+bundle's manifest. It runs in the quantize environment, which already
 has torch, transformers and numpy; `gguf` comes from the same commit through PYTHONPATH, so
 nothing is installed into that environment.
 """
@@ -16,7 +18,7 @@ import os
 import shutil
 import tarfile
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Callable
 
@@ -24,6 +26,7 @@ from temperum import paths
 from temperum.core.errors import TemperumError
 
 MANIFESTS = Path(__file__).resolve().parent / "llama_cpp_pins"
+PATCHES = Path(__file__).resolve().parent / "llama_cpp_patches"
 Opener = Callable[[str], IO[bytes]]
 
 
@@ -46,6 +49,7 @@ class ConverterSource:
     commit: str
     archive: str
     files: dict[str, str]  # path inside the repository -> sha256
+    patches: dict[str, Path] = field(default_factory=dict)  # path inside the repository -> temperum's replacement
 
     @classmethod
     def load(cls, tag: str) -> ConverterSource:
@@ -53,7 +57,10 @@ class ConverterSource:
         if not path.is_file():
             raise TemperumError("toolchain", "UNKNOWN_LLAMA_CPP", f"No pinned llama.cpp converter for {tag}")
         data = json.loads(path.read_text(encoding="utf-8"))
-        return cls(data["tag"], data["commit"], data["archive"], dict(data["files"]))
+        root = PATCHES / tag
+        patches = {p.relative_to(root).as_posix(): p for p in sorted(root.rglob("*")) if p.is_file()} \
+            if root.is_dir() else {}
+        return cls(data["tag"], data["commit"], data["archive"], dict(data["files"]), patches)
 
     @property
     def directory(self) -> Path:
@@ -63,11 +70,18 @@ class ConverterSource:
     def script(self) -> Path:
         return self.directory / "convert_hf_to_gguf.py"
 
-    def problems(self, root: Path | None = None) -> list[str]:
-        """Files that are missing or differ from the manifest."""
+    def expected(self, name: str, upstream: bool = False) -> str:
+        """The digest a file should have on disk: temperum's patch where one exists, else the pinned one."""
+        if not upstream and name in self.patches:
+            return _sha256(self.patches[name])
+        return self.files[name]
+
+    def problems(self, root: Path | None = None, upstream: bool = False) -> list[str]:
+        """Files that are missing or differ from the manifest (with temperum's patches applied, unless
+        `upstream`: a freshly extracted archive before patching)."""
         root = root or self.directory
-        return [name for name, digest in self.files.items()
-                if not (root / name).is_file() or _sha256(root / name) != digest]
+        return [name for name in self.files
+                if not (root / name).is_file() or _sha256(root / name) != self.expected(name, upstream)]
 
     def ensure(self, opener: Opener = _open_url, progress: Callable[[str], None] | None = None) -> Path:
         if not self.problems():
@@ -94,12 +108,16 @@ class ConverterSource:
             raise TemperumError("toolchain", "LLAMA_CPP_FETCH_FAILED",
                                 f"Could not fetch llama.cpp {self.tag} from {self.archive}: {exc}",
                                 hint="Check the network connection to github.com and retry.") from exc
-        bad = self.problems(staging)
+        bad = self.problems(staging, upstream=True)
         if bad:
             raise TemperumError("toolchain", "LLAMA_CPP_MISMATCH",
                                 f"llama.cpp {self.tag} archive does not match the pinned files: "
                                 f"{', '.join(bad[:5])}{' ...' if len(bad) > 5 else ''}",
                                 hint=f"Partial download left at {staging}")
+        for name, patch in self.patches.items():
+            shutil.copyfile(patch, staging / name)
+        if progress and self.patches:
+            progress("applied temperum's converter patches: " + ", ".join(sorted(self.patches)))
         if self.directory.exists():
             shutil.rmtree(self.directory)
         staging.rename(self.directory)
