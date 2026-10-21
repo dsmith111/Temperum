@@ -70,12 +70,12 @@ def snapshot_probe(snapshot: Path, expected_bytes: int) -> BytesProbe:
     return probe
 
 
-class StageProgress:
-    """A `say(message)` progress callback that drives a Rich bar; use as a context manager around the run."""
+class StageTracker:
+    """The arithmetic behind a stage display: feed it the pipeline's messages, read a fraction and an ETA.
+    Front ends (the Rich bar below, the TUI's bar) render it."""
 
-    def __init__(self, console: Console, estimate_minutes: float, bytes_probe: BytesProbe | None = None,
+    def __init__(self, estimate_minutes: float, bytes_probe: BytesProbe | None = None,
                  clock: Callable[[], float] = time.monotonic) -> None:
-        self.console = console
         self.estimate_s = max(60.0, float(estimate_minutes) * 60)
         self.bytes_probe = bytes_probe
         self.clock = clock
@@ -84,31 +84,6 @@ class StageProgress:
         self.stage_started = self.started
         self.message = "starting"
         self._lock = threading.Lock()
-        self._stop = threading.Event()
-        self._progress = Progress(SpinnerColumn(), TextColumn("{task.description}"), BarColumn(bar_width=None),
-                                  TextColumn("[dim]{task.fields[eta]}[/dim]"), console=console, transient=False)
-        self._task: TaskID | None = None
-        self._ticker: threading.Thread | None = None
-
-    def __enter__(self) -> StageProgress:
-        self._progress.start()
-        self._task = self._progress.add_task("starting", total=_SCALE, eta="")
-        self._ticker = threading.Thread(target=self._tick, name="temperum-progress", daemon=True)
-        self._ticker.start()
-        return self
-
-    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
-        self._stop.set()
-        if self._ticker is not None:
-            self._ticker.join(timeout=2)
-        if self._task is not None:
-            if exc_type is None:
-                self._progress.update(self._task, completed=_SCALE, description="[bold]done[/bold]",
-                                      eta=f"{self.elapsed_text()}")
-            else:
-                self._progress.update(self._task, completed=self.completed() * _SCALE,
-                                      description=f"[bold red]stopped[/bold red] {escape(self._short())}", eta="")
-        self._progress.stop()
 
     # -- the callback -----------------------------------------------------------------------------
     def say(self, message: str) -> None:
@@ -117,7 +92,11 @@ class StageProgress:
             if index is not None and index > self.stage:
                 self.stage, self.stage_started = index, self.clock()
             self.message = message
-        self._render()
+
+    @property
+    def stage_name(self) -> str:
+        with self._lock:
+            return STAGES[self.stage][0] if self.stage >= 0 else "starting"
 
     # -- arithmetic ------------------------------------------------------------------------------
     def completed(self) -> float:
@@ -150,18 +129,55 @@ class StageProgress:
             return f"{self.elapsed_text()}, about a minute left"
         return f"{self.elapsed_text()}, longer than the estimate"
 
-    # -- rendering -------------------------------------------------------------------------------
-    def _short(self) -> str:
+    def short(self) -> str:
         message = self.message.strip()
         return message if len(message) <= _MESSAGE_WIDTH else message[:_MESSAGE_WIDTH - 1] + "…"
 
+
+class StageProgress(StageTracker):
+    """A `say(message)` progress callback that drives a Rich bar; use as a context manager around the run."""
+
+    def __init__(self, console: Console, estimate_minutes: float, bytes_probe: BytesProbe | None = None,
+                 clock: Callable[[], float] = time.monotonic) -> None:
+        super().__init__(estimate_minutes, bytes_probe, clock)
+        self.console = console
+        self._stop = threading.Event()
+        self._progress = Progress(SpinnerColumn(), TextColumn("{task.description}"), BarColumn(bar_width=None),
+                                  TextColumn("[dim]{task.fields[eta]}[/dim]"), console=console, transient=False)
+        self._task: TaskID | None = None
+        self._ticker: threading.Thread | None = None
+
+    def __enter__(self) -> StageProgress:
+        self._progress.start()
+        self._task = self._progress.add_task("starting", total=_SCALE, eta="")
+        self._ticker = threading.Thread(target=self._tick, name="temperum-progress", daemon=True)
+        self._ticker.start()
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self._stop.set()
+        if self._ticker is not None:
+            self._ticker.join(timeout=2)
+        if self._task is not None:
+            if exc_type is None:
+                self._progress.update(self._task, completed=_SCALE, description="[bold]done[/bold]",
+                                      eta=f"{self.elapsed_text()}")
+            else:
+                self._progress.update(self._task, completed=self.completed() * _SCALE,
+                                      description=f"[bold red]stopped[/bold red] {escape(self.short())}", eta="")
+        self._progress.stop()
+
+    def say(self, message: str) -> None:
+        super().say(message)
+        self._render()
+
+    # -- rendering -------------------------------------------------------------------------------
     def _render(self) -> None:
         if self._task is None:
             return
-        with self._lock:
-            stage = STAGES[self.stage][0] if self.stage >= 0 else "starting"
         self._progress.update(self._task, completed=self.completed() * _SCALE,
-                              description=f"[bold]{stage}[/bold] {escape(self._short())}", eta=self.eta_text())
+                              description=f"[bold]{self.stage_name}[/bold] {escape(self.short())}",
+                              eta=self.eta_text())
 
     def _tick(self) -> None:
         while not self._stop.wait(0.5):

@@ -13,6 +13,7 @@ authors = [{ name = "dsmith111" }]
 dependencies = [
   "typer>=0.12.3",
   "rich>=13.7.1",
+  "textual>=8.2",
   "huggingface_hub>=0.30",
   # Installs native-architecture Python builds for the toolchain environments.
   "uv>=0.8",
