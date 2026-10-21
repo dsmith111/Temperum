@@ -128,6 +128,14 @@
       "ppl_ratio": 1.06,
       "decode_tokens_per_s": 19,
       "evidence": "temperum convert, 2026-10-20: verdict warning (the source model could not run with 3 GB free, so answers were not compared); perplexity x1.06 against a Q8_0 copy on the CPU; whole on the NPU (1,841 MiB); 869/1749-token retrieval OK; the GGUF's own template (Llama 3.2's date preamble) matched transformers'; installed into the fork package and answered a two-turn chat; decode through the fork; docs/models.md"
+    },
+    {
+      "repo": "meta-llama/Llama-3.1-8B-Instruct",
+      "target": "gguf-hexagon",
+      "quality": "Q4_0",
+      "ppl_ratio": 1.06,
+      "decode_tokens_per_s": 9,
+      "evidence": "temperum convert, 2026-10-21: verdict warning (the source model does not fit with 2 GB free, so answers were not compared); perplexity x1.06 against a Q8_0 copy on the CPU; whole on the NPU (4,183 MiB of weights, 4,815 MiB loaded) under the fork's 6,144 MiB budget; 869/1749-token retrieval OK; installed into the fork package, answered a two-turn chat, validated through the fork at 0.03 cores while generating; decode through the fork; docs/models.md"
     }
   ]
 }

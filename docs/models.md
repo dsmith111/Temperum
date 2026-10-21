@@ -11,7 +11,7 @@ two chat turns; nothing was tuned per model.
 `temperum convert MODEL --install` (the runs used `--target gguf-hexagon`, now the
 default): Q4_0, standard verification. The runtime is the fork's portable package
 (branch `npu/hexagon-spike`, llama.cpp b11644) with Qualcomm's signed HTP libraries from
-`ollama npu setup --provider hexagon`. Measured 2026-10-19; the Llama 3.2 rows on 2026-10-20.
+`ollama npu setup --provider hexagon`. Measured 2026-10-19; the Llama 3.2 rows on 2026-10-20, Llama-3.1-8B on 2026-10-21.
 
 | Model | Params | Convert + verify | NPU layers | Perplexity | Greedy exact | Long prompts | Template the fork uses | Verdict |
 |---|---|---|---|---|---|---|---|---|
@@ -27,6 +27,7 @@ default): Q4_0, standard verification. The runtime is the fork's portable packag
 | microsoft/Phi-3.5-mini-instruct | 3.82B | 2.4 + 3.5 min | 33/33 | 1.10x | - | 858 ✓, 1758 ✓ | checked (phi3) | warning |
 | microsoft/Phi-4-mini-instruct | 3.84B | 2.8 + 3.0 min | 33/33 | 1.16x | - | 848 ✓, 1737 ✓ | GGUF | warning |
 | Qwen/Qwen2.5-7B-Instruct | 7.62B | 7.2 + 5.4 min | 29/29 | 1.08x | - | 875 ✓, 1763 ✓ | GGUF | warning |
+| meta-llama/Llama-3.1-8B-Instruct | 8.03B | 6.6 + 7.3 min | 33/33 | 1.06x | - | 869 ✓, 1749 ✓ | GGUF | warning |
 
 Speed through the fork (tokens per second; first token in seconds):
 
@@ -44,6 +45,7 @@ Speed through the fork (tokens per second; first token in seconds):
 | microsoft/Phi-3.5-mini-instruct | 491 | 9.7 | 1.32 | 198 | 27.9 | 3.05 |
 | microsoft/Phi-4-mini-instruct | 713 | 12.8 | 0.78 | 231 | 30.5 | 2.20 |
 | Qwen/Qwen2.5-7B-Instruct | 390 | 10.0 | 1.53 | 118 | 13.8 | 5.00 |
+| meta-llama/Llama-3.1-8B-Instruct | 376 | 8.9 | 1.52 | 108 | 17.3 | 4.96 |
 
 How to read it:
 
@@ -52,8 +54,10 @@ How to read it:
   on both. The two smaller Qwen2.5 jobs reused a quantized file from an earlier run, so only
   their verification is timed; Qwen2.5-7B's 7.2 minutes include 3.9 of download. Peak memory
   was 5.8 GB for Phi-4-mini (llama.cpp's converter), 4.8 GB for Phi-3.5-mini and 8.2 GB for
-  Qwen2.5-7B (the CPU perplexity reference).
-- **Verdict "warning" for the Phi models and Qwen2.5-7B:** their source models need more
+  Qwen2.5-7B (the CPU perplexity reference). Llama-3.1-8B's 6.6 minutes include 2.9 of download;
+  its converter peaked at 4.0 GB with 2 GB of RAM free at the time, so the perplexity stage paged
+  (the 7.3 minutes of verification are an upper bound).
+- **Verdict "warning" for the Phi models, Qwen2.5-7B and Llama-3.1-8B:** their source models need more
   memory than this laptop has free, so verification compares the source model's tokenizer
   and chat template but not its answers ("Greedy exact" is blank); perplexity, long prompts
   and the template are still checked. Qwen3-1.7B's warning is its Q4_0 perplexity, just over
