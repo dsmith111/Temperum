@@ -59,12 +59,13 @@ for reference answers, adds about 8. [docs/models.md](docs/models.md) has twelve
 
 You need a Snapdragon X laptop with Windows 11, Python 3.10 or newer, and Git.
 
-1. **The Ollama NPU fork, with its Hexagon backend.** It has no published release yet:
-   build its portable package from branch `npu/hexagon-spike` with
-   `scripts\build_npu_windows.ps1`. The script finds Go, LLVM-MinGW, the Windows SDK,
-   CMake, Ninja, Visual Studio and the Hexagon SDK on the machine, and stops with where
-   to get a missing one and how to point at it; `-DetectOnly` shows what it would use
-   (see the fork's `docs/development.md`).
+1. **The Ollama NPU fork, with its Hexagon backend.** Download
+   `ollama-npu-windows-arm64-<version>.zip` from the fork's
+   [latest release](https://github.com/dsmith111/ollama-npu/releases/latest) and extract it
+   into a new folder, for example `C:\ollama-npu`. It is a portable command line and server,
+   not an installer, and the stock Ollama app does not use the NPU. To build it yourself
+   instead, see the fork's `docs/development.md`: `scripts\build_npu_windows.ps1` finds
+   the tools it needs and says where to get a missing one.
 
 2. **The NPU libraries and the switch.** The backend needs a set of Microsoft-signed NPU
    libraries from Qualcomm, whose terms restrict their use, so the fork downloads them at
@@ -72,9 +73,9 @@ You need a Snapdragon X laptop with Windows 11, Python 3.10 or newer, and Git.
    the fork's server starts with `OLLAMA_HEXAGON=1`:
 
    ```powershell
-   C:\path\to\fork\ollama.exe npu setup --provider hexagon --accept-qualcomm-terms
-   setx OLLAMA_HEXAGON 1          # for terminals opened afterwards; temperum sets it when it starts the server
-   C:\path\to\fork\ollama.exe serve
+   C:\ollama-npu\ollama.exe npu setup --provider hexagon --accept-qualcomm-terms
+   $env:OLLAMA_HEXAGON = "1"      # this window only; temperum sets it itself when it starts the server
+   C:\ollama-npu\ollama.exe serve
    ```
 
 3. **`temperum`, pointed at the fork once** (this version is on branch
@@ -84,7 +85,7 @@ You need a Snapdragon X laptop with Windows 11, Python 3.10 or newer, and Git.
    git clone -b restore-hf-conversion https://github.com/dsmith111/temperum
    cd temperum
    python -m pip install .
-   temperum setup --ollama-exe C:\path\to\fork\ollama.exe   # remembers the fork; the conversion toolchain, ~1 GB
+   temperum setup --ollama-exe C:\ollama-npu\ollama.exe   # remembers the fork; the conversion toolchain, ~1 GB
    temperum doctor                                           # checks the fork, its NPU libraries and the switch
    ```
 
@@ -124,7 +125,7 @@ a compatibility declaration (`ollama_npu.json`). Use it where the GGUF route can
 example without accepting Qualcomm's terms for the Hexagon libraries:
 
 ```powershell
-C:\path\to\fork\ollama.exe npu setup --provider qnn   # the fork's QNN runtime (docs/npu_qnn.md)
+C:\ollama-npu\ollama.exe npu setup --provider qnn   # the fork's QNN runtime (docs/npu_qnn.md)
 temperum setup --target qnn-x-elite                  # adds the compile and verify toolchains
 temperum convert Qwen/Qwen2.5-0.5B-Instruct --target qnn-x-elite --install --host http://127.0.0.1:11434
 ollama run qwen2.5-0.5b-instruct:npu-qnn
