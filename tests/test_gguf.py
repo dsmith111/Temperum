@@ -429,3 +429,58 @@ def test_a_base_model_runs_on_without_a_warning_and_a_failed_reference_says_why(
     assert report["verdict"] == "warning"  # answers were not compared
     assert not any("no answer ended by itself" in r for r in report["reasons"])  # running on is what a base model does
     assert any(r.startswith("a base model with no chat template") for r in report["reasons"])
+
+
+def test_a_model_newer_than_the_reference_transformers_is_checked_with_its_tokenizer(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # tencent/Youtu-LLM-2B: model type youtu, saved with transformers 5; the quantize environment pins 4.57
+    from types import SimpleNamespace
+
+    from temperum import gguf_verify
+    from temperum.verify import CONVERSATIONS
+
+    heldout = tmp_path / "heldout.jsonl"
+    heldout.write_text(json.dumps({"text": "Some held-out text."}) + "\n", encoding="utf-8")
+    monkeypatch.setattr(gguf_verify.calib, "ensure_corpus", lambda *_a: SimpleNamespace(path=heldout))
+    error = ("transformers 4.57.3 here does not know the model type 'youtu' (the checkpoint was saved with "
+             "transformers 5.0.0.dev0)")
+
+    def run_script(_python: Path, script: str, args: list[str], *_rest: Any) -> tuple[int, str]:
+        out = Path(args[args.index("--out") + 1])
+        out.write_text(json.dumps({  # what reference.py writes after falling back to the tokenizer
+            "tokenizer_only": True, "model_error": error, "prompts": [{"prompt": "Q", "input_ids": [7, 8, 9]}],
+            "needle": [], "rendered_errors": [],
+            "rendered": [f"<user>{c[-1]['content']}<assistant>" for c in CONVERSATIONS]}), encoding="utf-8")
+        return 0, ""
+
+    class FakeServer:
+        def __init__(self, *_args: Any) -> None: ...
+        def __enter__(self) -> FakeServer: return self
+        def __exit__(self, *_exc: object) -> None: ...
+        def text(self) -> str:
+            return ("load_tensors: offloaded 33/33 layers to GPU\n"
+                    "load_tensors:         HTP0 model buffer size =  1131.20 MiB\n")
+        def bos_text(self) -> str | None:
+            return None
+        def apply_template(self, messages: list[dict[str, str]]) -> str:
+            return f"<user>{messages[-1]['content']}<assistant>"
+        def complete(self, prompt: Any, n_predict: int) -> dict[str, Any]:
+            return {"content": "Paris", "tokens": [1, 2, 3], "stop_type": "eos",
+                    "timings": {"predicted_per_second": 22.0, "prompt_ms": 30.0}}
+
+    monkeypatch.setattr(gguf_verify, "run_script", run_script)
+    monkeypatch.setattr(gguf_verify, "LlamaServer", FakeServer)
+    monkeypatch.setattr(gguf_verify, "perplexity", lambda *_a, npu, **_k: 11.24 if npu else 10.0)
+    plan = SimpleNamespace(verify_level="standard", payload=None, context=4096, quant="Q4_0",
+                           estimates={"params_billions": 2.0},
+                           host=SimpleNamespace(available_ram_gb=6.0, total_ram_gb=16.0))
+    chains = SimpleNamespace(python_exe=lambda _role: Path("python"))
+    report = gguf_verify.verify_gguf(tmp_path / "bundle", tmp_path / "source", plan,  # type: ignore[arg-type]
+                                     chains, tmp_path / "work", lambda _message: None,
+                                     reference_gguf=tmp_path / "model-Q8_0.gguf")
+    assert report["quality"]["skipped"] == error + (", so the source model was not run; its tokenizer gave the inputs "
+                                                    "and the chat template")
+    assert report["template"]["status"] == "match"  # the tokenizer's renderings were still compared
+    assert report["verdict"] == "warning"
+    assert any(r == "answers not compared with the source model: " + report["quality"]["skipped"]
+               for r in report["reasons"])

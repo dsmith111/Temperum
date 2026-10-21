@@ -218,8 +218,13 @@ def verify(bundle: Path, snapshot: Path, chat: ChatTemplate, level: str, *, quan
             code, tail = run_script(quantize_python, "reference.py",
                                     ["--model", str(snapshot), "--spec", str(spec_path), "--heldout", str(heldout),
                                      "--dtype", dtype, "--out", str(reference_path)], say, popen)
-            if code != 0 or not reference_path.is_file():
+            produced = (json.loads(reference_path.read_text(encoding="utf-8"))
+                        if code == 0 and reference_path.is_file() else None)
+            if produced is None:
                 quality["skipped"] = f"reference run failed: {tail[-400:]}"
+                reference_path = None
+            elif produced.get("model_error"):  # this route compares answers only with the model itself
+                quality["skipped"] = f"{produced['model_error']}, so the source model was not run"
                 reference_path = None
             else:
                 quality["reference_dtype"] = dtype

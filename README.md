@@ -139,6 +139,10 @@ the sign-in link when the server is not linked to an account yet.
   validation score continuations instead of answers. Left to itself the fork would chat with such a
   model in a built-in format it never saw. The context defaults to the model's trained length when
   that is below 4096 (GPT-2: 1024), whichever config key declares it.
+- **Models newer than the quantize environment's transformers** (Youtu-LLM-2B asks for transformers 5;
+  the environment pins 4.57) convert and verify on the NPU. The source model is not run for the
+  answer comparison, but its tokenizer still supplies identical inputs and the chat-template check,
+  and the verdict says so in those words.
 - **Not convertible: speculative-decoding draft models** (DFlash, EAGLE, Medusa heads, anything
   tagged `draft-model`). They propose tokens for a larger target model and cannot answer on
   their own, so `temperum` refuses them at the plan and names the target model to convert.

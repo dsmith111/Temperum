@@ -236,6 +236,9 @@ def verify_gguf(bundle: Path, snapshot: Path, plan: GgufPlan, chains: Any, work:
         code, tail = run_script(chains.python_exe("quantize"), "reference.py", args, say, subprocess.Popen)
         if code == 0 and out.is_file():
             reference = json.loads(out.read_text(encoding="utf-8"))
+            if reference.get("model_error"):  # newer than the transformers here: its tokenizer still served
+                quality["skipped"] = (f"{reference['model_error']}, so the source model was not run; its tokenizer "
+                                      "gave the inputs and the chat template")
         else:
             quality["skipped"] = f"reference run failed: {last_error_line(tail) or tail[-400:]}"
 

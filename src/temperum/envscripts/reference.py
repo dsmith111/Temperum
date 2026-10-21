@@ -19,7 +19,19 @@ from pathlib import Path
 from typing import Any
 
 import torch
+import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+
+def _saved_as(model_dir: str) -> str:
+    """The model type a checkpoint declares, and the transformers that saved it."""
+    try:
+        config = json.loads((Path(model_dir) / "config.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "unknown"
+    saved = config.get("transformers_version")
+    return f"'{config.get('model_type')}'" + (f" (the checkpoint was saved with transformers {saved})" if saved
+                                             else "")
 
 
 def _progress(message: str) -> None:
@@ -100,18 +112,32 @@ def main() -> None:
     spec = json.loads(Path(args.spec).read_text(encoding="utf-8"))
     tok = AutoTokenizer.from_pretrained(args.model)
     model: Any = None
+    model_error: str | None = None
+    eos: Any = None
+    pad: Any = None
     if not args.tokenizer_only:
         _progress(f"loading the source model ({args.dtype})")
-        if args.dtype == "float32":
-            model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=torch.float32)
-        else:  # 16-bit storage (the checkpoint's own 16-bit type when it has one), float32 compute
-            model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype="auto")
-            if model.dtype not in (torch.bfloat16, torch.float16):
-                model.to(torch.bfloat16)
-            _float32_compute(model)
-        model.eval()
-        eos = model.generation_config.eos_token_id
-        pad = tok.pad_token_id if tok.pad_token_id is not None else (eos[0] if isinstance(eos, list) else eos)
+        try:
+            if args.dtype == "float32":
+                model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=torch.float32)
+            else:  # 16-bit storage (the checkpoint's own 16-bit type when it has one), float32 compute
+                model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype="auto")
+                if model.dtype not in (torch.bfloat16, torch.float16):
+                    model.to(torch.bfloat16)
+                _float32_compute(model)
+        except ValueError as exc:
+            if "does not recognize this architecture" not in str(exc):
+                raise
+            # The transformers here is older than the model. Its tokenizer still gives identical inputs and
+            # the chat template, so this is a tokenizer-only reference rather than no reference at all.
+            model = None
+            model_error = (f"transformers {transformers.__version__} here does not know the model type "
+                           f"{_saved_as(args.model)}")
+            _progress(f"the source model cannot be run here ({model_error}); using its tokenizer only")
+        if model is not None:
+            model.eval()
+            eos = model.generation_config.eos_token_id
+            pad = tok.pad_token_id if tok.pad_token_id is not None else (eos[0] if isinstance(eos, list) else eos)
 
     def greedy(ids: list[int], new: int) -> list[int]:
         with torch.no_grad():
@@ -121,6 +147,7 @@ def main() -> None:
 
     t0 = time.time()
     result: dict[str, Any] = {"dtype": None if model is None else args.dtype, "tokenizer_only": model is None,
+                              "model_error": model_error,
                               "max_new_tokens": spec["max_new_tokens"], "prompts": [], "needle": [], "rendered": [],
                               "has_chat_template": bool(tok.chat_template)}
     for index, text in enumerate(spec["prompts"], 1):
