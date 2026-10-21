@@ -120,6 +120,10 @@ the sign-in link when the server is not linked to an account yet.
 - **Models whose source is too large to run here** (the 3.8B Phi models and Qwen2.5-7B on
   16 GB) are still checked against their tokenizer and chat template; the verdict says what
   was not compared.
+- **Checkpoint quirks that break the toolchain are repaired** in a hard-linked view of the download
+  (the download itself stays as pinned), and the bundle's manifest records each repair. First one:
+  a `tokenizer_config.json` whose `extra_special_tokens` is a list, which the pinned transformers
+  cannot read; the tokens move to `additional_special_tokens`.
 - **Not convertible: speculative-decoding draft models** (DFlash, EAGLE, Medusa heads, anything
   tagged `draft-model`). They propose tokens for a larger target model and cannot answer on
   their own, so `temperum` refuses them at the plan and names the target model to convert.

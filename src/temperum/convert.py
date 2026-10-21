@@ -29,6 +29,7 @@ from temperum.host import HostInfo, detect_host, resolve_target
 from temperum.olive_run import output_complete, run_olive
 from temperum.profiles import DEFAULT_RUNTIME, RuntimeProfile, TargetProfile, get_runtime
 from temperum.recipes import RecipeChoice, RenderOptions, choose, precision_label, render, resolve_quality
+from temperum.repairs import prepare_source
 from temperum.sources import ResolvedModel, fetch, parse_ref, resolve
 from temperum.templates import ChatTemplate, custom, from_jinja, load_jinja, own
 from temperum.toolchains import ENV_SIZE_GB, PYTHON_SIZE_GB, EnvStatus, Toolchains
@@ -362,6 +363,7 @@ def _run(conversion: ConvertPlan, job: Job, say: Progress, chains_factory: Calla
     say(f"fetching {conversion.model.ref.display}")
     snapshot = fetch(conversion.model, paths.sources_dir())
     job.record("fetch", "done", commit=conversion.model.commit)
+    snapshot, _repairs = prepare_source(snapshot, job.dir / "source", say)  # known checkpoint quirks
     corpus = calib.ensure_corpus(calib.CALIBRATION, paths.data_dir())
     job.record("calibration-data", "done", **{k: v for k, v in corpus.to_dict().items() if k != "path"})
     chat = _chat_template(options, snapshot)

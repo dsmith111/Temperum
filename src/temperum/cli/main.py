@@ -471,6 +471,7 @@ def _verify_gguf_bundle(bundle: Path, manifest: dict[str, Any], snapshot: Path, 
     from temperum.checkpoint import read_checkpoint
     from temperum.gguf_verify import verify_gguf
     from temperum.profiles import DEFAULT_LLAMA_RUNTIME, DEFAULT_RUNTIME, LLAMA_RUNTIMES, get_runtime, get_target
+    from temperum.repairs import prepare_source
     from temperum.sources import ModelRef, ResolvedModel
     from temperum.toolchains import Toolchains
     from temperum.toolchains.llama_cpp import ConverterSource
@@ -497,6 +498,7 @@ def _verify_gguf_bundle(bundle: Path, manifest: dict[str, Any], snapshot: Path, 
     chains.ensure("quantize")
     work = paths.jobs_dir() / "verify" / bundle.name
     work.mkdir(parents=True, exist_ok=True)
+    snapshot, _repairs = prepare_source(snapshot, work / "source", say)
     reference = None
     try:
         if level in ("standard", "full"):  # perplexity is measured against a Q8_0 conversion on the CPU

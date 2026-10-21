@@ -32,6 +32,7 @@ from temperum.core.errors import TemperumError
 from temperum.host import HEXAGON_OPT_IN, HostInfo, hexagon_opted_in
 from temperum.profiles import (DEFAULT_LLAMA_RUNTIME, DEFAULT_RUNTIME, LLAMA_RUNTIMES, LlamaRuntimeProfile,
                                 TargetProfile, get_runtime)
+from temperum.repairs import prepare_source
 from temperum.sources import ResolvedModel, fetch
 from temperum.templates import ChatTemplate, from_jinja, load_jinja
 from temperum.toolchains import ENV_SIZE_GB, Toolchains
@@ -428,6 +429,7 @@ def run(gguf_plan: GgufPlan, progress: Progress | None = None,
         say(f"fetching {gguf_plan.model.ref.display}")
         snapshot = fetch(gguf_plan.model, paths.sources_dir())
         job.record("fetch", "done", commit=gguf_plan.model.commit)
+        snapshot, repairs = prepare_source(snapshot, job.dir / "source", say)  # known checkpoint quirks
         source = ConverterSource.load(gguf_plan.runtime.llama_cpp_tag)
         source.ensure(progress=say)
         architecture = gguf_plan.model.architecture
@@ -451,7 +453,8 @@ def run(gguf_plan: GgufPlan, progress: Progress | None = None,
 
         say("assembling the bundle")
         bundle = assemble(quantized, snapshot, gguf_plan, {"converter_source": source.commit,
-                                                           "quantize": str(gguf_plan.payload.quantize)})
+                                                           "quantize": str(gguf_plan.payload.quantize),
+                                                           "repairs": repairs})
         job.record("assemble", "done", bundle=str(bundle))
         report: dict[str, Any] = {"level": "none", "verdict": "not-verified",
                                   "reasons": ["verification skipped"]}
