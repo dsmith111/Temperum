@@ -76,8 +76,11 @@ def version(endpoint: str, timeout: float = 3.0) -> str | None:
 
 def ensure(endpoint: str, exe: Path | None, say: Callable[[str], None], *, log_dir: Path, wait_s: float = 90,
            popen: Popen = subprocess.Popen, probe: Callable[..., str | None] = version,
-           sleep: Callable[[float], None] = time.sleep) -> ServerInfo:
-    """A server answering at the endpoint: the running one, or one started from the fork executable."""
+           sleep: Callable[[float], None] = time.sleep, switch_on: bool = False) -> ServerInfo:
+    """A server answering at the endpoint: the running one, or one started from the fork executable.
+
+    A started server gets the NPU switch unless the environment already decides it; `switch_on` forces it.
+    """
     found = probe(endpoint)
     if found:
         return ServerInfo(endpoint, found, started=False)
@@ -88,7 +91,10 @@ def ensure(endpoint: str, exe: Path | None, say: Callable[[str], None], *, log_d
     url = urlsplit(endpoint)
     env = dict(os.environ)
     env["OLLAMA_HOST"] = f"{url.hostname}:{url.port}"
-    env.setdefault(HEXAGON_OPT_IN, "1")
+    if switch_on:
+        env[HEXAGON_OPT_IN] = "1"
+    else:
+        env.setdefault(HEXAGON_OPT_IN, "1")
     log_dir.mkdir(parents=True, exist_ok=True)
     log = log_dir / f"serve-{url.port}.log"
     say(f"starting the fork's server at {endpoint} with {HEXAGON_OPT_IN}={env[HEXAGON_OPT_IN]} (log: {log})")
@@ -112,3 +118,74 @@ def ensure(endpoint: str, exe: Path | None, say: Callable[[str], None], *, log_d
         sleep(0.5)
     raise TemperumError("import", "SERVER_TIMEOUT", f"The fork's server did not answer within {wait_s:.0f} s; "
                                                     f"see {log}.")
+
+
+# -- a server started without the switch ---------------------------------------------------------
+Run = Callable[..., Any]
+
+
+def listener(endpoint: str, run: Run = subprocess.run) -> tuple[int, Path] | None:
+    """The process listening on the endpoint's port: its id and executable (Windows only)."""
+    if sys.platform != "win32":
+        return None
+    port = urlsplit(endpoint).port
+    script = (f"$c = Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue | "
+              "Select-Object -First 1; if ($c) { $p = Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue; "
+              "if ($p -and $p.Path) { Write-Output ($p.Id.ToString() + '|' + $p.Path) } }")
+    try:
+        result = run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True,
+                     text=True, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    pid, sep, path = str(result.stdout).strip().partition("|")
+    if not sep or not pid.isdigit() or not path:
+        return None
+    return int(pid), Path(path)
+
+
+def same_folder(path: Path, exe: Path) -> bool:
+    """Whether a process executable lives in the known fork's folder (the server and its runners do)."""
+    try:
+        return str(path.resolve().parent).lower() == str(exe.resolve().parent).lower()
+    except OSError:
+        return False
+
+
+def stop_tree(folder: Path, run: Run = subprocess.run) -> int:
+    """Stop every process running from the fork's folder (its server and runners); how many were stopped."""
+    if sys.platform != "win32":
+        return 0
+    prefix = str(folder).rstrip("\\") + "\\"
+    script = ("$p = @(Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith('"
+              + prefix.replace("'", "''") + "') }); $p | Stop-Process -Force -ErrorAction SilentlyContinue; "
+              "Write-Output $p.Count")
+    try:
+        result = run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True,
+                     text=True, timeout=60, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return 0
+    text = str(result.stdout).strip()
+    return int(text) if text.isdigit() else 0
+
+
+def restart_with_switch(endpoint: str, exe: Path, say: Callable[[str], None], *, log_dir: Path,
+                        run: Run = subprocess.run, popen: Popen = subprocess.Popen,
+                        probe: Callable[..., str | None] = version,
+                        sleep: Callable[[float], None] = time.sleep, wait_s: float = 20) -> ServerInfo:
+    """Stop the fork's server at the endpoint, when it runs from the known executable's folder, and start one
+    with the NPU switch on."""
+    found = listener(endpoint, run)
+    if found is None or not same_folder(found[1], exe):
+        raise TemperumError("import", "SERVER_NOT_OURS",
+                            f"The server at {endpoint} is not the fork at {exe}, so temperum leaves it alone.",
+                            hint="Stop it yourself, then run `temperum validate TAG`: temperum starts the fork's "
+                                 "server with the NPU switch on.")
+    say(f"stopping the fork's server at {endpoint} (pid {found[0]}) and its runners")
+    stop_tree(exe.parent, run)
+    deadline = time.monotonic() + wait_s
+    while probe(endpoint, timeout=2.0) is not None and time.monotonic() < deadline:
+        sleep(0.5)
+    if probe(endpoint, timeout=2.0) is not None:
+        raise TemperumError("import", "SERVER_STILL_RUNNING", f"Something still answers at {endpoint}.",
+                            hint="Stop it yourself, then run `temperum validate TAG`.")
+    return ensure(endpoint, exe, say, log_dir=log_dir, popen=popen, probe=probe, sleep=sleep, switch_on=True)

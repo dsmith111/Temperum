@@ -218,3 +218,67 @@ def test_copy_names_the_model(monkeypatch: pytest.MonkeyPatch) -> None:
     assert sent == [("/api/copy", {"source": "thing:npu", "destination": "dsmith/thing:npu"})]
     with pytest.raises(TemperumError):
         pushing.copy("http://127.0.0.1:1", "a", "b/c", request=lambda *a: (404, b"not found"))
+
+
+# -- a server started without the switch ---------------------------------------------------------
+def _run_saying(text: str) -> Any:
+    def run(cmd: list[str], **kwargs: Any) -> Any:
+        return type("Done", (), {"stdout": text, "returncode": 0})()
+    return run
+
+
+def test_listener_and_stop_tree_parse_powershell(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(fork.sys, "platform", "win32")
+    assert fork.listener("http://127.0.0.1:11434", _run_saying("4242|C:\\fork\\ollama.exe\n")) == (
+        4242, Path("C:/fork/ollama.exe"))
+    assert fork.listener("http://127.0.0.1:11434", _run_saying("")) is None
+    assert fork.listener("http://127.0.0.1:11434", _run_saying("garbage")) is None
+    assert fork.stop_tree(Path("C:/fork"), _run_saying("3\n")) == 3
+    assert fork.stop_tree(Path("C:/fork"), _run_saying("")) == 0
+
+
+def test_same_folder(tmp_path: Path) -> None:
+    exe = tmp_path / "ollama.exe"
+    assert fork.same_folder(tmp_path / "ollama.exe", exe)
+    assert fork.same_folder(Path(str(tmp_path).upper()) / "lib" / ".." / "ollama.exe", exe)
+    assert not fork.same_folder(tmp_path / "other" / "ollama.exe", exe)
+
+
+def test_restart_with_switch_stops_the_forks_own_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    exe = tmp_path / "ollama.exe"
+    exe.write_bytes(b"")
+    monkeypatch.setenv("OLLAMA_HEXAGON", "0")  # the user's shell says off; the restart is asked for with it on
+    monkeypatch.setattr(fork, "listener", lambda endpoint, run=None: (77, tmp_path / "ollama.exe"))
+    stopped: list[Path] = []
+    monkeypatch.setattr(fork, "stop_tree", lambda folder, run=None: stopped.append(folder) or 2)
+    answers = iter(["0.0.0-npu", None, None, None, "0.0.0-npu"])  # alive, gone, gone, (started) not yet, up
+    launched: dict[str, Any] = {}
+
+    class Proc:
+        pid = 78
+        returncode = None
+
+        def poll(self) -> None:
+            return None
+
+    def popen(args: list[str], **kwargs: Any) -> Proc:
+        launched.update(env=kwargs["env"])
+        return Proc()
+
+    said: list[str] = []
+    info = fork.restart_with_switch("http://127.0.0.1:18799", exe, said.append, log_dir=tmp_path / "logs",
+                                    popen=popen, probe=lambda *a, **k: next(answers), sleep=lambda _s: None)
+    assert stopped == [tmp_path] and info.started and info.pid == 78
+    assert launched["env"]["OLLAMA_HEXAGON"] == "1"
+    assert "stopping the fork's server" in said[0]
+
+
+def test_restart_leaves_other_servers_alone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    exe = tmp_path / "fork" / "ollama.exe"
+    monkeypatch.setattr(fork, "listener", lambda endpoint, run=None: (5, tmp_path / "stock" / "ollama.exe"))
+    with pytest.raises(TemperumError) as exc:
+        fork.restart_with_switch("http://127.0.0.1:18799", exe, lambda _m: None, log_dir=tmp_path)
+    assert exc.value.reason_code == "SERVER_NOT_OURS" and "temperum validate" in str(exc.value.hint)
+    monkeypatch.setattr(fork, "listener", lambda endpoint, run=None: None)
+    with pytest.raises(TemperumError):
+        fork.restart_with_switch("http://127.0.0.1:18799", exe, lambda _m: None, log_dir=tmp_path)

@@ -428,8 +428,10 @@ def install_gguf(bundle: Path, name: str, *, executable: Path, host: str | None,
         result["placement"] = {"where": "unknown", "error": str(exc)[:300]}
     where = result["placement"]["where"]
     if where == "cpu":
-        result["warnings"].append("the fork ran it on the CPU, not the NPU: start its server with OLLAMA_HEXAGON=1 "
-                                  "(after `ollama npu setup --provider hexagon --accept-qualcomm-terms`)")
+        result["warnings"].append("the fork ran it on the CPU, not the NPU: its server was started without "
+                                  "OLLAMA_HEXAGON=1. Stop that server and run `temperum validate " + tag + "`, which "
+                                  "starts one with the switch on (the NPU libraries come from `ollama npu setup "
+                                  "--provider hexagon --accept-qualcomm-terms` if they are missing)")
     elif where == "split":
         result["warnings"].append("the fork split it between the NPU and the CPU, which is slower than running "
                                   "whole on the NPU; a smaller --context or --quant may let it fit there")

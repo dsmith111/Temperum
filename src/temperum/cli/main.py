@@ -100,6 +100,10 @@ def _after_convert(summary: dict[str, Any], *, tag: str, installer: Callable[[st
     if install:
         summary["install"] = installer(endpoint)
         _print_install(summary["install"])
+        if interactive and exe is not None and summary["install"].get("placement", {}).get("where") == "cpu":
+            moved = _offer_switch(endpoint, exe, tag, say)
+            if moved is not None:
+                summary["install"]["placement"] = moved
     if interactive and not validate:
         validate = ui.confirm(err, "Validate it through the fork (load it, time a generation, watch the CPU)?",
                               default=True)
@@ -112,6 +116,33 @@ def _after_convert(summary: dict[str, Any], *, tag: str, installer: Callable[[st
                           default=False)
     if push:
         summary["push"] = _push_flow(endpoint, tag, push_as, interactive, say)
+
+
+def _offer_switch(endpoint: str, exe: Path, tag: str, say: Callable[[str], None]) -> Optional[dict[str, Any]]:
+    """The running server put the model on the CPU: when it is the fork's own, offer to restart it with the
+    NPU switch on, then look again."""
+    from temperum import paths
+    from temperum.install import fork
+    from temperum.install.ollama_import import npu_placement
+
+    found = fork.listener(endpoint)
+    if found is None or not fork.same_folder(found[1], exe):
+        err.print(f"  The server at {endpoint} was not started from the fork at {escape(str(exe))}, so temperum "
+                  f"leaves it alone. Stop it, then run `temperum validate {escape(tag)}`: temperum starts the fork's "
+                  "server with the NPU switch on.")
+        return None
+    if not ui.confirm(err, f"That server (pid {found[0]}, the fork at {escape(str(found[1]))}) runs without the NPU "
+                           "switch. Stop it and start one with the switch on?", default=True):
+        return None
+    fork.restart_with_switch(endpoint, exe, say, log_dir=paths.home() / "logs")
+    say("loading it again to see where the fork runs it now")
+    placed = npu_placement(endpoint, tag)
+    where = {"npu": f"whole on the NPU ({placed.get('npu_mib')} MiB)",
+             "split": f"{placed.get('npu_mib')} of {placed.get('size_mib')} MiB on the NPU",
+             "cpu": "still on the CPU: check the NPU libraries with `temperum doctor`"}.get(str(placed.get("where")),
+                                                                                             "unknown")
+    err.print(f"  the fork now runs it {where}")
+    return placed
 
 
 def _push_flow(endpoint: str, tag: str, push_as: Optional[str], interactive: bool,

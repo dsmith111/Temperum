@@ -95,7 +95,8 @@ You need a Snapdragon X laptop with Windows 11, Python 3.10 or newer, and Git.
 Install, validate and push talk to the fork's server at `--host`, else `OLLAMA_HOST`, else
 port 11434. When no server answers there and `TEMPERUM_OLLAMA_EXE` is set, `temperum` starts
 one with the NPU switch on and leaves it running (in a terminal it asks first). If a server
-runs without the switch, install says the model runs on the CPU and how to fix it. Uploads
+runs without the switch, install says the model runs on the CPU and, when that server is the
+fork's own, offers to restart it with the switch on. Uploads
 go through that server, which holds your ollama.com key: `temperum` never sees it, and shows
 the sign-in link when the server is not linked to an account yet.
 

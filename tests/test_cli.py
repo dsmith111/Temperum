@@ -36,6 +36,7 @@ def test_convert_plan_errors_are_actionable(monkeypatch: pytest.MonkeyPatch) -> 
 def test_install_options_are_checked_before_converting(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     planned: list[str] = []
     monkeypatch.setattr("temperum.convert.plan", lambda options: planned.append("plan"))
+    monkeypatch.setenv("TEMPERUM_HOME", str(tmp_path))  # not the real home, which may remember a fork
     monkeypatch.delenv("OLLAMA_HOST", raising=False)
     monkeypatch.delenv("TEMPERUM_OLLAMA_EXE", raising=False)
     result = runner.invoke(app, ["convert", "org/model", "--install"])
