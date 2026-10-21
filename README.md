@@ -1,8 +1,13 @@
 # Temperum
 
-Convert a Hugging Face model to run on this machine's NPU through the
-[Ollama NPU fork](https://github.com/dsmith111/ollama-npu). One command converts it, checks
-the result on the NPU against the source model, and can install it into the fork:
+Temperum puts a Hugging Face model on this machine's NPU through the
+[Ollama NPU fork](https://github.com/dsmith111/ollama-npu). The conversion itself is
+[llama.cpp](https://github.com/ggml-org/llama.cpp)'s: Temperum runs llama.cpp's converter and
+quantizer, pinned to the fork's build. What it adds is the part those tools do not do: fitting
+the model to the NPU's memory and the backend's quantization types, repairing checkpoints the
+converter trips on, verifying the result on the NPU against the source model, installing it
+into the fork with a chat template the fork keeps, and publishing it to ollama.com. One command
+does all of it:
 
 ```powershell
 temperum convert Qwen/Qwen2.5-1.5B-Instruct
