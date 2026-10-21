@@ -83,7 +83,7 @@ def test_ensure_keeps_the_users_switch_setting(tmp_path: Path, monkeypatch: pyte
 def test_ensure_without_an_executable_says_how_to_start_one(tmp_path: Path) -> None:
     with pytest.raises(TemperumError) as exc:
         fork.ensure("http://127.0.0.1:18799", None, lambda _m: None, log_dir=tmp_path, probe=lambda *a, **k: None)
-    assert exc.value.reason_code == "SERVER_UNAVAILABLE" and "TEMPERUM_OLLAMA_EXE" in str(exc.value.hint)
+    assert exc.value.reason_code == "SERVER_UNAVAILABLE" and "temperum setup --ollama-exe" in str(exc.value.hint)
 
 
 def test_ensure_reports_a_server_that_exits(tmp_path: Path) -> None:

@@ -93,7 +93,8 @@ def validate(endpoint: str, tag: str, *, fork_dir: Path | None, say: Callable[[s
         report["cpu"] = {"cores": round(max(0.0, after[0] - before[0]) / max(wall, 1e-3), 2),
                          "processes": after[1], "seconds": round(wall, 1)}
     elif fork_dir is None:
-        report["cpu"] = {"skipped": "the fork executable is not known (TEMPERUM_OLLAMA_EXE)"}
+        report["cpu"] = {"skipped": "the fork executable is not known (temperum setup --ollama-exe PATH, or "
+                                    "TEMPERUM_OLLAMA_EXE)"}
     elif sys.platform != "win32":
         report["cpu"] = {"skipped": "measured on Windows only"}
     else:

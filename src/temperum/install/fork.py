@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
+from temperum import settings
 from temperum.core.errors import TemperumError
 from temperum.host import HEXAGON_OPT_IN
 from temperum.install.ollama_import import local_endpoint
@@ -40,15 +41,15 @@ class ServerInfo:
 
 
 def executable(ollama_exe: Path | None) -> Path | None:
-    """The fork executable from the option or the setting, when it names a file."""
-    setting = os.environ.get(EXE_SETTING)
-    exe = ollama_exe or (Path(setting) if setting else None)
+    """The fork executable from the option, the environment or the stored setting, when it names a file."""
+    exe, _source = settings.ollama_exe(ollama_exe)
     return exe if exe is not None and exe.is_file() else None
 
 
 def endpoint_for(host: str | None) -> str:
-    """The local endpoint to use: --host, else OLLAMA_HOST (with or without a scheme), else Ollama's default."""
-    chosen = host or os.environ.get("OLLAMA_HOST") or DEFAULT_HOST
+    """The local endpoint: --host, else OLLAMA_HOST (with or without a scheme), else the stored one, else
+    Ollama's default."""
+    chosen = str(settings.resolve("host", host, DEFAULT_HOST).value)
     if "://" not in chosen:
         chosen = "http://" + chosen
     return local_endpoint(chosen)
@@ -82,8 +83,8 @@ def ensure(endpoint: str, exe: Path | None, say: Callable[[str], None], *, log_d
         return ServerInfo(endpoint, found, started=False)
     if exe is None:
         raise TemperumError("import", "SERVER_UNAVAILABLE", f"No Ollama server answers at {endpoint}.",
-                            hint=f"Start the fork's server ({HEXAGON_OPT_IN}=1, then `ollama serve`), or set "
-                                 f"{EXE_SETTING} to the fork's ollama.exe so temperum can start it.")
+                            hint=f"Start the fork's server ({HEXAGON_OPT_IN}=1, then `ollama serve`), or run "
+                                 "`temperum setup --ollama-exe PATH` once so temperum can start it.")
     url = urlsplit(endpoint)
     env = dict(os.environ)
     env["OLLAMA_HOST"] = f"{url.hostname}:{url.port}"

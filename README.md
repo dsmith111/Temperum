@@ -73,7 +73,7 @@ You need a Snapdragon X laptop with Windows 11, Python 3.10 or newer, and Git.
 
    ```powershell
    C:\path\to\fork\ollama.exe npu setup --provider hexagon --accept-qualcomm-terms
-   setx OLLAMA_HEXAGON 1          # for new terminals; open one, then start the server
+   setx OLLAMA_HEXAGON 1          # for terminals opened afterwards; temperum sets it when it starts the server
    C:\path\to\fork\ollama.exe serve
    ```
 
@@ -84,9 +84,8 @@ You need a Snapdragon X laptop with Windows 11, Python 3.10 or newer, and Git.
    git clone -b restore-hf-conversion https://github.com/dsmith111/temperum
    cd temperum
    python -m pip install .
-   setx TEMPERUM_OLLAMA_EXE C:\path\to\fork\ollama.exe
-   temperum setup      # in a new terminal: the conversion toolchain, ~1 GB
-   temperum doctor     # checks the fork, its NPU libraries and the switch
+   temperum setup --ollama-exe C:\path\to\fork\ollama.exe   # remembers the fork; the conversion toolchain, ~1 GB
+   temperum doctor                                           # checks the fork, its NPU libraries and the switch
    ```
 
    The CLI itself stays small. The conversion tools go into separate environments that it
@@ -155,6 +154,7 @@ implemented but not yet tested.
 | `temperum convert MODEL` | Plan, convert and verify; in a terminal, then asks to install, validate and upload. `--install`, `--validate`, `--push [--as NAME]` do that without asking; `--plan` stops after the plan; `--yes` skips every question; `--quant Q4_0\|Q4_K_M\|Q8_0`, `--context N`, `--verify quick\|standard\|full\|none`, `--out DIR`, `--target qnn-x-elite` (QNN only: `--quality`, `--device`, `--template FILE --stop S`) |
 | `temperum setup` | Create or check (`--check`) what conversions need; `--target qnn-x-elite` adds the QNN toolchains |
 | `temperum doctor` | Target, the fork's NPU runtime and switch, memory, disk, toolchain health |
+| `temperum config [KEY [VALUE]]` | Show or change what is remembered: `ollama-exe`, `target`, `host` (`--unset` forgets) |
 | `temperum models` | Conversions verified on hardware, the GGUF route, QNN recipes and families |
 | `temperum verify BUNDLE` | Re-run verification on this machine's NPU (with the fork's current runtime) |
 | `temperum inspect --input BUNDLE` | Structural and declaration report for a QNN bundle (never runs the model) |
@@ -162,12 +162,14 @@ implemented but not yet tested.
 | `temperum validate TAG` | Load an installed model through the fork: where it runs, load time, a two-turn chat, decode and prompt speed, CPU cores busy while generating |
 | `temperum push TAG [--as NAME]` | Upload an installed model to ollama.com through the fork (default name: your account/<name>:<tag>) |
 
-Settings: `TEMPERUM_OLLAMA_EXE` (the fork), `TEMPERUM_TARGET` (default target),
-`OLLAMA_HOST` (the fork's endpoint for installs), `HF_TOKEN` (gated models) and
-`TEMPERUM_HOME`. Everything lives under `%LOCALAPPDATA%\temperum` (toolchains, source
-snapshots, jobs, bundles); set `TEMPERUM_HOME` to a short path if Windows long paths are
-disabled and your profile path is long. A conversion is a resumable job: rerunning the same
-command continues where it stopped, and `jobs/<id>/job.json` records every stage.
+Settings: `temperum setup --ollama-exe PATH` remembers the fork's executable in
+`%LOCALAPPDATA%\temperum\config.json`, and `temperum config` shows or changes what is stored
+(`ollama-exe`, `target`, `host`). A command-line option wins, then the environment
+(`TEMPERUM_OLLAMA_EXE`, `TEMPERUM_TARGET`, `OLLAMA_HOST`; `HF_TOKEN` for gated models), then the
+stored value. Everything lives under `%LOCALAPPDATA%\temperum` (toolchains, source snapshots,
+jobs, bundles); set `TEMPERUM_HOME` to a short path if Windows long paths are disabled and your
+profile path is long. A conversion is a resumable job: rerunning the same command continues
+where it stopped, and `jobs/<id>/job.json` records every stage.
 
 ## How it works
 

@@ -159,9 +159,10 @@ def test_setup_prepares_what_the_target_needs(monkeypatch: pytest.MonkeyPatch, t
     assert built == ["quantize", "compile", "verify"] and fetched == ["b11644"]
 
 
-def test_doctor_names_the_missing_fork_setting(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_doctor_names_the_missing_fork_setting(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from temperum.cli.main import _fork_status
 
+    monkeypatch.setenv("TEMPERUM_HOME", str(tmp_path))  # not the real home, which may remember a fork
     monkeypatch.delenv("TEMPERUM_OLLAMA_EXE", raising=False)
     assert _fork_status()["state"] == "not set" and "TEMPERUM_OLLAMA_EXE" in _fork_status()["hint"]
     monkeypatch.setenv("TEMPERUM_OLLAMA_EXE", "C:/nowhere/ollama.exe")

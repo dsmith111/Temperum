@@ -191,10 +191,12 @@ def plan_import(
     endpoint = local_endpoint(host or os.environ.get("OLLAMA_HOST"))
     name = _model_name(name)
     if executable is None:
-        setting = os.environ.get("TEMPERUM_OLLAMA_EXE")
-        if not setting:
-            _fail("EXE_REQUIRED", "Specify --ollama-exe or TEMPERUM_OLLAMA_EXE (compatible fork); no PATH default.")
-        executable = Path(setting)
+        from temperum import settings
+
+        executable, _source = settings.ollama_exe(None)
+        if executable is None:
+            _fail("EXE_REQUIRED", "Specify --ollama-exe, run `temperum setup --ollama-exe PATH` once, or set "
+                                  "TEMPERUM_OLLAMA_EXE (a compatible fork); there is no PATH default.")
     try:
         executable = regular_path(executable)
         if executable.suffix.lower() in {".bat", ".cmd", ".ps1"}:

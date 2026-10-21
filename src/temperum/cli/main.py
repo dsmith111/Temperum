@@ -14,7 +14,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from temperum import ui
+from temperum import settings, ui
 from temperum.core.errors import TemperumError
 
 if TYPE_CHECKING:
@@ -194,7 +194,7 @@ def _print_plan(plan: Any) -> None:
 @app.command("convert")
 def convert_command(
     model: str = typer.Argument(..., help="Hugging Face id (org/name[@revision]) or a local model folder"),
-    target: str = typer.Option("auto", "--target", envvar="TEMPERUM_TARGET",
+    target: Optional[str] = typer.Option(None, "--target", envvar="TEMPERUM_TARGET",
                                help="NPU target profile (auto = a GGUF for this machine's NPU; qnn-x-elite for a "
                                     "QNN bundle)"),
     quality: str = typer.Option("auto", "--quality", help="QNN: auto | standard (8-bit RTN) | recipe (GPTQ, CUDA)"),
@@ -237,6 +237,7 @@ def convert_command(
                                 hint="Add --install.")
         if install:  # fail now, not after a long conversion
             _check_install_options(ollama_exe, host)
+        target = str(settings.resolve("target", target, "auto").value)
         machine = None
         if target == "auto":
             machine = detect_host()
@@ -331,7 +332,7 @@ def _convert_gguf(model: str, target_id: str, *, quant: str, context: Optional[i
     from temperum.profiles import get_target
     from temperum.sources import parse_ref, resolve
 
-    exe = ollama_exe or (Path(os.environ["TEMPERUM_OLLAMA_EXE"]) if os.environ.get("TEMPERUM_OLLAMA_EXE") else None)
+    exe, _source = settings.ollama_exe(ollama_exe)
     plan = gguf.plan(resolve(parse_ref(model)), machine or detect_host(), get_target(target_id), ollama_exe=exe,
                      quant=quant, context=context, out=out_dir, verify=verify_level, overwrite=overwrite,
                      python=python)
@@ -406,7 +407,7 @@ def _convert_gguf(model: str, target_id: str, *, quant: str, context: Optional[i
         def installer(endpoint: str) -> dict[str, Any]:
             if exe is None:
                 raise TemperumError("import", "EXE_REQUIRED", "Installing needs the fork executable.",
-                                    hint="Pass --ollama-exe PATH or set TEMPERUM_OLLAMA_EXE.")
+                                    hint="Run `temperum setup --ollama-exe PATH` once, or pass --ollama-exe PATH.")
             return install_gguf(result.bundle, tag, executable=exe, host=endpoint,
                                 work_dir=result.job_dir / "install", say=_progress(start, as_json))
         _after_convert(summary, tag=tag, install=install, validate=validate, push=push, push_as=push_as,
@@ -425,7 +426,7 @@ def _check_install_options(ollama_exe: Optional[Path], host: Optional[str]) -> N
     exe = fork.executable(ollama_exe)
     if exe is None:
         raise TemperumError("import", "EXE_REQUIRED", "--install needs the fork executable.",
-                            hint="Pass --ollama-exe PATH or set TEMPERUM_OLLAMA_EXE.")
+                            hint="Run `temperum setup --ollama-exe PATH` once, or pass --ollama-exe PATH.")
 
 
 def _install(bundle: Path, name: str, ollama_exe: Optional[Path], host: Optional[str], job_dir: Path,
@@ -440,22 +441,26 @@ def _install(bundle: Path, name: str, ollama_exe: Optional[Path], host: Optional
 
 @app.command("setup")
 def setup_command(
-    target: str = typer.Option("auto", "--target", envvar="TEMPERUM_TARGET",
-                               help="What to prepare for: auto (a GGUF for this machine's NPU) or a target id such "
-                                    "as qnn-x-elite"),
+    target: Optional[str] = typer.Option(None, "--target", envvar="TEMPERUM_TARGET",
+                                         help="What to prepare for: auto (a GGUF for this machine's NPU) or a "
+                                              "target id such as qnn-x-elite"),
     device: str = typer.Option("auto", "--device", help="QNN: quantization device the quantize toolchain targets"),
     python: Optional[Path] = typer.Option(None, "--python", help="Native Python for toolchains (default: uv)"),
     check: bool = typer.Option(False, "--check", help="Only report status (deep check)"),
     rebuild: bool = typer.Option(False, "--rebuild", help="Rebuild environments even if they look ready"),
+    ollama_exe: Optional[Path] = typer.Option(None, "--ollama-exe", help="The fork's ollama.exe, remembered for "
+                                                                        "every later command"),
 ) -> None:
     """Create (or check) what conversions need: for a GGUF the conversion toolchain and llama.cpp's converter;
-    for QNN bundles also the compile and verify toolchains."""
+    for QNN bundles also the compile and verify toolchains. Remembers the fork's executable."""
     from temperum.host import detect_host, resolve_target
     from temperum.profiles import DEFAULT_LLAMA_RUNTIME, DEFAULT_RUNTIME, LLAMA_RUNTIMES, get_runtime
     from temperum.toolchains import Toolchains
     from temperum.toolchains.llama_cpp import ConverterSource
 
     try:
+        _remember_fork(ollama_exe, ask=not check)
+        target = str(settings.resolve("target", target, "auto").value)
         host = detect_host()
         gguf = resolve_target(host, target).format == "gguf"
         chosen = "cpu" if gguf or device == "auto" and not host.cuda_gpus else ("cuda" if device == "auto" else device)
@@ -475,25 +480,66 @@ def setup_command(
             problems = source.problems()
             table.add_row("llama.cpp converter", "ready" if not problems else f"missing ({len(problems)} files)",
                           str(source.directory), source.tag)
+        fork_status = _fork_status()
+        table.add_row("fork", fork_status["state"] + (f" ({fork_status['hint']})" if fork_status.get("hint") else ""),
+                      str(fork_status.get("exe") or ""), str(fork_status.get("llama_cpp") or ""))
         out.print(table)
     except TemperumError as exc:
         _handle_err(exc)
 
 
+def _remember_fork(option: Optional[Path], ask: bool) -> None:
+    """Store the fork executable given to setup; in a terminal, ask for it when none is known."""
+    if option is not None:
+        exe = option.expanduser()
+        if not exe.is_file():
+            raise TemperumError("setup", "EXE_MISSING", f"{exe} is not a file.",
+                                hint="Point --ollama-exe at the fork's ollama.exe.")
+        settings.set_value("ollama-exe", str(exe.resolve()))
+        err.print(f"fork: {escape(str(exe.resolve()))} (remembered in {escape(str(settings.path()))})")
+        _warn_if_environment_overrides("ollama-exe", str(exe.resolve()))
+        return
+    known, _source = settings.ollama_exe(None)
+    if known is None and ask and sys.stdin.isatty() and sys.stderr.isatty():
+        answer = ui.ask(err, "Where is the fork's ollama.exe? (Enter to skip)", default="").strip().strip('"')
+        if not answer:
+            return
+        path = Path(answer).expanduser()
+        if path.is_file():
+            settings.set_value("ollama-exe", str(path.resolve()))
+            err.print(f"fork: {escape(str(path.resolve()))} (remembered in {escape(str(settings.path()))})")
+        else:
+            err.print(f"  [yellow]![/yellow] {escape(answer)} is not a file; run `temperum setup --ollama-exe PATH` "
+                      "when you have the fork")
+
+
+def _warn_if_environment_overrides(key: str, stored: str) -> None:
+    """A value set with setx lingers in terminals started before it changed, and the environment wins."""
+    env_name = settings.KEYS[key]
+    current = os.environ.get(env_name)
+    if current and current != stored:
+        err.print(f"  [yellow]![/yellow] {env_name} is set to {escape(current)} in this terminal and takes "
+                  "precedence over the remembered value; unset it, or open a terminal started after it changed "
+                  "(for an editor's terminals, restart the editor)")
+
+
 def _fork_status() -> dict[str, Any]:
-    """The fork executable conversions use (TEMPERUM_OLLAMA_EXE) and what its NPU runtime is missing."""
+    """The fork executable in effect (--ollama-exe, TEMPERUM_OLLAMA_EXE or the stored setting) and what its NPU
+    runtime is missing."""
     from temperum.gguf import SETUP_COMMAND, LlamaPayload
 
-    setting = os.environ.get("TEMPERUM_OLLAMA_EXE")
-    if not setting:
-        return {"exe": None, "state": "not set", "hint": "set TEMPERUM_OLLAMA_EXE to the fork's ollama.exe"}
-    exe = Path(setting)
+    exe, source = settings.ollama_exe(None)
+    if exe is None:
+        return {"exe": None, "source": source, "state": "not set",
+                "hint": "run `temperum setup --ollama-exe C:\\path\\to\\fork\\ollama.exe` once (or set "
+                        "TEMPERUM_OLLAMA_EXE)"}
     if not exe.is_file():
-        return {"exe": setting, "state": "missing", "hint": "TEMPERUM_OLLAMA_EXE does not name a file"}
+        return {"exe": str(exe), "source": source, "state": "missing", "hint": f"{exe} ({source}) does not name a file"}
     payload = LlamaPayload.from_executable(exe)
     missing = payload.problems()
-    status: dict[str, Any] = {"exe": str(exe), "state": "ready" if not missing else "incomplete", "missing": missing,
-                              "llama_cpp": payload.version(), "htp": str(payload.htp) if payload.htp else None}
+    status: dict[str, Any] = {"exe": str(exe), "source": source, "state": "ready" if not missing else "incomplete",
+                              "missing": missing, "llama_cpp": payload.version(),
+                              "htp": str(payload.htp) if payload.htp else None}
     if missing:
         status["hint"] = (f"run `{SETUP_COMMAND}`" if missing == [m for m in missing if "signed HTP" in m]
                           else "use a fork package built with -HexagonSDKRoot")
@@ -513,7 +559,7 @@ def doctor_command(as_json: bool = typer.Option(False, "--json", help="Print JSO
     report: dict[str, Any] = {"host": host.to_dict(), "home": str(paths.home()),
                               "long_paths_enabled": long_paths_enabled(), "hexagon_opt_in": hexagon_opted_in()}
     try:
-        report["target"] = resolve_target(host, os.environ.get("TEMPERUM_TARGET")).id
+        report["target"] = resolve_target(host, settings.resolve("target", None, "auto").value).id
     except TemperumError as exc:
         report["target"] = None
         report["target_error"] = str(exc)
@@ -540,7 +586,8 @@ def doctor_command(as_json: bool = typer.Option(False, "--json", help="Print JSO
     table.add_row("NPU", escape(", ".join(host.npu_devices) or "none found"))
     table.add_row("Target", escape(report["target"] or report.get("target_error", "")) +
                   (" (default; --target qnn-x-elite for a QNN bundle)" if report["target"] == "gguf-hexagon" else ""))
-    table.add_row("Fork", escape(f"{fork['exe'] or 'TEMPERUM_OLLAMA_EXE'}: {fork['state']}"
+    table.add_row("Fork", escape(f"{fork['exe'] or 'not set'}" + (f" ({fork['source']})" if fork["exe"] else "")
+                                 + f": {fork['state']}"
                                  + (f" (llama.cpp {fork['llama_cpp']}, NPU libraries in {fork['htp']})"
                                     if fork["state"] == "ready" else "")
                                  + (f"; missing {', '.join(fork['missing'])}" if fork.get("missing") else "")
@@ -577,10 +624,10 @@ def _verify_gguf_bundle(bundle: Path, manifest: dict[str, Any], snapshot: Path, 
     from temperum.toolchains import Toolchains
     from temperum.toolchains.llama_cpp import ConverterSource
 
-    exe = ollama_exe or (Path(os.environ["TEMPERUM_OLLAMA_EXE"]) if os.environ.get("TEMPERUM_OLLAMA_EXE") else None)
+    exe, _source = settings.ollama_exe(ollama_exe)
     if exe is None:
         raise TemperumError("verify", "NEEDS_RUNTIME", "A GGUF bundle is verified with the fork's llama.cpp build.",
-                            hint="Set TEMPERUM_OLLAMA_EXE to the fork's ollama.exe (or pass --ollama-exe).")
+                            hint="Run `temperum setup --ollama-exe PATH` once, or pass --ollama-exe PATH.")
     payload = gguf.LlamaPayload.from_executable(exe)
     missing = payload.problems()
     if missing:
@@ -713,6 +760,57 @@ def inspect_command(
         raise typer.Exit(code=2)
 
 
+@app.command("config")
+def config_command(
+    key: Optional[str] = typer.Argument(None, help="Setting: ollama-exe | target | host (none: show all)"),
+    value: Optional[str] = typer.Argument(None, help="New value (none: show the one in effect)"),
+    unset: bool = typer.Option(False, "--unset", help="Forget the stored value"),
+) -> None:
+    """Show or change what temperum remembers: the fork's ollama.exe, the default target, the fork's endpoint.
+    A command-line option wins over these, then the environment (TEMPERUM_OLLAMA_EXE, TEMPERUM_TARGET,
+    OLLAMA_HOST), then the stored value."""
+    try:
+        if key is None:
+            stored = settings.load()
+            table = Table("setting", "in effect", "from", "stored", "meaning", box=None)
+            for name in settings.KEYS:
+                current = settings.resolve(name)
+                table.add_row(name, escape(current.value or ""), current.source if current.value else "",
+                              escape(stored.get(name, "")), settings.DESCRIPTIONS[name])
+            out.print(table)
+            err.print(f"[dim]{escape(str(settings.path()))}[/dim]")
+            return
+        settings.check_key(key)
+        if unset:
+            settings.unset(key)
+            err.print(f"{key}: forgotten")
+            return
+        if value is None:
+            current = settings.resolve(key)
+            typer.echo(current.value or "")  # plain, for scripts
+            err.print(f"[dim]{key}: from {current.source}[/dim]")
+            return
+        if key == "ollama-exe":
+            exe = Path(value).expanduser()
+            if not exe.is_file():
+                raise TemperumError("config", "EXE_MISSING", f"{exe} is not a file.",
+                                    hint="Name the fork's ollama.exe.")
+            value = str(exe.resolve())
+        elif key == "host":
+            from temperum.install import fork
+
+            value = fork.endpoint_for(value)
+        elif value != "auto":
+            from temperum.profiles import get_target
+
+            get_target(value)
+        settings.set_value(key, value)
+        err.print(f"{key} = {escape(value)} (stored in {escape(str(settings.path()))})")
+        _warn_if_environment_overrides(key, value)
+    except TemperumError as exc:
+        _handle_err(exc)
+
+
 @app.command("validate")
 def validate_command(
     tag: str = typer.Argument(..., help="An installed Ollama tag"),
@@ -800,7 +898,7 @@ def install_command(
             exe = fork.executable(ollama_exe)
             if exe is None:
                 raise TemperumError("import", "EXE_REQUIRED", "Installing needs the fork executable.",
-                                    hint="Pass --ollama-exe PATH or set TEMPERUM_OLLAMA_EXE.")
+                                    hint="Run `temperum setup --ollama-exe PATH` once, or pass --ollama-exe PATH.")
             endpoint = fork.endpoint_for(host)
             if not execute:
                 typer.echo(json.dumps({"action": "local-create", "format": "gguf", "bundle": str(input), "name": name,
