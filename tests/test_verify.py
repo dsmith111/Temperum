@@ -183,3 +183,17 @@ def test_a_degenerate_answer_names_the_prompt_and_the_source_models_behaviour() 
     assert reasons == ["generation repeated one token for 'Write a Python function that returns the' where the "
                        "source model did not (and 1 more)"]
     assert verdict(_report(prompts=[]), "quick") == ("failed", ["no generation was produced"])
+
+
+def test_a_template_that_refuses_a_test_conversation_is_reported_not_fatal() -> None:
+    # K2-Horizon's template raises on an assistant turn without a thinking field: that conversation is skipped,
+    # the other is still compared, and the verdict says so without failing
+    rendered = [CHATML.render(CONVERSATIONS[0]), None]
+    check = template_check(CHATML, rendered, None)
+    assert check["status"] == "match" and len(check["conversations"]) == 1
+    assert template_check(CHATML, [None, None], None)["status"] == "not-checked"
+    status, reasons = verdict(_report(template={"status": "match", "not_rendered": [
+        "TemplateError: Assistant message is missing a thinking field."]}), "standard")
+    assert status == "passed"
+    assert reasons == ["the model's chat template refused 1 of the converter's test conversations (TemplateError: "
+                       "Assistant message is missing a thinking field.); the others were compared"]

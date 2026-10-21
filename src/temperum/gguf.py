@@ -302,7 +302,7 @@ def _stream(cmd: list[str], env: dict[str, str] | None, log: Path, say: Progress
 def last_error_line(tail: str) -> str | None:
     """The last `SomethingError: ...` line of a Python traceback: the part a person needs first."""
     for line in reversed(tail.splitlines()):
-        if re.match(r"^\s*[A-Za-z_.]*(Error|Exception)\s*:", line):
+        if re.match(r"^\s*[A-Za-z0-9_.]*(Error|Exception)\s*:", line):
             return line.strip()[:300]
     return None
 

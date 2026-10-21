@@ -16,7 +16,7 @@ import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from temperum.core.errors import TemperumError
 from temperum.templates import ChatTemplate
@@ -104,17 +104,19 @@ def run_script(python: Path, script: str, args: list[str], say: Progress, popen:
     return proc.wait(), "\n".join(tail)
 
 
-def template_check(chat: ChatTemplate, rendered: list[str], bos_text: str | None,
+def template_check(chat: ChatTemplate, rendered: Sequence[str | None], bos_text: str | None,
                    generated: list[str] | None = None) -> dict[str, Any]:
     """Compare the generated Ollama template with the model's own (Jinja) rendering.
 
     `generated` replaces the template's own rendering: GenAI's, for a bundle whose template the fork
     renders (family "own").
     """
-    if not rendered:
+    if not any(r is not None for r in rendered):
         return {"status": "not-checked", "detail": "the model has no chat template"}
     results = []
     for index, (conversation, expected) in enumerate(zip(CONVERSATIONS, rendered)):
+        if expected is None:  # the model's template refused this conversation (reported separately)
+            continue
         ours = generated[index] if generated is not None and index < len(generated) else chat.render(conversation)
         if ours is None:
             return {"status": "not-checked", "detail": "custom template"}
@@ -169,6 +171,10 @@ def verdict(report: dict[str, Any], level: str) -> tuple[str, list[str]]:
                 status = "warning"
                 reasons.append(f"missed a fact in a {needle['input_len']}-token prompt")
     template = report.get("template", {})  # checked at any level where a rendering was compared
+    refused = template.get("not_rendered") or []
+    if refused:
+        reasons.append(f"the model's chat template refused {len(refused)} of the converter's test conversations "
+                       f"({refused[0]}); the others were compared")
     if template.get("status") == "mismatch":
         status = "warning"
         reasons.append("GenAI, which the fork renders the chat template with, differs from transformers"

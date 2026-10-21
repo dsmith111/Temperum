@@ -275,12 +275,16 @@ def verify_gguf(bundle: Path, snapshot: Path, plan: GgufPlan, chains: Any, work:
             rendered = (reference or {}).get("rendered", [])
             bos = server.bos_text()
             checks = [(c, _without_bos(r, g, bos), g) for c, r, g in
-                      ((c, r, server.apply_template(c)) for c, r in zip(CONVERSATIONS, rendered))]
+                      ((c, r, server.apply_template(c)) for c, r in zip(CONVERSATIONS, rendered)
+                       if r is not None)]
             report["template"] = {
                 "status": "match" if checks and all(r == g for _, r, g in checks) else
                           ("mismatch" if checks else "unchecked"),
                 "conversations": [{"match": r == g, "expected": r, "generated": g} for _, r, g in checks]}
-            if chat is not None and rendered:  # the Ollama template the bundle would carry (gguf.set_template)
+            refused = (reference or {}).get("rendered_errors") or []
+            if refused:  # transformers would not render some test conversations with the model's template
+                report["template"]["not_rendered"] = refused
+            if chat is not None and any(r is not None for r in rendered):  # the bundle's own Ollama template
                 report["template"]["ollama"] = template_check(chat, rendered, server.bos_text())
     except (OSError, RuntimeError, ValueError, http.client.HTTPException) as exc:
         report["load"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:1500]}

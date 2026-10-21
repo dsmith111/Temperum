@@ -163,10 +163,16 @@ def main() -> None:
                 row.update({"output": answer, "correct": needle["answer"] in answer})
             result["needle"].append(row)
 
+    result["rendered_errors"] = []
     if tok.chat_template:
         for conversation in spec.get("conversations", []):
-            result["rendered"].append(tok.apply_chat_template(conversation, add_generation_prompt=True,
-                                                              tokenize=False))
+            try:
+                result["rendered"].append(tok.apply_chat_template(conversation, add_generation_prompt=True,
+                                                                  tokenize=False))
+            except Exception as exc:  # noqa: BLE001 - a template that refuses a test conversation (K2-Horizon
+                # wants a thinking field on assistant turns) must not lose the answers and perplexity above
+                result["rendered"].append(None)
+                result["rendered_errors"].append(f"{type(exc).__name__}: {exc}"[:300])
     result["seconds"] = round(time.time() - t0, 1)
     Path(args.out).write_text(json.dumps(result), encoding="utf-8")
     print(json.dumps({"ppl": result["perplexity"]["ppl"], "seconds": result["seconds"]}), flush=True)
