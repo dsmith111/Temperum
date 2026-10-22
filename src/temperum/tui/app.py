@@ -614,9 +614,14 @@ class DoneScreen(Screen[None]):
                                                     "tokens per second while verifying")
         recipe = s.get("recipe") or {}
         if recipe.get("label"):
-            self.query_one("#recipe", Static).update(f"[dim]{'Recipe':<18}[/dim] {escape(str(recipe['label']))} "
-                                                     f"after {recipe.get('trials')} trials on the NPU\n"
-                                                     f"[dim]{'':<18}[/dim] {escape(str(recipe.get('why')))}")
+            text = (f"[dim]{'Recipe':<18}[/dim] {escape(str(recipe['label']))} "
+                    f"after {recipe.get('trials')} trials on the NPU\n"
+                    f"[dim]{'':<18}[/dim] {escape(str(recipe.get('why')))}")
+            runtime = recipe.get("runtime") or {}
+            if runtime.get("label"):
+                text += (f"\n[dim]{'Runtime':<18}[/dim] {escape(str(runtime['label']))}: "
+                         f"{escape(str(runtime.get('why')))}")
+            self.query_one("#recipe", Static).update(text)
         install = s.get("install") or {}
         validation = s.get("validation") or {}
         lines = []

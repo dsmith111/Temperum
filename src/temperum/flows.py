@@ -236,6 +236,10 @@ def gguf_summary(result: Any, start: float) -> dict[str, Any]:
         chosen = recipe.get("chosen", {})
         summary["recipe"] = {"label": chosen.get("label"), "name": chosen.get("name"), "why": chosen.get("why"),
                              "trials": len(recipe.get("trials", []))}
+        runtime = recipe.get("runtime") or {}
+        if runtime.get("chosen"):
+            summary["recipe"]["runtime"] = {"label": runtime["chosen"].get("label"), "why": runtime.get("why"),
+                                            "params": runtime["chosen"].get("params") or {}}
     return summary
 
 
@@ -268,6 +272,9 @@ def ready_lines(summary: dict[str, Any]) -> list[str]:
     if recipe:
         lines.append(f"  recipe: {escape(str(recipe.get('label')))} after {recipe.get('trials')} trials on the NPU: "
                      f"{escape(str(recipe.get('why')))}")
+        runtime = recipe.get("runtime")
+        if runtime:
+            lines.append(f"  runtime: {escape(str(runtime.get('label')))}: {escape(str(runtime.get('why')))}")
     return lines
 
 

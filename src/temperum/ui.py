@@ -234,6 +234,9 @@ def ready_panel(summary: dict[str, Any]) -> Panel:
     if recipe.get("label"):
         grid.add_row("Recipe", escape(f"{recipe['label']} after {recipe.get('trials')} trials on the NPU: "
                                        f"{recipe.get('why')}"))
+        runtime = recipe.get("runtime") or {}
+        if runtime.get("label"):
+            grid.add_row("Runtime", escape(f"{runtime['label']}: {runtime.get('why')}"))
     if summary.get("minutes") is not None:
         grid.add_row("Took", escape(f"{summary['minutes']} min"))
     title = {"passed": "Model ready", "warning": "Model ready, with warnings"}.get(verdict, "Conversion failed")

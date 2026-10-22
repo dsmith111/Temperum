@@ -6,6 +6,7 @@ import json
 import math
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -288,11 +289,22 @@ def test_the_search_shows_up_in_the_stage_bar_and_the_result_views() -> None:
     assert ui.stage_of("Q4_0, attn_v at Q8_0: perplexity on the NPU") is None  # within the stage
     summary = {"bundle": "b", "verdict": "passed", "reasons": [], "minutes": 48.0,
                "recipe": {"label": "Q4_0, attn_v and ffn_up at Q8_0", "name": "x", "trials": 10,
-                          "why": "perplexity ratio 1.073 against 1.15 for plain Q4_0"}}
-    assert any("recipe: Q4_0, attn_v and ffn_up at Q8_0 after 10 trials" in line for line in flows.ready_lines(summary))
+                          "why": "perplexity ratio 1.073 against 1.15 for plain Q4_0",
+                          "runtime": {"label": "1 thread", "why": "decode 116.7 against 38.1 tok/s",
+                                      "params": {"num_thread": 1}}}}
+    ready = flows.ready_lines(summary)
+    assert any("recipe: Q4_0, attn_v and ffn_up at Q8_0 after 10 trials" in line for line in ready)
+    assert any(line.strip().startswith("runtime: 1 thread: decode 116.7") for line in ready)
+    # the summary carries the runtime choice from the recipe document
+    doc = {"chosen": {"label": "Q8_0", "name": "q8_0", "why": "w"}, "trials": [1, 2, 3],
+           "runtime": {"chosen": {"label": "1 thread", "params": {"num_thread": 1}}, "why": "faster"}}
+    result = SimpleNamespace(bundle="b", job_dir="j", verification={"verdict": "passed"}, recipe=doc)
+    built = flows.gguf_summary(result, start=0.0)
+    assert built["recipe"]["runtime"] == {"label": "1 thread", "why": "faster", "params": {"num_thread": 1}}
     from rich.console import Console
 
     console = Console(record=True, width=120, file=open(os.devnull, "w", encoding="utf-8"))
     console.print(ui.ready_panel(summary))
     text = console.export_text()
     assert "Recipe" in text and "after 10 trials on the NPU" in text
+    assert "Runtime" in text and "1 thread: decode 116.7" in text
