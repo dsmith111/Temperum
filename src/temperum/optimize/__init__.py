@@ -1,7 +1,8 @@
 """Temperum as an optimizer for models on the NPU (CONVERTER_PLAN.md, D22).
 
-A search over a configuration space, every candidate measured on this machine's NPU, chosen by an
-objective, written into the bundle with its evidence. The first space is the per-tensor quantization mix.
+A search over the ways a conversion can treat a model for this machine's NPU (first which tensor classes get
+which type; later other conversion-time choices), every candidate measured here, chosen by an objective and
+written into the bundle with its evidence. Algorithmic rather than a grid, with no tuning library behind it.
 """
 from __future__ import annotations
 
