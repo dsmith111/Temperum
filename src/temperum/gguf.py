@@ -372,7 +372,8 @@ def derived_template(snapshot: Path) -> ChatTemplate | None:
         return None
 
 
-def modelfile(context: int, chat: ChatTemplate | None = None) -> str:
+def modelfile(context: int, chat: ChatTemplate | None = None, params: dict[str, Any] | None = None) -> str:
+    """`params`: further `PARAMETER` lines the optimizer measured for this model (`num_thread`, say)."""
     # The GGUF carries the model's own chat template (tokenizer.chat_template), which the fork can
     # render through llama-server. Without a TEMPLATE, though, `ollama create` swaps in a built-in Go
     # template when one is close to the model's (SmolLM2 lost its default system prompt that way), and
@@ -380,6 +381,7 @@ def modelfile(context: int, chat: ChatTemplate | None = None) -> str:
     # (verify) prevents that; the fork still prefers the GGUF's template when it supports more, such
     # as tool calls.
     lines = ["FROM ./model.gguf", f"PARAMETER num_ctx {context}"]
+    lines += [f"PARAMETER {key} {value}" for key, value in (params or {}).items()]
     if chat is not None:
         lines.append(f'TEMPLATE """{chat.template}"""')
         lines += [f'PARAMETER stop "{stop}"' for stop in chat.stops]
@@ -387,11 +389,13 @@ def modelfile(context: int, chat: ChatTemplate | None = None) -> str:
 
 
 def set_template(bundle: Path, chat: ChatTemplate, context: int) -> None:
-    """Write a checked Ollama template into an assembled bundle's Modelfile and manifest."""
+    """Write a checked Ollama template into an assembled bundle's Modelfile and manifest, keeping the
+    runtime parameters the optimizer put there."""
     path = bundle / "Modelfile"
-    path.write_text(modelfile(context, chat), encoding="utf-8", newline="\n")
     manifest_path = bundle / MANIFEST
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    params = manifest.get("modelfile_params") or {}
+    path.write_text(modelfile(context, chat, params), encoding="utf-8", newline="\n")
     manifest["files"]["Modelfile"] = {"size": path.stat().st_size, "sha256": _sha256(path)}
     manifest["ollama_template"] = {"family": chat.family, "variant": chat.variant or None,
                                    "checked_against": ("nothing: the model has no chat template, so the prompt "
@@ -401,9 +405,11 @@ def set_template(bundle: Path, chat: ChatTemplate, context: int) -> None:
 
 
 def assemble(gguf: Path, snapshot: Path, plan: GgufPlan, provenance: dict[str, Any],
-             extra_files: dict[str, str] | None = None, precision: str | None = None) -> Path:
+             extra_files: dict[str, str] | None = None, precision: str | None = None,
+             params: dict[str, Any] | None = None) -> Path:
     """`extra_files`: name -> text written beside the model (the optimizer's recipe); `precision`: the
-    manifest's precision label when it is not plain `plan.quant` (a mix)."""
+    manifest's precision label when it is not plain `plan.quant` (a mix); `params`: runtime Modelfile
+    parameters the optimizer measured (`num_thread`), kept in the manifest so later rewrites keep them."""
     final = plan.destination
     staging = final.with_name(final.name + ".partial")
     if staging.exists():
@@ -413,7 +419,7 @@ def assemble(gguf: Path, snapshot: Path, plan: GgufPlan, provenance: dict[str, A
         os.link(gguf, staging / "model.gguf")
     except OSError:
         shutil.copy2(gguf, staging / "model.gguf")
-    (staging / "Modelfile").write_text(modelfile(plan.context), encoding="utf-8", newline="\n")
+    (staging / "Modelfile").write_text(modelfile(plan.context, params=params), encoding="utf-8", newline="\n")
     licences = []
     for item in sorted(snapshot.iterdir()):
         if item.is_file() and item.name.lower().startswith(LICENSE_PREFIXES):
@@ -433,6 +439,7 @@ def assemble(gguf: Path, snapshot: Path, plan: GgufPlan, provenance: dict[str, A
         "runtime": {"id": plan.runtime.id, "llama_cpp": plan.runtime.llama_cpp_commit,
                     "htp_libraries": plan.runtime.htp_libraries},
         "precision": precision or plan.quant,
+        "modelfile_params": dict(params or {}),  # runtime settings the optimizer measured (num_thread)
         "context_length": plan.context,
         "licence_files": licences,
         "provenance": provenance,
@@ -487,6 +494,7 @@ def run(gguf_plan: GgufPlan, progress: Progress | None = None,
         quantized = job.dir / f"model-{gguf_plan.quant}.gguf"
         recipe_doc: dict[str, Any] | None = None
         precision = gguf_plan.quant
+        params: dict[str, Any] = {}  # runtime Modelfile parameters the optimizer measured
         if gguf_plan.recipe is not None:
             from temperum import calib, optimize
 
@@ -495,14 +503,19 @@ def run(gguf_plan: GgufPlan, progress: Progress | None = None,
             objective = optimize.Objective(size_budget_mib=NPU_WINDOW_GB * 1024)  # must sit whole on the NPU
             found = optimize.search(gguf_plan.payload, converted, job.dir / "optimize", heldout, say=say,
                                     objective=objective, context=gguf_plan.context)
+            quantized, precision = found.chosen.path, found.chosen.candidate.label
+            runtime = optimize.runtime_search(gguf_plan.payload, quantized, job.dir / "optimize", heldout, say=say,
+                                              context=gguf_plan.context)
+            params = runtime.params
             recipe_doc = optimize.document(found, found.reference_ppl,
                                            objective, chunks=optimize.PPL_CHUNKS,
                                            host=gguf_plan.host.to_dict(), llama_cpp=gguf_plan.runtime.llama_cpp_commit,
-                                           source={"repo": gguf_plan.model.ref.repo, "commit": gguf_plan.model.commit})
-            quantized, precision = found.chosen.path, found.chosen.candidate.label
-            for line in optimize.lines(found, objective):
+                                           source={"repo": gguf_plan.model.ref.repo, "commit": gguf_plan.model.commit},
+                                           runtime=runtime)
+            for line in optimize.lines(found, objective, runtime):
                 say(line)
-            job.record("optimize", "done", chosen=found.chosen.candidate.name, trials=len(found.trials))
+            job.record("optimize", "done", chosen=found.chosen.candidate.name, trials=len(found.trials),
+                       runtime=params)
         elif gguf_plan.quant != "Q8_0" and not (job.done("quantize") and quantized.is_file()):
             say(f"quantizing to {gguf_plan.quant} with the runtime's llama-quantize")
             quantize(gguf_plan.payload, converted, quantized, gguf_plan.quant, log, say)
@@ -518,7 +531,7 @@ def run(gguf_plan: GgufPlan, progress: Progress | None = None,
                                                            "quantize": str(gguf_plan.payload.quantize),
                                                            "repairs": repairs,
                                                            "recipe": (recipe_doc or {}).get("chosen", {}).get("name")},
-                          extra_files=extra, precision=precision)
+                          extra_files=extra, precision=precision, params=params)
         job.record("assemble", "done", bundle=str(bundle))
         report: dict[str, Any] = {"level": "none", "verdict": "not-verified",
                                   "reasons": ["verification skipped"]}

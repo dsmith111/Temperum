@@ -14,9 +14,10 @@ from __future__ import annotations
 import itertools
 import math
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
-from temperum.optimize.evaluate import Evaluator, Trial
+from temperum.optimize.evaluate import Evaluator, RuntimeTrial, Trial
 from temperum.optimize.objective import Objective
 from temperum.optimize.space import CLASSES, Candidate
 
@@ -129,6 +130,70 @@ def structured(evaluator: Evaluator, objective: Objective, say: Progress, *,
             predicted["neighbour"] = list(neighbour)
     chosen = objective.choose(trials, base_trial)
     return SearchResult(base_trial, trials, chosen, "structured", evaluator.reference(), surrogate, predicted)
+
+
+@dataclass
+class RuntimeResult:
+    """The runtime space's answer for one built model: the thread trials and the setting to bake in."""
+
+    model: Path
+    trials: list[RuntimeTrial]
+    chosen: RuntimeTrial
+    why: str
+
+    @property
+    def params(self) -> dict[str, int]:
+        """Modelfile parameters that carry the choice (empty when llama-server's default won)."""
+        return {} if self.chosen.threads is None else {"num_thread": self.chosen.threads}
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"model": str(self.model), "trials": [t.to_dict() for t in self.trials],
+                "chosen": {**self.chosen.to_dict(), "params": self.params}, "why": self.why}
+
+
+THREAD_CHOICES: tuple[int | None, ...] = (None, 1, 2)
+
+
+def threads_search(evaluator: Evaluator, model: Path, say: Progress, *,
+                   choices: tuple[int | None, ...] = THREAD_CHOICES, decode_noise: float = 0.05) -> RuntimeResult:
+    """How many CPU threads llama-server should run beside the NPU for this model. Quality is unaffected, so the
+    fastest decode wins; ties within noise go to fewer busy cores, then fewer threads. A model whose per-token
+    CPU split is more than the embedding lookup pays the threadpool's synchronisation on every thread: GPT-2
+    decoded three times faster on one thread and freed two cores; models with only the lookup did not care."""
+    say(f"runtime: llama-server's CPU threads beside the NPU, {len(choices)} settings")
+    trials = [evaluator.measure_runtime(model, t) for t in choices]
+    default = next((t for t in trials if t.threads is None and t.error is None), None)
+    usable = [t for t in trials if t.error is None and t.decode is not None]
+    if not usable:
+        raise RuntimeError("no thread setting could be measured")
+    best = usable[0]
+    for t in usable[1:]:
+        if _runtime_better(t, best, decode_noise):
+            best = t
+    if default is not None and best is not default and best.decode and default.decode:
+        gain = (best.decode - default.decode) / default.decode
+        why = (f"{best.label}: decode {best.decode} against {default.decode} tok/s with the default ({gain:+.0%}), "
+               f"{best.cores} against {default.cores} busy cores")
+    elif default is not None and best is default:
+        why = "default threads: no setting decoded faster beyond noise or freed cores"
+    else:
+        why = f"{best.label}: the default could not be measured"
+    return RuntimeResult(model, trials, best, why)
+
+
+def _runtime_better(a: RuntimeTrial, b: RuntimeTrial, decode_noise: float) -> bool:
+    assert a.decode is not None and b.decode is not None
+    if a.decode > b.decode * (1.0 + decode_noise):
+        return True
+    if a.decode < b.decode * (1.0 - decode_noise):
+        return False
+    if a.cores is not None and b.cores is not None and abs(a.cores - b.cores) > 0.1:
+        return a.cores < b.cores
+    # a full tie: the default stays (no setting is baked in on a measurement that showed nothing); between
+    # two explicit counts the smaller one
+    if b.threads is None:
+        return False
+    return a.threads is None or a.threads < b.threads
 
 
 def listed(evaluator: Evaluator, objective: Objective, say: Progress, candidates: list[Candidate],

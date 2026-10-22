@@ -613,6 +613,8 @@ def optimize_command(
                                                                "cost (fraction)"),
     ollama_exe: Optional[Path] = typer.Option(None, "--ollama-exe", help="Fork executable whose llama.cpp build "
                                                                          "quantizes and measures"),
+    runtime: bool = typer.Option(True, "--runtime/--no-runtime", help="After the mix: measure llama-server's CPU "
+                                                                     "threads beside the NPU for the chosen file"),
     as_json: bool = typer.Option(False, "--json", help="Print the recipe document on stdout"),
 ) -> None:
     """Search per-tensor quantization mixes of a Q8_0 GGUF on this machine's NPU; keep the best by the rule."""
@@ -642,15 +644,17 @@ def optimize_command(
                 err.print(escape(message))
 
         found = optimize.search(payload, source, work, heldout, say=say, objective=objective)
+        rt = optimize.runtime_search(payload, found.chosen.path, work, heldout, say=say) if runtime else None
         doc = optimize.document(found, found.reference_ppl, objective, chunks=optimize.PPL_CHUNKS,
                                 host=detect_host().to_dict(), llama_cpp=payload.version(),
-                                source={"path": str(source)})
+                                source={"path": str(source)}, runtime=rt)
         recipe_path = work / gguf.RECIPE
         recipe_path.write_text(json.dumps(doc, indent=2, default=str), encoding="utf-8")
+        (work / gguf.RECIPE_MD).write_text(optimize.markdown(doc), encoding="utf-8")
         if as_json:
             typer.echo(json.dumps(doc, indent=2, default=str))
         else:
-            for line in optimize.lines(found, objective):
+            for line in optimize.lines(found, objective, rt):
                 err.print(escape(line))
             err.print(f"recipe: {escape(str(recipe_path))}; chosen file: {escape(str(found.chosen.path))}")
     except TemperumError as exc:

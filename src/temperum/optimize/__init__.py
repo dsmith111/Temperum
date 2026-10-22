@@ -9,14 +9,14 @@ from pathlib import Path
 from typing import Any, Callable
 
 from temperum.gguf import LlamaPayload
-from temperum.optimize.evaluate import Evaluator, Trial
+from temperum.optimize.evaluate import Evaluator, RuntimeTrial, Trial
 from temperum.optimize.objective import Objective
 from temperum.optimize.report import lines, markdown, recipe_document, why
 from temperum.optimize.space import CLASSES, Candidate
-from temperum.optimize.strategies import SearchResult, listed, structured
+from temperum.optimize.strategies import RuntimeResult, SearchResult, listed, structured, threads_search
 
-__all__ = ["CLASSES", "Candidate", "Evaluator", "Objective", "SearchResult", "Trial", "lines",
-           "markdown", "recipe_document", "search", "why"]
+__all__ = ["CLASSES", "Candidate", "Evaluator", "Objective", "RuntimeResult", "RuntimeTrial", "SearchResult",
+           "Trial", "lines", "markdown", "recipe_document", "runtime_search", "search", "threads_search", "why"]
 
 RECIPES = ("auto",)
 PPL_CHUNKS = 16  # the verifier's standard level times four: 8 gave 1.14x where 16 gave 1.09x
@@ -40,12 +40,25 @@ def search(payload: LlamaPayload, source: Path, work: Path, heldout: Path, *, sa
     raise ValueError(f"unknown strategy {strategy}")
 
 
+def runtime_search(payload: LlamaPayload, model: Path, work: Path, heldout: Path, *, say: Callable[[str], None],
+                   context: int = SERVER_CONTEXT) -> RuntimeResult:
+    """The runtime space for a built GGUF: the CPU threads llama-server runs beside the NPU. About half a
+    minute a trial, no quantizing; the winner goes into the bundle's Modelfile as `num_thread`."""
+    evaluator = Evaluator(payload, model, work, heldout, context=min(context, SERVER_CONTEXT), chunks=PPL_CHUNKS,
+                          say=say)
+    return threads_search(evaluator, model, say)
+
+
+RUNTIME_MINUTES = 2.0  # three thread settings through llama-server
+
+
 def estimate_minutes(params_billions: float) -> float:
-    """What a structured search adds to a conversion's estimate."""
-    return round(TRIALS * max(1.0, TRIAL_MINUTES_PER_BILLION * params_billions), 0)
+    """What a structured search plus the runtime pass adds to a conversion's estimate."""
+    return round(TRIALS * max(1.0, TRIAL_MINUTES_PER_BILLION * params_billions) + RUNTIME_MINUTES, 0)
 
 
 def document(result: SearchResult, evaluator_reference: float, objective: Objective, *, chunks: int,
-             host: dict[str, Any], llama_cpp: str | None, source: dict[str, Any]) -> dict[str, Any]:
+             host: dict[str, Any], llama_cpp: str | None, source: dict[str, Any],
+             runtime: RuntimeResult | None = None) -> dict[str, Any]:
     return recipe_document(result, objective, reference_ppl=evaluator_reference, chunks=chunks, host=host,
-                           llama_cpp=llama_cpp, source=source)
+                           llama_cpp=llama_cpp, source=source, runtime=runtime)

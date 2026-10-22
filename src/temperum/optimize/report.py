@@ -7,15 +7,17 @@ from typing import Any
 from temperum.optimize.evaluate import DECODE_REQUESTS, DECODE_TOKENS, PPL_CONTEXT, Trial
 from temperum.optimize.objective import Objective
 from temperum.optimize.space import Candidate
-from temperum.optimize.strategies import SearchResult
+from temperum.optimize.strategies import RuntimeResult, SearchResult
 
 SCHEMA = 1
 
 
 def recipe_document(result: SearchResult, objective: Objective, *, reference_ppl: float, chunks: int,
-                    host: dict[str, Any], llama_cpp: str | None, source: dict[str, Any]) -> dict[str, Any]:
+                    host: dict[str, Any], llama_cpp: str | None, source: dict[str, Any],
+                    runtime: RuntimeResult | None = None) -> dict[str, Any]:
     chosen = result.chosen
     return {
+        "runtime": runtime.to_dict() if runtime is not None else None,
         "schema_version": SCHEMA,
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "strategy": result.strategy,
@@ -57,11 +59,16 @@ def trial_rows(trials: list[Trial]) -> list[tuple[str, str, str, str, str, str]]
     return rows
 
 
-def lines(result: SearchResult, objective: Objective) -> list[str]:
+def lines(result: SearchResult, objective: Objective, runtime: RuntimeResult | None = None) -> list[str]:
     """Plain lines for a log or the ready panel."""
     out = [f"recipe: {result.chosen.candidate.label} ({why(result, objective)})"]
     for label, size, ratio, decode, prefill, layers in trial_rows(result.trials):
         out.append(f"  {label}: {size} MiB, ratio {ratio}, decode {decode} tok/s, prefill {prefill}, layers {layers}")
+    if runtime is not None:
+        out.append(f"runtime: {runtime.chosen.label} ({runtime.why})")
+        for t in runtime.trials:
+            out.append(f"  {t.label}: decode {_f(t.decode, 1)} tok/s, prefill {_f(t.prefill, 0)}, cores {_f(t.cores, 2)}"
+                       + (f", failed: {t.error}" if t.error else ""))
     return out
 
 
@@ -85,6 +92,18 @@ def markdown(doc: dict[str, Any]) -> str:
         out.append(f"| {cand.label}{mark} | {d.get('size_mib', 0):.0f} | {_f(d.get('ratio'), 3)} | "
                    f"{_f(d.get('decode_tps'), 1)} | {_f(d.get('prefill_tps'), 0)} | "
                    f"{d.get('layers') or ('failed: ' + str(d.get('error'))[:60] if d.get('error') else '')} |")
+    runtime = doc.get("runtime") or {}
+    if runtime.get("trials"):
+        chosen_rt = runtime.get("chosen") or {}
+        out += ["", f"## Runtime: {chosen_rt.get('label')}", "", str(runtime.get("why")), ""]
+        params = chosen_rt.get("params") or {}
+        if params:
+            out += ["Modelfile: " + "; ".join(f"`PARAMETER {k} {v}`" for k, v in params.items()), ""]
+        out += ["| CPU threads beside the NPU | Decode tok/s | Prefill tok/s | Busy cores |", "|---|---:|---:|---:|"]
+        for t in runtime["trials"]:
+            mark = " **(chosen)**" if t.get("threads") == chosen_rt.get("threads") else ""
+            out.append(f"| {t.get('label')}{mark} | {_f(t.get('decode_tps'), 1)} | {_f(t.get('prefill_tps'), 0)} | "
+                       f"{_f(t.get('cores'), 2)} |")
     m = doc.get("measurement") or {}
     out += ["", f"Perplexity: {m.get('perplexity')}.", "", f"Speed: {m.get('speed')}.", "",
             f"Strategy: {doc.get('strategy')}; objective: {(doc.get('objective') or {}).get('rule')}.", "",

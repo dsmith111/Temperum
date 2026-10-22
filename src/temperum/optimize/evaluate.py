@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import statistics
+import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,17 +44,18 @@ class Trial:
     whole: bool
     seconds: float
     error: str | None = None
+    cores: float | None = None  # the server's busy CPU cores while it answered
 
     def to_dict(self) -> dict[str, Any]:
         return {**self.candidate.to_dict(), "path": str(self.path), "size_mib": self.size_mib, "ppl": self.ppl,
                 "ratio": self.ratio, "decode_tps": self.decode, "prefill_tps": self.prefill, "layers": self.layers,
-                "whole": self.whole, "seconds": self.seconds, "error": self.error}
+                "whole": self.whole, "seconds": self.seconds, "error": self.error, "cores": self.cores}
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Trial:
         cand = Candidate(d["base"], tuple(sorted(d["overrides"].items())) if d["overrides"] else ())
         return cls(cand, Path(d["path"]), d["size_mib"], d["ppl"], d["ratio"], d["decode_tps"], d["prefill_tps"],
-                   d["layers"], d["whole"], d["seconds"], d.get("error"))
+                   d["layers"], d["whole"], d["seconds"], d.get("error"), d.get("cores"))
 
 
 class ForkServer(LlamaServer):
@@ -61,6 +64,47 @@ class ForkServer(LlamaServer):
 
     def command(self) -> list[str]:
         return super().command() + ["--flash-attn", "on", "--poll", "0"]
+
+
+@dataclass(frozen=True)
+class RuntimeTrial:
+    """One runtime setting measured on a built model: the CPU thread count llama-server runs beside the NPU.
+    `threads` None is llama-server's default (every physical core). Quality does not change with threads, so
+    only speed and the server's busy cores are measured."""
+
+    threads: int | None
+    decode: float | None
+    prefill: float | None
+    cores: float | None
+    seconds: float
+    error: str | None = None
+
+    @property
+    def label(self) -> str:
+        if self.threads is None:
+            return "default threads"
+        return f"{self.threads} thread" + ("" if self.threads == 1 else "s")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"threads": self.threads, "label": self.label, "decode_tps": self.decode, "prefill_tps": self.prefill,
+                "cores": self.cores, "seconds": self.seconds, "error": self.error}
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> RuntimeTrial:
+        return cls(d["threads"], d["decode_tps"], d["prefill_tps"], d.get("cores"), d["seconds"], d.get("error"))
+
+
+def cpu_seconds(pid: int) -> float | None:
+    """Processor time a process has used, from the OS (Windows: PowerShell; elsewhere None)."""
+    if sys.platform != "win32":
+        return None
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-Command",
+                              f"(Get-Process -Id {pid}).TotalProcessorTime.TotalSeconds"],
+                             capture_output=True, text=True, timeout=60).stdout.strip()
+        return float(out)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
 
 
 class Evaluator:
@@ -75,6 +119,7 @@ class Evaluator:
         self.prompt = self.text.read_text(encoding="utf-8")[:PROMPT_CHARS]
         self._log = self.work / "trials.jsonl"
         self._trials: dict[str, Trial] = {}
+        self._runtime: dict[str, RuntimeTrial] = {}
         self.reference_ppl: float | None = None
         if self._log.is_file():
             for line in self._log.read_text(encoding="utf-8").splitlines():
@@ -84,6 +129,11 @@ class Evaluator:
                 else:
                     t = Trial.from_dict(d)
                     self._trials[t.candidate.name] = t
+        runtime_log = self.work / "runtime.jsonl"
+        if runtime_log.is_file():
+            for line in runtime_log.read_text(encoding="utf-8").splitlines():
+                d = json.loads(line)
+                self._runtime[d["key"]] = RuntimeTrial.from_dict(d)
 
     @property
     def trials(self) -> list[Trial]:
@@ -118,7 +168,7 @@ class Evaluator:
             self.say(f"{candidate.label}: decode and prefill through llama-server")
             speed = self._speed(path, self.work / f"{candidate.name}.server.log")
             trial = Trial(candidate, path, size, ppl, ratio, speed["decode"], speed["prefill"], speed["layers"],
-                          speed["whole"], round(time.monotonic() - started, 1))
+                          speed["whole"], round(time.monotonic() - started, 1), cores=speed["cores"])
         except Exception as exc:  # noqa: BLE001 - one failed candidate must not end the search
             trial = Trial(candidate, self.work / f"model-{candidate.name}.gguf", 0.0, None, None, None, None, None,
                           False, round(time.monotonic() - started, 1), f"{type(exc).__name__}: {exc}"[:400])
@@ -138,10 +188,39 @@ class Evaluator:
                       self.say, overrides=candidate.quantize_args())
         return out
 
-    def _speed(self, model: Path, log: Path) -> dict[str, Any]:
+    def measure_runtime(self, model: Path, threads: int | None) -> RuntimeTrial:
+        """Speed and busy cores of a built model with llama-server on `threads` CPU threads (None: its default)."""
+        key = f"{model.name}:{threads}"
+        cached = self._runtime.get(key)
+        if cached is not None and cached.error is None:
+            return cached
+        started = time.monotonic()
+        label = "default threads" if threads is None else f"{threads} thread" + ("" if threads == 1 else "s")
+        try:
+            self.say(f"{model.name}, {label}: decode, prefill and busy cores through llama-server")
+            args = [] if threads is None else ["-t", str(threads)]
+            speed = self._speed(model, self.work / f"runtime-{model.stem}-t{threads or 'default'}.server.log", args)
+            trial = RuntimeTrial(threads, speed["decode"], speed["prefill"], speed["cores"],
+                                 round(time.monotonic() - started, 1))
+        except Exception as exc:  # noqa: BLE001
+            trial = RuntimeTrial(threads, None, None, None, round(time.monotonic() - started, 1),
+                                 f"{type(exc).__name__}: {exc}"[:400])
+            self.say(f"{label}: failed ({trial.error})")
+        self._runtime[key] = trial
+        with (self.work / "runtime.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"key": key, **trial.to_dict()}) + "\n")
+        return trial
+
+    def _speed(self, model: Path, log: Path, extra_args: list[str] | None = None) -> dict[str, Any]:
         decode: list[float] = []
         prefill: list[float] = []
-        with ForkServer(self.payload, model, self.context, log) as server:
+        cores: float | None = None
+        server = ForkServer(self.payload, model, self.context, log)
+        server.extra_args = list(extra_args or [])
+        with server:
+            server.complete(f"Warm. {self.prompt[:400]}", 16)  # the first request pays one-time costs
+            pid = server.process.pid if server.process is not None else None
+            cpu0, wall0 = (cpu_seconds(pid) if pid else None), time.monotonic()
             for lead in LEADS[:DECODE_REQUESTS]:
                 res = server.complete(f"{lead} {self.prompt}", DECODE_TOKENS)
                 timings = res.get("timings") or {}
@@ -149,12 +228,16 @@ class Evaluator:
                     decode.append(float(timings["predicted_per_second"]))
                 if timings.get("prompt_per_second"):
                     prefill.append(float(timings["prompt_per_second"]))
+            if pid and cpu0 is not None:
+                cpu1 = cpu_seconds(pid)
+                if cpu1 is not None:
+                    cores = round(max(0.0, cpu1 - cpu0) / max(1e-3, time.monotonic() - wall0), 2)
             placed = placement(server.text())
         layers = (f"{placed['layers_offloaded']}/{placed['layers_total']}" if placed.get("layers_total") else None)
         whole = bool(placed.get("layers_total")) and placed["layers_offloaded"] == placed["layers_total"]
         return {"decode": round(statistics.median(decode), 1) if decode else None,
                 "prefill": round(statistics.median(prefill), 1) if prefill else None,
-                "layers": layers, "whole": whole}
+                "cores": cores, "layers": layers, "whole": whole}
 
     def _append(self, record: dict[str, Any]) -> None:
         with self._log.open("a", encoding="utf-8") as fh:

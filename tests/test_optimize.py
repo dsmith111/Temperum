@@ -215,6 +215,71 @@ def test_the_markdown_recipe_lists_the_trials_and_how_to_reproduce_the_choice(tm
     assert page.count("\n| Q4_0") == 10 and page.count("\n| Q8_0") == 1 and "**(chosen)**" in page
 
 
+class ThreadsFake(FakeEvaluator):
+    """A model whose per-token CPU split makes it pay for every thread (GPT-2's shape): one thread is 3x
+    faster and frees the cores; `flat=True` models one that does not care."""
+
+    def __init__(self, work: Path, flat: bool = False) -> None:
+        super().__init__(work)
+        self.flat = flat
+        self.runtime_measured: list[int | None] = []
+
+    def measure_runtime(self, model: Path, threads: int | None):  # type: ignore[no-untyped-def]
+        from temperum.optimize.evaluate import RuntimeTrial
+
+        self.runtime_measured.append(threads)
+        if self.flat:
+            return RuntimeTrial(threads, 64.4 + (0.3 if threads == 2 else 0.0), 2250.0, 0.08, 1.0)
+        table = {None: (38.9, 2.03), 1: (115.8, 0.10), 2: (95.9, 0.22)}
+        decode, cores = table[threads]
+        return RuntimeTrial(threads, decode, 4100.0, cores, 1.0)
+
+
+def test_threads_search_keeps_one_thread_when_it_is_faster_and_the_default_when_nothing_is(tmp_path: Path) -> None:
+    ev = ThreadsFake(tmp_path)
+    said: list[str] = []
+    result = strategies.threads_search(ev, tmp_path / "model.gguf", said.append)  # type: ignore[arg-type]
+    assert ev.runtime_measured == [None, 1, 2]
+    assert result.chosen.threads == 1 and result.params == {"num_thread": 1}
+    assert result.why.startswith("1 thread: decode 115.8 against 38.9 tok/s with the default (+198%), 0.1 against 2.03")
+    flat = strategies.threads_search(ThreadsFake(tmp_path, flat=True), tmp_path / "m.gguf", lambda _m: None)  # type: ignore[arg-type]
+    assert flat.chosen.threads is None and flat.params == {}
+    assert flat.why == "default threads: no setting decoded faster beyond noise or freed cores"
+    doc = result.to_dict()
+    assert doc["chosen"]["params"] == {"num_thread": 1} and len(doc["trials"]) == 3
+
+
+def test_the_runtime_choice_lands_in_the_modelfile_and_survives_the_template_rewrite(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    text = gguf.modelfile(4096, params={"num_thread": 1})
+    assert text == "FROM ./model.gguf\nPARAMETER num_ctx 4096\nPARAMETER num_thread 1\n"
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "Modelfile").write_text(text, encoding="utf-8")
+    (bundle / gguf.MANIFEST).write_text(json.dumps({"files": {}, "modelfile_params": {"num_thread": 1}}),
+                                        encoding="utf-8")
+    chat = SimpleNamespace(template="{{ .Prompt }}", stops=["<|end|>"], family="raw", variant=None)
+    gguf.set_template(bundle, chat, 4096)  # type: ignore[arg-type]
+    rewritten = (bundle / "Modelfile").read_text(encoding="utf-8")
+    assert "PARAMETER num_thread 1\n" in rewritten and 'PARAMETER stop "<|end|>"' in rewritten
+
+
+def test_the_recipe_document_and_page_carry_the_runtime_section(tmp_path: Path) -> None:
+    ev = ThreadsFake(tmp_path)
+    result = strategies.structured(ev, Objective(), lambda _m: None)  # type: ignore[arg-type]
+    rt = strategies.threads_search(ev, result.chosen.path, lambda _m: None)  # type: ignore[arg-type]
+    doc = optimize.document(result, REFERENCE, Objective(), chunks=16, host={}, llama_cpp="e467e5b", source={},
+                            runtime=rt)
+    assert doc["runtime"]["chosen"]["params"] == {"num_thread": 1}
+    page = optimize.markdown(doc)
+    assert "## Runtime: 1 thread" in page and "`PARAMETER num_thread 1`" in page
+    assert page.count("| 1 thread **(chosen)** |") == 1 and "| default threads |" in page
+    lines = optimize.lines(result, Objective(), rt)
+    assert any(line.startswith("runtime: 1 thread (1 thread: decode 115.8") for line in lines)
+    assert sum(1 for line in lines if line.startswith("  ") and "cores" in line) == 3
+
+
 def test_the_search_shows_up_in_the_stage_bar_and_the_result_views() -> None:
     from temperum import flows, ui
 
