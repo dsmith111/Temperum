@@ -4,7 +4,7 @@ A candidate is a base type for everything plus overrides for named tensor classe
 llama-quantize flags that build it (`--tensor-type attn_v=q8_0`), so a recipe is reproducible with the
 quantizer alone. The head (token embedding, or the output tensor when untied) is left to the quantizer's
 own rule on purpose: for Q4_0 it already keeps a tied head at Q6_K, and measured upgrades of it changed
-nothing (CONVERTER_PLAN.md, experiment 1).
+nothing (measured 2026-10-22).
 """
 from __future__ import annotations
 

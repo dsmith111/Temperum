@@ -47,7 +47,7 @@ DEFAULT_QUANT = "Q4_0"
 DEFAULT_CONTEXT = 4096
 CONTEXT_KEYS = ("max_position_embeddings", "n_positions", "n_ctx", "seq_length", "max_sequence_length")
 MANIFEST = "temperum_manifest.json"
-RECIPE = "temperum_recipe.json"  # the optimizer's trials and choice, when --recipe searched
+RECIPE = "temperum_recipe.json"  # the recipe search's trials and choice, when --recipe searched
 RECIPE_MD = "temperum_recipe.md"  # the same, as a table for people
 LICENSE_PREFIXES = ("license", "notice", "use_policy", "readme")
 HTP_LIBRARIES = ("libggml-htp-v73.so", "libggml-htp-v75.so", "libggml-htp-v79.so", "libggml-htp-v81.so",
@@ -373,7 +373,7 @@ def derived_template(snapshot: Path) -> ChatTemplate | None:
 
 
 def modelfile(context: int, chat: ChatTemplate | None = None, params: dict[str, Any] | None = None) -> str:
-    """`params`: further `PARAMETER` lines the optimizer measured for this model (`num_thread`, say)."""
+    """`params`: further `PARAMETER` lines the recipe search measured for this model (`num_thread`, say)."""
     # The GGUF carries the model's own chat template (tokenizer.chat_template), which the fork can
     # render through llama-server. Without a TEMPLATE, though, `ollama create` swaps in a built-in Go
     # template when one is close to the model's (SmolLM2 lost its default system prompt that way), and
@@ -390,7 +390,7 @@ def modelfile(context: int, chat: ChatTemplate | None = None, params: dict[str, 
 
 def set_template(bundle: Path, chat: ChatTemplate, context: int) -> None:
     """Write a checked Ollama template into an assembled bundle's Modelfile and manifest, keeping the
-    runtime parameters the optimizer put there."""
+    runtime parameters the recipe search put there."""
     path = bundle / "Modelfile"
     manifest_path = bundle / MANIFEST
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -407,9 +407,9 @@ def set_template(bundle: Path, chat: ChatTemplate, context: int) -> None:
 def assemble(gguf: Path, snapshot: Path, plan: GgufPlan, provenance: dict[str, Any],
              extra_files: dict[str, str] | None = None, precision: str | None = None,
              params: dict[str, Any] | None = None) -> Path:
-    """`extra_files`: name -> text written beside the model (the optimizer's recipe); `precision`: the
+    """`extra_files`: name -> text written beside the model (the recipe document); `precision`: the
     manifest's precision label when it is not plain `plan.quant` (a mix); `params`: runtime Modelfile
-    parameters the optimizer measured (`num_thread`), kept in the manifest so later rewrites keep them."""
+    parameters the recipe search measured (`num_thread`), kept in the manifest so later rewrites keep them."""
     final = plan.destination
     staging = final.with_name(final.name + ".partial")
     if staging.exists():
@@ -439,7 +439,7 @@ def assemble(gguf: Path, snapshot: Path, plan: GgufPlan, provenance: dict[str, A
         "runtime": {"id": plan.runtime.id, "llama_cpp": plan.runtime.llama_cpp_commit,
                     "htp_libraries": plan.runtime.htp_libraries},
         "precision": precision or plan.quant,
-        "modelfile_params": dict(params or {}),  # runtime settings the optimizer measured (num_thread)
+        "modelfile_params": dict(params or {}),  # runtime settings the recipe search measured (num_thread)
         "context_length": plan.context,
         "licence_files": licences,
         "provenance": provenance,
@@ -457,7 +457,7 @@ class GgufResult:
     bundle: Path
     job_dir: Path
     verification: dict[str, Any]
-    recipe: dict[str, Any] | None = None  # the optimizer's document, when --recipe searched the mixes
+    recipe: dict[str, Any] | None = None  # the recipe search's document, when --recipe searched the mixes
 
 
 def run(gguf_plan: GgufPlan, progress: Progress | None = None,
@@ -494,7 +494,7 @@ def run(gguf_plan: GgufPlan, progress: Progress | None = None,
         quantized = job.dir / f"model-{gguf_plan.quant}.gguf"
         recipe_doc: dict[str, Any] | None = None
         precision = gguf_plan.quant
-        params: dict[str, Any] = {}  # runtime Modelfile parameters the optimizer measured
+        params: dict[str, Any] = {}  # runtime Modelfile parameters the recipe search measured
         if gguf_plan.recipe is not None:
             from temperum import calib, optimize
 

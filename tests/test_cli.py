@@ -62,7 +62,7 @@ def test_auto_target_takes_the_gguf_route_and_qnn_is_asked_for(monkeypatch: pyte
     monkeypatch.setattr("temperum.cli.main._convert_gguf",
                         lambda model, target, **kwargs: routes.append((target, kwargs["machine"])))
     monkeypatch.setattr("temperum.convert.plan", qnn_plan)
-    for switch in ("1", "0"):  # the server switch no longer picks the target (D14)
+    for switch in ("1", "0"):  # the server switch no longer picks the target
         monkeypatch.setenv("OLLAMA_HEXAGON", switch)
         assert runner.invoke(app, ["convert", "org/model", "--plan"]).exit_code == 0
     assert runner.invoke(app, ["convert", "org/model", "--plan", "--target", "qnn-x-elite"]).exit_code == 2

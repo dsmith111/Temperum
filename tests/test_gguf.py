@@ -54,7 +54,7 @@ def _version(stdout: str) -> Any:
 
 
 def test_auto_target_is_a_gguf_for_the_npu(monkeypatch: pytest.MonkeyPatch) -> None:
-    # D14: GGUF is the default whatever the fork's server switch says (the install checks that switch).
+    # GGUF is the default whatever the fork's server switch says (the install checks that switch).
     for switch in ("0", "1"):
         monkeypatch.setenv("OLLAMA_HEXAGON", switch)
         assert resolve_target(X_ELITE).id == "gguf-hexagon"

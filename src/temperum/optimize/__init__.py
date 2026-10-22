@@ -1,8 +1,10 @@
-"""Temperum as an optimizer for models on the NPU (CONVERTER_PLAN.md, D22).
+"""The recipe search: the quantization mix, and the CPU threads beside the NPU, that run best here.
 
-A search over the ways a conversion can treat a model for this machine's NPU (first which tensor classes get
-which type; later other conversion-time choices), every candidate measured here, chosen by an objective and
-written into the bundle with its evidence. Algorithmic rather than a grid, with no tuning library behind it.
+A fixed recipe does not hold across models (Qwen2.5-1.5B gains from Q8_0 attention, Llama-3.2-3B does
+not), so the conversion measures candidates on this machine's NPU, chooses by an objective and writes the
+choice into the bundle with its evidence. It is one of the things Temperum does so a model runs well on
+the NPU. How it searches is an implementation detail: a screen and an additive surrogate today, never a
+grid of everything, no tuning library.
 """
 from __future__ import annotations
 

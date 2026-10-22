@@ -86,7 +86,7 @@ TARGETS: dict[str, TargetProfile] = {
         format="gguf",
     ),
 }
-# `--target auto` picks the first target of this format matching the processor (D14): a GGUF for
+# `--target auto` picks the first target of this format matching the processor: a GGUF for
 # the Hexagon NPU, which converts in minutes, covers ~300 architectures and runs faster than a
 # QNN bundle. QNN bundles stay available with --target qnn-x-elite.
 DEFAULT_FORMAT = "gguf"

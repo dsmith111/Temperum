@@ -5,7 +5,7 @@ at Q8_0 (one trial per class), fit an additive surrogate (log-perplexity deltas 
 bytes moved off the base, linearly), enumerate every composition on the surrogate under the objective's
 decode cap, measure the predicted best, and let the objective choose among what was measured. On
 Qwen2.5-1.5B the surrogate placed three independently measured compositions within 0.2% of their
-measured perplexity and decode within the measurement's own noise (CONVERTER_PLAN.md, D22).
+measured perplexity and decode within the measurement's own noise.
 
 `listed` measures an explicit list of candidates: a grid for small spaces, or a user's own shortlist.
 """

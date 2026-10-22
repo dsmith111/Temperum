@@ -1,4 +1,4 @@
-"""The optimizer (D22): the space, the objective, the additive surrogate and the structured search, with a
+"""The recipe search: the space, the objective, the additive surrogate and the structured search, with a
 synthetic model standing in for the NPU; the pipeline's hook through the planner."""
 from __future__ import annotations
 

@@ -16,7 +16,7 @@ def _host(name: str | None) -> HostInfo:
 
 
 def test_x_elite_processor_resolves_to_v73_target() -> None:
-    assert resolve_target(_host(X1E)).id == "gguf-hexagon"  # the default (D14)
+    assert resolve_target(_host(X1E)).id == "gguf-hexagon"  # the default
     target = resolve_target(_host(X1E), fmt="qnn")
     assert target.id == "qnn-x-elite"
     assert (target.soc_model, target.htp_arch) == ("60", "v73")
