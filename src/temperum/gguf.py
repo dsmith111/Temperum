@@ -25,7 +25,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from temperum import __version__, paths
 from temperum.core.errors import TemperumError
@@ -46,6 +46,7 @@ DEFAULT_QUANT = "Q4_0"
 DEFAULT_CONTEXT = 4096
 CONTEXT_KEYS = ("max_position_embeddings", "n_positions", "n_ctx", "seq_length", "max_sequence_length")
 MANIFEST = "temperum_manifest.json"
+RECIPE = "temperum_recipe.json"  # the optimizer's trials and choice, when --recipe searched
 LICENSE_PREFIXES = ("license", "notice", "use_policy", "readme")
 HTP_LIBRARIES = ("libggml-htp-v73.so", "libggml-htp-v75.so", "libggml-htp-v79.so", "libggml-htp-v81.so",
                  "libggml-htp.cat")
@@ -193,6 +194,7 @@ class GgufPlan:
     warnings: list[str] = field(default_factory=list)
     python: Path | None = None  # base interpreter for the quantize toolchain
     overwrite: bool = False
+    recipe: str | None = None  # "auto": search quantization mixes on the NPU (temperum.optimize)
 
     @property
     def job_dir(self) -> Path:
@@ -202,7 +204,8 @@ class GgufPlan:
         return {"model": self.model.to_dict(), "target": self.target.id, "runtime": self.runtime.id,
                 "llama_cpp": self.runtime.llama_cpp_commit, "payload": str(self.payload.root),
                 "htp": str(self.payload.htp) if self.payload.htp else None,
-                "quant": self.quant, "context": self.context, "destination": str(self.destination),
+                "quant": self.quant, "recipe": self.recipe, "context": self.context,
+                "destination": str(self.destination),
                 "job": str(self.job_dir), "verify": self.verify_level, "estimates": self.estimates,
                 "warnings": self.warnings, "host": self.host.to_dict()}
 
@@ -210,11 +213,20 @@ class GgufPlan:
 def plan(model: ResolvedModel, host: HostInfo, target: TargetProfile, *, ollama_exe: Path | None,
          quant: str = DEFAULT_QUANT, context: int | None = None, out: Path | None = None, verify: str = "standard",
          overwrite: bool = False, python: Path | None = None, runtime_id: str = DEFAULT_LLAMA_RUNTIME,
-         run: Runner = subprocess.run, chains_factory: Callable[..., Toolchains] = Toolchains) -> GgufPlan:
+         run: Runner = subprocess.run, chains_factory: Callable[..., Toolchains] = Toolchains,
+         recipe: str | None = None) -> GgufPlan:
+    from temperum import optimize
+
     if target.format != "gguf":
         raise TemperumError("plan", "WRONG_TARGET_FORMAT", f"{target.id} is not a GGUF target")
     if quant not in QUANT_TYPES:
         raise TemperumError("plan", "UNKNOWN_QUANT", f"Unknown GGUF type {quant}", hint=f"Use {', '.join(QUANT_TYPES)}.")
+    if recipe is not None and recipe not in optimize.RECIPES:
+        raise TemperumError("plan", "UNKNOWN_RECIPE", f"Unknown recipe {recipe}",
+                            hint=f"Use {', '.join(optimize.RECIPES)}: a search of quantization mixes on the NPU.")
+    if recipe is not None and quant != "Q4_0":
+        raise TemperumError("plan", "RECIPE_BASE", "--recipe searches mixes over a Q4_0 base.",
+                            hint="Leave --quant at its default with --recipe.")
     runtime = LLAMA_RUNTIMES[runtime_id]
     if ollama_exe is None:
         raise TemperumError("plan", "NEEDS_RUNTIME",
@@ -269,8 +281,10 @@ def plan(model: ResolvedModel, host: HostInfo, target: TargetProfile, *, ollama_
                         "configuration)")
     warnings += _resource_checks(est, host)
     identity = job_id(model, target, runtime, quant, context)
+    if recipe is not None:
+        est["minutes"] = est["minutes"] + optimize.estimate_minutes(float(est["params_billions"]))
     return GgufPlan(model, host, target, runtime, payload, quant, ctx, destination, identity, est,
-                    verify if on_target else "none", warnings, python, overwrite)
+                    verify if on_target else "none", warnings, python, overwrite, recipe)
 
 
 def _sha256(path: Path) -> str:
@@ -330,11 +344,13 @@ def convert(python: Path, source: ConverterSource, snapshot: Path, out: Path, lo
 
 
 def quantize(payload: LlamaPayload, src: Path, out: Path, quant: str, log: Path, say: Progress,
-             popen: Callable[..., Any] = subprocess.Popen) -> Path:
+             popen: Callable[..., Any] = subprocess.Popen, overrides: Sequence[str] = ()) -> Path:
+    """`overrides`: llama-quantize's per-tensor flags (`--tensor-type attn_v=q8_0`), as a recipe lists them."""
     partial = out.with_name(out.name + ".partial")
     partial.unlink(missing_ok=True)
     env = {**os.environ, "PATH": f"{payload.root}{os.pathsep}{os.environ.get('PATH', '')}"}
-    code, tail = _stream([str(payload.quantize), "--allow-requantize", str(src), str(partial), quant], env, log, say,
+    code, tail = _stream([str(payload.quantize), "--allow-requantize", *overrides, str(src), str(partial), quant],
+                         env, log, say,
                          lambda line: line.startswith(("llama_model_quantize_impl: model size",
                                                        "llama_model_quantize_impl: quant size")), popen)
     if code != 0 or not partial.is_file():
@@ -382,7 +398,10 @@ def set_template(bundle: Path, chat: ChatTemplate, context: int) -> None:
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
 
-def assemble(gguf: Path, snapshot: Path, plan: GgufPlan, provenance: dict[str, Any]) -> Path:
+def assemble(gguf: Path, snapshot: Path, plan: GgufPlan, provenance: dict[str, Any],
+             extra_files: dict[str, str] | None = None, precision: str | None = None) -> Path:
+    """`extra_files`: name -> text written beside the model (the optimizer's recipe); `precision`: the
+    manifest's precision label when it is not plain `plan.quant` (a mix)."""
     final = plan.destination
     staging = final.with_name(final.name + ".partial")
     if staging.exists():
@@ -398,6 +417,8 @@ def assemble(gguf: Path, snapshot: Path, plan: GgufPlan, provenance: dict[str, A
         if item.is_file() and item.name.lower().startswith(LICENSE_PREFIXES):
             shutil.copy2(item, staging / item.name)
             licences.append(item.name)
+    for name, text in (extra_files or {}).items():
+        (staging / name).write_text(text, encoding="utf-8")
     files = {p.name: {"size": p.stat().st_size, "sha256": _sha256(p)} for p in sorted(staging.iterdir())}
     manifest = {
         "schema_version": 1,
@@ -409,7 +430,7 @@ def assemble(gguf: Path, snapshot: Path, plan: GgufPlan, provenance: dict[str, A
         "target": {"id": plan.target.id, "htp_arch": plan.target.htp_arch},
         "runtime": {"id": plan.runtime.id, "llama_cpp": plan.runtime.llama_cpp_commit,
                     "htp_libraries": plan.runtime.htp_libraries},
-        "precision": plan.quant,
+        "precision": precision or plan.quant,
         "context_length": plan.context,
         "licence_files": licences,
         "provenance": provenance,
@@ -427,6 +448,7 @@ class GgufResult:
     bundle: Path
     job_dir: Path
     verification: dict[str, Any]
+    recipe: dict[str, Any] | None = None  # the optimizer's document, when --recipe searched the mixes
 
 
 def run(gguf_plan: GgufPlan, progress: Progress | None = None,
@@ -461,16 +483,38 @@ def run(gguf_plan: GgufPlan, progress: Progress | None = None,
             convert(chains.python_exe("quantize"), source, snapshot, converted, log, say)
             job.record("convert", "done", sha256=_sha256(converted))
         quantized = job.dir / f"model-{gguf_plan.quant}.gguf"
-        if gguf_plan.quant != "Q8_0" and not (job.done("quantize") and quantized.is_file()):
+        recipe_doc: dict[str, Any] | None = None
+        precision = gguf_plan.quant
+        if gguf_plan.recipe is not None:
+            from temperum import calib, optimize
+
+            say("searching quantization mixes on the NPU (each one built, scored and timed)")
+            heldout = calib.ensure_corpus(calib.HELDOUT, paths.data_dir()).path
+            found = optimize.search(gguf_plan.payload, converted, job.dir / "optimize", heldout, say=say,
+                                    context=gguf_plan.context)
+            recipe_doc = optimize.document(found, found.reference_ppl,
+                                           optimize.Objective(), chunks=optimize.PPL_CHUNKS,
+                                           host=gguf_plan.host.to_dict(), llama_cpp=gguf_plan.runtime.llama_cpp_commit,
+                                           source={"repo": gguf_plan.model.ref.repo, "commit": gguf_plan.model.commit})
+            quantized, precision = found.chosen.path, found.chosen.candidate.label
+            for line in optimize.lines(found, optimize.Objective()):
+                say(line)
+            job.record("optimize", "done", chosen=found.chosen.candidate.name, trials=len(found.trials))
+        elif gguf_plan.quant != "Q8_0" and not (job.done("quantize") and quantized.is_file()):
             say(f"quantizing to {gguf_plan.quant} with the runtime's llama-quantize")
             quantize(gguf_plan.payload, converted, quantized, gguf_plan.quant, log, say)
             job.record("quantize", "done", sha256=_sha256(quantized))
 
         say("assembling the bundle")
+        extra: dict[str, str] = {}
+        if recipe_doc is not None:
+            extra[RECIPE] = json.dumps(recipe_doc, indent=2, default=str)
         bundle = assemble(quantized, snapshot, gguf_plan, {"converter_source": source.commit,
                                                            "converter_patches": sorted(source.patches),
                                                            "quantize": str(gguf_plan.payload.quantize),
-                                                           "repairs": repairs})
+                                                           "repairs": repairs,
+                                                           "recipe": (recipe_doc or {}).get("chosen", {}).get("name")},
+                          extra_files=extra, precision=precision)
         job.record("assemble", "done", bundle=str(bundle))
         report: dict[str, Any] = {"level": "none", "verdict": "not-verified",
                                   "reasons": ["verification skipped"]}
@@ -492,6 +536,6 @@ def run(gguf_plan: GgufPlan, progress: Progress | None = None,
             converted.unlink(missing_ok=True)  # only needed to requantize and as the reference
         job.data["result"] = {"bundle": str(bundle), "verdict": report["verdict"]}
         job.save()
-        return GgufResult(bundle, job.dir, report)
+        return GgufResult(bundle, job.dir, report, recipe_doc)
     finally:
         job.release()

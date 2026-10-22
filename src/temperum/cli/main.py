@@ -131,6 +131,8 @@ def convert_command(
     host: Optional[str] = typer.Option(None, "--host", help="Fork endpoint http://127.0.0.1:PORT for --install "
                                                                 "(or OLLAMA_HOST)"),
     quant: str = typer.Option("Q4_0", "--quant", help="GGUF type for --target gguf-hexagon: Q4_0 | Q8_0 | Q4_K_M"),
+    recipe: Optional[str] = typer.Option(None, "--recipe", help="auto: search per-tensor quantization mixes on "
+                                                                "the NPU and keep the best by the rule (GGUF)"),
 ) -> None:
     """Convert a model for this machine's NPU (resolve, convert, quantize, verify, optionally install)."""
     from temperum import convert
@@ -159,7 +161,7 @@ def convert_command(
             _convert_gguf(model, target, quant=quant, context=context, out_dir=out_dir, verify_level=verify_level,
                           overwrite=overwrite, python=python, plan_only=plan_only, yes=yes, as_json=as_json,
                           install=install, name=name, ollama_exe=ollama_exe, host=host, start=start, machine=machine,
-                          validate=validate, push=push, push_as=push_as)
+                          validate=validate, push=push, push_as=push_as, recipe=recipe)
             return
         options = convert.ConvertOptions(model=model, target=target, quality=quality, device=device,
                                          context=context, out=out_dir, verify=verify_level, overwrite=overwrite,
@@ -232,11 +234,12 @@ def _convert_gguf(model: str, target_id: str, *, quant: str, context: Optional[i
                   verify_level: str, overwrite: bool, python: Optional[Path], plan_only: bool, yes: bool,
                   as_json: bool, install: bool, name: Optional[str], ollama_exe: Optional[Path],
                   host: Optional[str], start: float, machine: Optional[HostInfo] = None,
-                  validate: bool = False, push: bool = False, push_as: Optional[str] = None) -> None:
+                  validate: bool = False, push: bool = False, push_as: Optional[str] = None,
+                  recipe: Optional[str] = None) -> None:
     """The GGUF target: llama.cpp's converter, the fork's llama-quantize, verified on the NPU."""
     plan, exe = flows.plan_gguf(model, target_id=target_id, quant=quant, context=context, out_dir=out_dir,
                                 verify_level=verify_level, overwrite=overwrite, python=python, machine=machine,
-                                ollama_exe=ollama_exe)
+                                ollama_exe=ollama_exe, recipe=recipe)
     if as_json:
         typer.echo(json.dumps({"event": "plan", "plan": plan.to_dict()}, default=str), err=True)
     else:
@@ -596,6 +599,60 @@ def verify_command(
             err.print(str(report["verdict"]) + (f": {reasons}" if reasons else ""))
         if report["verdict"] == "failed":
             raise typer.Exit(code=3)
+    except TemperumError as exc:
+        _handle_err(exc)
+
+
+@app.command("optimize")
+def optimize_command(
+    source: Path = typer.Argument(..., help="A Q8_0 GGUF: a bundle's model.gguf converted with --quant Q8_0, or a "
+                                            "conversion job's model-Q8_0.gguf"),
+    out_dir: Optional[Path] = typer.Option(None, "--out", help="Work folder for the trials (default: optimize/ beside "
+                                                               "the source)"),
+    decode_cap: float = typer.Option(0.10, "--decode-cap", help="Largest decode loss against plain Q4_0 a mix may "
+                                                               "cost (fraction)"),
+    ollama_exe: Optional[Path] = typer.Option(None, "--ollama-exe", help="Fork executable whose llama.cpp build "
+                                                                         "quantizes and measures"),
+    as_json: bool = typer.Option(False, "--json", help="Print the recipe document on stdout"),
+) -> None:
+    """Search per-tensor quantization mixes of a Q8_0 GGUF on this machine's NPU; keep the best by the rule."""
+    from temperum import calib, gguf, optimize, paths
+    from temperum.host import detect_host
+
+    try:
+        exe, _source = settings.ollama_exe(ollama_exe)
+        if exe is None:
+            raise TemperumError("optimize", "NEEDS_RUNTIME",
+                                "The search quantizes and measures with the Ollama fork's own llama.cpp build.",
+                                hint="Run `temperum setup --ollama-exe PATH` once, or pass --ollama-exe PATH.")
+        if not source.is_file():
+            raise TemperumError("optimize", "SOURCE_MISSING", f"{source} is not a file.",
+                                hint="Point at a Q8_0 GGUF (convert with --quant Q8_0 --verify none first).")
+        payload = gguf.LlamaPayload.from_executable(exe)
+        missing = payload.problems()
+        if missing:
+            raise TemperumError("optimize", "RUNTIME_INCOMPLETE",
+                                f"{payload.root} lacks the llama.cpp Hexagon runtime: {', '.join(missing)}")
+        work = out_dir or source.parent / "optimize"
+        heldout = calib.ensure_corpus(calib.HELDOUT, paths.data_dir()).path
+        objective = optimize.Objective(decode_cap=decode_cap)
+
+        def say(message: str) -> None:
+            if not as_json:
+                err.print(escape(message))
+
+        found = optimize.search(payload, source, work, heldout, say=say, objective=objective)
+        doc = optimize.document(found, found.reference_ppl, objective, chunks=optimize.PPL_CHUNKS,
+                                host=detect_host().to_dict(), llama_cpp=payload.version(),
+                                source={"path": str(source)})
+        recipe_path = work / gguf.RECIPE
+        recipe_path.write_text(json.dumps(doc, indent=2, default=str), encoding="utf-8")
+        if as_json:
+            typer.echo(json.dumps(doc, indent=2, default=str))
+        else:
+            for line in optimize.lines(found, objective):
+                err.print(escape(line))
+            err.print(f"recipe: {escape(str(recipe_path))}; chosen file: {escape(str(found.chosen.path))}")
     except TemperumError as exc:
         _handle_err(exc)
 

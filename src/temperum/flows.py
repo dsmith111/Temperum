@@ -159,7 +159,7 @@ class PlainSession:
 # -- the GGUF conversion ------------------------------------------------------------------------------
 def plan_gguf(model: str, *, target_id: str, quant: str, context: Optional[int], out_dir: Optional[Path],
               verify_level: str, overwrite: bool, python: Optional[Path], machine: Any = None,
-              ollama_exe: Optional[Path] = None) -> tuple[Any, Optional[Path]]:
+              ollama_exe: Optional[Path] = None, recipe: Optional[str] = None) -> tuple[Any, Optional[Path]]:
     """Resolve the model and plan its GGUF conversion; also returns the fork executable in effect."""
     from temperum import gguf
     from temperum.host import detect_host
@@ -169,7 +169,7 @@ def plan_gguf(model: str, *, target_id: str, quant: str, context: Optional[int],
     exe, _source = settings.ollama_exe(ollama_exe)
     plan = gguf.plan(resolve(parse_ref(model)), machine or detect_host(), get_target(target_id), ollama_exe=exe,
                      quant=quant, context=context, out=out_dir, verify=verify_level, overwrite=overwrite,
-                     python=python)
+                     python=python, recipe=recipe)
     return plan, exe
 
 
@@ -183,7 +183,8 @@ def gguf_plan_table(plan: Any) -> Table:
     table.add_row("Target", escape(f"{plan.target.id}: {plan.target.description}"))
     table.add_row("Runtime", escape(f"{plan.runtime.description} ({plan.payload.root})"))
     table.add_row("NPU libraries", escape(str(plan.payload.htp)))
-    table.add_row("Format", escape(f"GGUF {plan.quant}, context {plan.context}"))
+    table.add_row("Format", escape(f"GGUF {plan.quant}, context {plan.context}"
+                                   + (", recipe searched on the NPU" if plan.recipe else "")))
     table.add_row("Chat", escape(templates.describe(plan.model.chat_template)))
     table.add_row("Verification", escape(plan.verify_level))
     table.add_row("Output", escape(str(plan.destination)))
@@ -221,6 +222,11 @@ def gguf_summary(result: Any, start: float) -> dict[str, Any]:
     if ppl:
         summary["perplexity_ratio"] = ppl.get("ratio")
     summary["base_model"] = report.get("template", {}).get("modelfile") == "raw"
+    recipe = getattr(result, "recipe", None)
+    if recipe:
+        chosen = recipe.get("chosen", {})
+        summary["recipe"] = {"label": chosen.get("label"), "name": chosen.get("name"), "why": chosen.get("why"),
+                             "trials": len(recipe.get("trials", []))}
     return summary
 
 
@@ -245,6 +251,10 @@ def ready_lines(summary: dict[str, Any]) -> list[str]:
     if summary.get("base_model"):
         lines.append("  a base model with no chat template: installed as a completion model, the prompt is sent as "
                      "it is")
+    recipe = summary.get("recipe")
+    if recipe:
+        lines.append(f"  recipe: {escape(str(recipe.get('label')))} after {recipe.get('trials')} trials on the NPU: "
+                     f"{escape(str(recipe.get('why')))}")
     return lines
 
 
