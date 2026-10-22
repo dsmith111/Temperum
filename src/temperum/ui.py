@@ -214,8 +214,13 @@ def ready_panel(summary: dict[str, Any]) -> Panel:
                  + (": " + escape("; ".join(reasons)) if reasons else ""))
     placed = summary.get("npu_placement") or {}
     if placed.get("layers_total"):
+        ops = ""
+        if placed.get("ops"):
+            from temperum import schedlog
+
+            ops = "; " + schedlog.describe(placed["ops"])
         grid.add_row("NPU", escape(f"{placed.get('layers_offloaded')}/{placed.get('layers_total')} layers, "
-                                   f"{placed.get('htp_weight_mib')} MiB of weights on HTP"))
+                                   f"{placed.get('htp_weight_mib')} MiB of weights on HTP{ops}"))
     if summary.get("perplexity_ratio") is not None:
         grid.add_row("Quality", escape(f"perplexity {summary['perplexity_ratio']}x the reference"))
     speed = summary.get("speed") or {}

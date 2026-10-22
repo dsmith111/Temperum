@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from temperum import calib, paths
+from temperum import calib, paths, schedlog
 from temperum.gguf import GgufPlan, LlamaPayload, _exe, last_error_line
 from temperum.templates import ChatTemplate
 from temperum.verify import (CONVERSATIONS, NEEDLE, PPL_PASS, PROMPTS, SETTINGS, reference_dtype, run_script,
@@ -65,9 +65,23 @@ def placement_line(placed: dict[str, Any]) -> str:
     """One progress line on where the server put the model: for the person watching, and for the
     interface's NPU row."""
     if placed.get("status") == "weights-on-npu":
-        return (f"on the NPU: {placed['layers_offloaded']}/{placed['layers_total']} layers, "
+        line = (f"on the NPU: {placed['layers_offloaded']}/{placed['layers_total']} layers, "
                 f"{placed['htp_weight_mib']} MiB of weights")
+        return line + (f"; {schedlog.describe(placed['ops'])}" if placed.get("ops") else "")
     return "on the NPU: no layers (the server put no weights on an HTP device)"
+
+
+def op_placement(payload: LlamaPayload, model: Path, work: Path, say: Progress) -> dict[str, Any] | None:
+    """What runs where: one short completion with ggml's scheduler printing its assignments, read back as the
+    steady-state graph's summary (nodes per backend, splits, the operations that fell back to the CPU)."""
+    say("reading which operations the NPU runs (one short completion with the scheduler's log)")
+    server = LlamaServer(payload, model, 512, work / "ops.log")
+    server.extra_env = {"GGML_SCHED_DEBUG": "2"}
+    server.extra_args = ["--log-verbosity", "5"]
+    with server:
+        server.complete("The capital of France is", 2)
+        graph = schedlog.decode_graph(schedlog.parse(server.text()))
+    return schedlog.summarise(graph) if graph is not None and graph.nodes else None
 
 
 def _free_port() -> int:
@@ -83,16 +97,18 @@ class LlamaServer:
         self.payload, self.model, self.context, self.log_path, self.device = payload, model, context, log, device
         self.port = _free_port()
         self.process: subprocess.Popen[bytes] | None = None
+        self.extra_env: dict[str, str] = {}   # on top of the fork's runtime environment
+        self.extra_args: list[str] = []       # after the standard command
 
     def command(self) -> list[str]:
         return [str(self.payload.server), "--model", str(self.model), "--host", "127.0.0.1", "--port", str(self.port),
                 "-c", str(self.context), "-np", "1", "-ngl", "999", "--device", self.device, "--no-webui",
-                "--offline", "--log-verbosity", "4"]
+                "--offline", "--log-verbosity", "4", *self.extra_args]
 
     def __enter__(self) -> LlamaServer:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         log = self.log_path.open("wb")
-        self.process = subprocess.Popen(self.command(), env=runtime_env(self.payload), stdout=log,
+        self.process = subprocess.Popen(self.command(), env={**runtime_env(self.payload), **self.extra_env}, stdout=log,
                                         stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
         log.close()
         deadline = time.monotonic() + LOAD_TIMEOUT
@@ -302,6 +318,15 @@ def verify_gguf(bundle: Path, snapshot: Path, plan: GgufPlan, chains: Any, work:
     except (OSError, RuntimeError, ValueError, http.client.HTTPException) as exc:
         report["load"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:1500]}
         report.setdefault("npu_placement", {"status": "not-established"})
+    if report["load"].get("ok") and report["npu_placement"].get("status") == "weights-on-npu":
+        try:
+            ops = op_placement(plan.payload, bundle / "model.gguf", work, say)
+        except (OSError, RuntimeError, ValueError, http.client.HTTPException) as exc:
+            ops = None
+            report["npu_placement"]["ops_error"] = f"{type(exc).__name__}: {exc}"[:400]
+        if ops:
+            report["npu_placement"]["ops"] = ops
+            say("ops: " + schedlog.describe(ops))
     report["prompts"] = rows
     report["speed"] = {"median_prompt_tokens_per_s": _median(prompt_rates),
                        "median_tokens_per_s": _median(decode_rates)}

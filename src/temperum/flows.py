@@ -249,6 +249,10 @@ def ready_lines(summary: dict[str, Any]) -> list[str]:
     if placed.get("layers_total"):
         lines.append(f"  NPU: {placed.get('layers_offloaded')}/{placed.get('layers_total')} layers, "
                      f"{placed.get('htp_weight_mib')} MiB of weights on HTP")
+        if placed.get("ops"):
+            from temperum import schedlog
+
+            lines.append(f"  ops: {escape(schedlog.describe(placed['ops']))}")
     if "perplexity_ratio" in summary:
         lines.append(f"  perplexity vs the Q8_0 conversion on the CPU: {summary['perplexity_ratio']}x")
     speed = summary.get("speed") or {}

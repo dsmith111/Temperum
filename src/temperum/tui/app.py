@@ -591,9 +591,14 @@ class DoneScreen(Screen[None]):
         total_layers = placed.get("layers_total")
         if total_layers:
             on_npu = int(placed.get("layers_offloaded") or 0)
+            ops = ""
+            if placed.get("ops"):
+                from temperum import schedlog
+
+                ops = "; " + schedlog.describe(placed["ops"])
             self.query_one("#g-npu", Gauge).set(on_npu / int(total_layers),
                                                 f"{on_npu} of {total_layers} layers, {placed.get('htp_weight_mib')} MiB "
-                                                "of weights", "green" if on_npu == int(total_layers) else "yellow")
+                                                f"of weights{ops}", "green" if on_npu == int(total_layers) else "yellow")
         else:
             self.query_one("#g-npu", Gauge).display = False
         ratio = s.get("perplexity_ratio")

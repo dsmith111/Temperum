@@ -279,7 +279,9 @@ def test_quick_verification_generates_with_the_bundles_own_chat_format(tmp_path:
     assert "--tokenizer-only" in scripts[0] and "--heldout" not in scripts[0]
     # ...and without it the prompts go through the GGUF's own chat template.
     assert report["verdict"] == "passed", report["reasons"]
-    assert len(sent) == 3 and all(p.startswith("<user>") for p in sent)
+    chat, probe = sent[:-1], sent[-1]  # the op-placement probe is one plain prompt after the chat prompts
+    assert len(chat) == 3 and all(p.startswith("<user>") for p in chat) and probe == "The capital of France is"
+    assert "ops" not in report["npu_placement"]  # the fake's log has no scheduler lines
     assert "greedy_exact" not in report["quality"] and report["speed"]["median_tokens_per_s"] == 30.0
 
 
