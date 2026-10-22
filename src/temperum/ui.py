@@ -9,7 +9,7 @@ import math
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Sequence
 
 from rich.console import Console
 from rich.markup import escape
@@ -36,6 +36,18 @@ _SCALE = 1000
 _MESSAGE_WIDTH = 64
 
 BytesProbe = Callable[[], Optional[tuple[int, int]]]
+
+
+def shares_with_search(estimate_minutes: float, search_minutes: float) -> list[float]:
+    """STAGES' shares for a run whose converting stage also holds a recipe search of `search_minutes`: the
+    other stages keep their proportions of what is left, so the bar moves at the pace of the work."""
+    total = max(1.0, float(estimate_minutes))
+    search = min(max(0.0, float(search_minutes)), total)
+    rest = (total - search) / total
+    shares = [share * rest for _n, _p, share in STAGES]
+    converting = next(i for i, (name, _p, _s) in enumerate(STAGES) if name == "converting")
+    shares[converting] += search / total
+    return shares
 
 
 def stage_of(message: str) -> int | None:
@@ -76,9 +88,12 @@ class StageTracker:
     Front ends (the Rich bar below, the TUI's bar) render it."""
 
     def __init__(self, estimate_minutes: float, bytes_probe: BytesProbe | None = None,
-                 clock: Callable[[], float] = time.monotonic) -> None:
+                 clock: Callable[[], float] = time.monotonic, shares: Sequence[float] | None = None) -> None:
+        """`shares`: this run's share of the estimate per stage, when it differs from STAGES (a recipe search
+        makes the converting stage most of the run); see `shares_with_search`."""
         self.estimate_s = max(60.0, float(estimate_minutes) * 60)
         self.bytes_probe = bytes_probe
+        self.shares = list(shares) if shares is not None else [share for _n, _p, share in STAGES]
         self.clock = clock
         self.started = clock()
         self.stage = -1
@@ -106,8 +121,8 @@ class StageTracker:
             stage, stage_started = self.stage, self.stage_started
         if stage < 0:
             return 0.0
-        base = sum(share for _n, _p, share in STAGES[:stage])
-        name, _prefixes, share = STAGES[stage]
+        base = sum(self.shares[:stage])
+        name, share = STAGES[stage][0], self.shares[stage]
         within = None
         if name == "downloading" and self.bytes_probe is not None:
             probed = self.bytes_probe()
@@ -139,8 +154,8 @@ class StageProgress(StageTracker):
     """A `say(message)` progress callback that drives a Rich bar; use as a context manager around the run."""
 
     def __init__(self, console: Console, estimate_minutes: float, bytes_probe: BytesProbe | None = None,
-                 clock: Callable[[], float] = time.monotonic) -> None:
-        super().__init__(estimate_minutes, bytes_probe, clock)
+                 clock: Callable[[], float] = time.monotonic, shares: Sequence[float] | None = None) -> None:
+        super().__init__(estimate_minutes, bytes_probe, clock, shares)
         self.console = console
         self._stop = threading.Event()
         self._progress = Progress(SpinnerColumn(), TextColumn("{task.description}"), BarColumn(bar_width=None),

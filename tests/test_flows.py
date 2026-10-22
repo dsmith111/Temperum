@@ -51,8 +51,9 @@ class FakeSession:
         self.urls.append(url)
 
     @contextlib.contextmanager
-    def stages(self, estimate_minutes: float, probe: Any = None) -> Iterator[Any]:
+    def stages(self, estimate_minutes: float, probe: Any = None, shares: Any = None) -> Iterator[Any]:
         self.lines.append(f"stages {estimate_minutes}")
+        self.shares = shares
         yield self.say
 
     def transfer(self, label: str) -> flows.Transfer:
@@ -172,6 +173,25 @@ def test_run_gguf_uses_the_sessions_stages_and_shows_the_result(monkeypatch: pyt
     assert session.shown == [summary]
     lines = flows.ready_lines(summary)
     assert lines[0].startswith("[bold yellow]warning") and "29/29 layers" in lines[2] and "1.06x" in lines[3]
+
+
+def test_run_gguf_weights_the_stage_bar_for_a_recipe_search(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from temperum import optimize, ui
+
+    plain = SimpleNamespace(model=SimpleNamespace(ref=SimpleNamespace(repo="org/model"), commit="abc"),
+                            estimates={"minutes": 12, "download_gb": 0.5, "params_billions": 1.5}, recipe=None)
+    searched = SimpleNamespace(model=plain.model, recipe="auto",
+                               estimates={"minutes": 12 + optimize.estimate_minutes(1.5), "download_gb": 0.5,
+                                          "params_billions": 1.5})
+    result = SimpleNamespace(bundle=tmp_path / "b", job_dir=tmp_path / "j",
+                             verification={"verdict": "passed", "reasons": []})
+    monkeypatch.setattr("temperum.gguf.run", lambda plan_in, progress, verifier: result)
+    session = FakeSession()
+    flows.run_gguf(session, plain, start=0.0, verifier=object())
+    assert session.shares is None
+    flows.run_gguf(session, searched, start=0.0, verifier=object())
+    expected = ui.shares_with_search(float(searched.estimates["minutes"]), optimize.estimate_minutes(1.5))
+    assert session.shares == expected and expected[2] > 0.26 and abs(sum(expected) - 1.0) < 1e-9
 
 
 def test_plain_session_prints_the_result_as_lines_and_dedups_transfer_statuses() -> None:

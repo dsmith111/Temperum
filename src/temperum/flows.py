@@ -11,7 +11,7 @@ import contextlib
 import time
 import webbrowser
 from pathlib import Path
-from typing import Any, Callable, Iterator, Optional, Protocol
+from typing import Any, Callable, Iterator, Optional, Protocol, Sequence
 
 from rich.console import Console
 from rich.markup import escape
@@ -50,9 +50,10 @@ class Session(Protocol):
 
     def open_url(self, url: str) -> None: ...
 
-    def stages(self, estimate_minutes: float,
-               probe: ui.BytesProbe | None = None) -> contextlib.AbstractContextManager[Callable[[str], None]]:
-        """A stage display for a conversion; yields the progress callback to give the pipeline."""
+    def stages(self, estimate_minutes: float, probe: ui.BytesProbe | None = None,
+               shares: Sequence[float] | None = None) -> contextlib.AbstractContextManager[Callable[[str], None]]:
+        """A stage display for a conversion; yields the progress callback to give the pipeline. `shares`: this
+        run's stage weights when they differ from the usual ones (a recipe search)."""
 
     def transfer(self, label: str) -> Transfer:
         """A byte-counting display for an upload: (update(status, completed, total), stop)."""
@@ -91,8 +92,9 @@ class ConsoleSession:
         webbrowser.open(url)
 
     @contextlib.contextmanager
-    def stages(self, estimate_minutes: float, probe: ui.BytesProbe | None = None) -> Iterator[Callable[[str], None]]:
-        with ui.StageProgress(self.console, estimate_minutes, probe) as bar:
+    def stages(self, estimate_minutes: float, probe: ui.BytesProbe | None = None,
+               shares: Sequence[float] | None = None) -> Iterator[Callable[[str], None]]:
+        with ui.StageProgress(self.console, estimate_minutes, probe, shares=shares) as bar:
             yield bar.say
 
     def transfer(self, label: str) -> Transfer:
@@ -143,7 +145,8 @@ class PlainSession:
         pass
 
     @contextlib.contextmanager
-    def stages(self, estimate_minutes: float, probe: ui.BytesProbe | None = None) -> Iterator[Callable[[str], None]]:
+    def stages(self, estimate_minutes: float, probe: ui.BytesProbe | None = None,
+               shares: Sequence[float] | None = None) -> Iterator[Callable[[str], None]]:
         yield self._say
 
     def transfer(self, label: str) -> Transfer:
@@ -205,7 +208,13 @@ def run_gguf(session: Session, plan: Any, *, start: float, verifier: Any = None)
         disable_progress_bars()  # the stage display shows the download instead of the hub's own bars
         snapshot = paths.sources_dir() / str(plan.model.ref.repo).replace("/", "--") / str(plan.model.commit)
         probe = ui.snapshot_probe(snapshot, int(float(plan.estimates.get("download_gb") or 0) * 1e9))
-    with session.stages(float(plan.estimates["minutes"]), probe) as say:
+    shares = None
+    if getattr(plan, "recipe", None):
+        from temperum import optimize
+
+        search = optimize.estimate_minutes(float(plan.estimates.get("params_billions") or 0))
+        shares = ui.shares_with_search(float(plan.estimates["minutes"]), search)
+    with session.stages(float(plan.estimates["minutes"]), probe, shares) as say:
         result = gguf.run(plan, progress=say, verifier=verifier or verify_gguf)
     summary = gguf_summary(result, start)
     session.ready(summary)

@@ -45,6 +45,23 @@ def test_stage_progress_advances_by_stage_and_never_claims_completion() -> None:
     assert "about 10 min left" in ui.StageProgress(_console(), 10, clock=lambda: now[0]).eta_text()
 
 
+def test_a_recipe_search_weights_the_converting_stage_by_its_minutes() -> None:
+    shares = ui.shares_with_search(50, 38)  # a 12-minute conversion plus a 38-minute search
+    assert abs(sum(shares) - 1.0) < 1e-9
+    assert abs(shares[2] - (0.26 * 12 / 50 + 38 / 50)) < 1e-9  # converting holds the search
+    assert abs(shares[1] - 0.18 * 12 / 50) < 1e-9             # the others keep their proportions of the rest
+    assert ui.shares_with_search(10, 0) == [share for _n, _p, share in ui.STAGES]
+    now = [0.0]
+    stages = ui.StageProgress(_console(), 50, clock=lambda: now[0], shares=shares)
+    with stages:
+        stages.say("fetching org/model")
+        stages.say("converting to GGUF")
+        now[0] = 25 * 60.0  # halfway through the search: the bar is near the middle, not stuck at a quarter
+        assert 0.40 <= stages.completed() <= 0.60
+        stages.say("trial 5/11: attn_v alone at Q8_0")
+        assert stages.stage == 2
+
+
 def test_download_stage_follows_the_snapshot_size(tmp_path: Path) -> None:
     (tmp_path / "a.bin").write_bytes(b"x" * 500)
     probe = ui.snapshot_probe(tmp_path, 1000)

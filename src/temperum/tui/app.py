@@ -23,7 +23,7 @@ import threading
 import time
 import webbrowser
 from pathlib import Path
-from typing import Any, Callable, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional, Sequence
 
 from rich.console import Console
 from rich.markup import escape
@@ -312,8 +312,9 @@ class TuiSession:
         webbrowser.open(url)
 
     @contextlib.contextmanager
-    def stages(self, estimate_minutes: float, probe: ui.BytesProbe | None = None) -> Iterator[Callable[[str], None]]:
-        tracker = ui.StageTracker(estimate_minutes, probe)
+    def stages(self, estimate_minutes: float, probe: ui.BytesProbe | None = None,
+               shares: Sequence[float] | None = None) -> Iterator[Callable[[str], None]]:
+        tracker = ui.StageTracker(estimate_minutes, probe, shares=shares)
         self._ui(self.app.begin_stages, tracker)
         ok = False
         try:
