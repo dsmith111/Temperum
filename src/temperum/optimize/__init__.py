@@ -11,19 +11,19 @@ from typing import Any, Callable
 from temperum.gguf import LlamaPayload
 from temperum.optimize.evaluate import Evaluator, Trial
 from temperum.optimize.objective import Objective
-from temperum.optimize.report import lines, recipe_document, why
+from temperum.optimize.report import lines, markdown, recipe_document, why
 from temperum.optimize.space import CLASSES, Candidate
 from temperum.optimize.strategies import SearchResult, listed, structured
 
 __all__ = ["CLASSES", "Candidate", "Evaluator", "Objective", "SearchResult", "Trial", "lines",
-           "recipe_document", "search", "why"]
+           "markdown", "recipe_document", "search", "why"]
 
 RECIPES = ("auto",)
 PPL_CHUNKS = 16  # the verifier's standard level times four: 8 gave 1.14x where 16 gave 1.09x
 SERVER_CONTEXT = 4096
 # about 4 min per trial at 1.5B parameters, scaling with the model (quantize, perplexity, server)
 TRIAL_MINUTES_PER_BILLION = 2.4
-TRIALS = 1 + len(CLASSES) + 1
+TRIALS = 2 + len(CLASSES) + 2  # the base, the Q8_0 anchor, one trial per class, the pick and (at the cap) its neighbour
 
 
 def search(payload: LlamaPayload, source: Path, work: Path, heldout: Path, *, say: Callable[[str], None],

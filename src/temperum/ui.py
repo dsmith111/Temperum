@@ -25,7 +25,8 @@ from rich.table import Table
 STAGES: tuple[tuple[str, tuple[str, ...], float], ...] = (
     ("preparing", ("creating ", "setting up", "installing python", "checking ", "first use"), 0.06),
     ("downloading", ("fetching ", "downloading"), 0.18),
-    ("converting", ("converting", "quantizing", "pass ", "running olive", "compiling", "exporting"), 0.26),
+    ("converting", ("converting", "quantizing", "pass ", "running olive", "compiling", "exporting",
+                    "searching", "search:", "trial ", "reference:", "recipe:"), 0.26),
     ("assembling", ("assembling",), 0.02),
     ("verifying", ("reading the source", "loading the bundle", "prompt ", "long prompt", "measuring",
                    "running the source", "comparing", "verifying"), 0.42),
@@ -209,6 +210,10 @@ def ready_panel(summary: dict[str, Any]) -> Panel:
         grid.add_row("Speed", escape(f"decode {speed['median_tokens_per_s']:.0f} tok/s{prompt}"))
     if summary.get("base_model"):
         grid.add_row("Chat", "none: a base model, installed as a completion model (the prompt is sent as it is)")
+    recipe = summary.get("recipe") or {}
+    if recipe.get("label"):
+        grid.add_row("Recipe", escape(f"{recipe['label']} after {recipe.get('trials')} trials on the NPU: "
+                                       f"{recipe.get('why')}"))
     if summary.get("minutes") is not None:
         grid.add_row("Took", escape(f"{summary['minutes']} min"))
     title = {"passed": "Model ready", "warning": "Model ready, with warnings"}.get(verdict, "Conversion failed")

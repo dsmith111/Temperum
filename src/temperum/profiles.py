@@ -11,6 +11,10 @@ from dataclasses import dataclass
 
 from temperum.core.errors import TemperumError
 
+# The Hexagon backend maps the whole model into one buffer (6144 MiB by the fork's default), so a model must
+# fit it at once: a 7B fits at Q4_0 (4.4 GB) and not at Q8_0 (7.6 GB). The window the planner counts on.
+NPU_WINDOW_GB = 5.5
+
 
 @dataclass(frozen=True)
 class TargetProfile:

@@ -15,6 +15,9 @@ from temperum.optimize.evaluate import Trial
 @dataclass(frozen=True)
 class Objective:
     decode_cap: float = 0.10       # largest decode loss against the plain base, as a fraction
+    # Measured on the same source twice (Qwen2.5-1.5B, 8 candidates): perplexity repeats exactly, since the
+    # chunks and the weights are the same bytes, so ratio_noise is about what a 16x512-token sample can tell
+    # apart, not measurement scatter; decode repeated within 1.5% on average and 3.6% at most.
     ratio_noise: float = 0.02      # ratio differences up to this are ties (16 chunks of 512 tokens)
     decode_noise: float = 0.05     # decode differences up to this fraction are ties
     size_budget_mib: float | None = None

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,9 @@ class FakeEvaluator:
 
     def measure(self, candidate: Candidate) -> Trial:
         self.measured.append(candidate.name)
+        if candidate.base == "Q8_0":  # the anchor: the source itself, 678 MiB heavier, 1.035x on the NPU
+            return Trial(candidate, self.work / "src.gguf", BASE_MIB + 678.0, round(REFERENCE * 1.035, 4), 1.035,
+                         round(BASE_DECODE - SLOPE * 678.0, 1), 1300.0, "29/29", True, 1.0)
         dlog = sum(EFFECTS[c][0] for c in candidate.classes)
         extra = sum(EFFECTS[c][1] for c in candidate.classes)
         ppl = BASE_PPL * math.exp(dlog) * (1 + self.noise * (len(candidate.classes) % 2))
@@ -99,18 +103,20 @@ def test_structured_search_screens_once_per_class_then_verifies_its_pick(tmp_pat
     ev = FakeEvaluator(tmp_path)
     said: list[str] = []
     result = strategies.structured(ev, Objective(), said.append)  # type: ignore[arg-type]
-    assert len(ev.measured) == 1 + len(CLASSES) + 1
+    # the base, the Q8_0 anchor, the singles, the pick (29.7 tok/s: within 5% of the 28.8 floor) and its neighbour
+    assert len(ev.measured) == 2 + len(CLASSES) + 2
     assert result.chosen.candidate.classes == ("attn_q", "attn_k", "attn_v", "attn_output", "ffn_up")
     assert result.chosen in result.trials and result.surrogate is not None
     assert result.predicted["classes"] == list(result.chosen.candidate.classes)
+    assert result.predicted["neighbour"] == ["attn_q", "attn_k", "attn_v", "attn_output"]
     assert any("verification" in s for s in said)
     doc = optimize.document(result, REFERENCE, Objective(), chunks=16, host={"system": "Windows"},
                             llama_cpp="e467e5b", source={"repo": "Qwen/Qwen2.5-1.5B-Instruct"})
     assert doc["chosen"]["label"] == "Q4_0, attn_q, attn_k, attn_v, attn_output and ffn_up at Q8_0"
-    assert "within the 10% decode cap" in doc["chosen"]["why"] and len(doc["trials"]) == 9
+    assert "within the 10% decode cap" in doc["chosen"]["why"] and len(doc["trials"]) == 11
     json.dumps(doc)  # serialisable as written
     lines = optimize.lines(result, Objective())
-    assert lines[0].startswith("recipe: Q4_0, attn_q") and len(lines) == 10
+    assert lines[0].startswith("recipe: Q4_0, attn_q") and len(lines) == 12
 
 
 def test_a_search_that_finds_nothing_keeps_plain_q4_0(tmp_path: Path) -> None:
@@ -172,3 +178,56 @@ def test_quantize_passes_recipe_overrides_before_the_paths(tmp_path: Path) -> No
                   popen=popen, overrides=["--tensor-type", "attn_v=q8_0"])
     assert seen["cmd"][1:4] == ["--allow-requantize", "--tensor-type", "attn_v=q8_0"]
     assert seen["cmd"][-1] == "Q4_0" and (tmp_path / "out.gguf").is_file()
+
+
+@pytest.mark.parametrize("penalty,keeps_pick", [
+    (1.6, True),   # 28.1 tok/s: under the 28.8 floor but inside its 5% noise, and clearly better quality: kept
+    (3.0, False),  # 26.7 tok/s: out, so the neighbour measured beside it is the choice
+])
+def test_a_pick_at_the_decode_cap_gets_its_neighbour_measured_too(tmp_path: Path, penalty: float,
+                                                                  keeps_pick: bool) -> None:
+    class Steep(FakeEvaluator):
+        """Compositions decode worse than the singles predict: the pick lands around the cap's floor."""
+
+        def measure(self, candidate: Candidate) -> Trial:
+            t = super().measure(candidate)
+            cost = penalty if len(candidate.classes) > 1 else 0.0
+            return Trial(t.candidate, t.path, t.size_mib, t.ppl, t.ratio, round((t.decode or 0) - cost, 1),
+                         t.prefill, t.layers, t.whole, t.seconds)
+
+    ev = Steep(tmp_path)
+    said: list[str] = []
+    result = strategies.structured(ev, Objective(), said.append)  # type: ignore[arg-type]
+    assert len(ev.measured) == 2 + len(CLASSES) + 2
+    assert any("sits at the decode cap" in s for s in said)
+    assert result.predicted["neighbour"] == ["attn_q", "attn_k", "attn_v", "attn_output"]  # ffn_up was heaviest
+    pick = ("attn_q", "attn_k", "attn_v", "attn_output", "ffn_up")
+    assert result.chosen.candidate.classes == (pick if keeps_pick else pick[:-1])
+
+
+def test_the_markdown_recipe_lists_the_trials_and_how_to_reproduce_the_choice(tmp_path: Path) -> None:
+    result = strategies.structured(FakeEvaluator(tmp_path), Objective(), lambda _m: None)  # type: ignore[arg-type]
+    doc = optimize.document(result, REFERENCE, Objective(), chunks=16, host={}, llama_cpp="e467e5b", source={})
+    page = optimize.markdown(doc)
+    assert page.startswith("# Quantization recipe, measured on this machine's NPU")
+    assert "**Chosen: Q4_0, attn_q, attn_k, attn_v, attn_output and ffn_up at Q8_0.**" in page
+    assert "`--allow-requantize --tensor-type attn_q=q8_0" in page and "<Q8_0 source> <out> Q4_0`" in page
+    assert page.count("\n| Q4_0") == 10 and page.count("\n| Q8_0") == 1 and "**(chosen)**" in page
+
+
+def test_the_search_shows_up_in_the_stage_bar_and_the_result_views() -> None:
+    from temperum import flows, ui
+
+    assert ui.stage_of("searching quantization mixes on the NPU (each one built, scored and timed)") == 2
+    assert ui.stage_of("trial 3/10: attn_v alone at Q8_0") == 2
+    assert ui.stage_of("Q4_0, attn_v at Q8_0: perplexity on the NPU") is None  # within the stage
+    summary = {"bundle": "b", "verdict": "passed", "reasons": [], "minutes": 48.0,
+               "recipe": {"label": "Q4_0, attn_v and ffn_up at Q8_0", "name": "x", "trials": 10,
+                          "why": "perplexity ratio 1.073 against 1.15 for plain Q4_0"}}
+    assert any("recipe: Q4_0, attn_v and ffn_up at Q8_0 after 10 trials" in line for line in flows.ready_lines(summary))
+    from rich.console import Console
+
+    console = Console(record=True, width=120, file=open(os.devnull, "w", encoding="utf-8"))
+    console.print(ui.ready_panel(summary))
+    text = console.export_text()
+    assert "Recipe" in text and "after 10 trials on the NPU" in text

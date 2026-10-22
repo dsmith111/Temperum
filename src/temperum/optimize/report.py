@@ -6,6 +6,7 @@ from typing import Any
 
 from temperum.optimize.evaluate import DECODE_REQUESTS, DECODE_TOKENS, PPL_CONTEXT, Trial
 from temperum.optimize.objective import Objective
+from temperum.optimize.space import Candidate
 from temperum.optimize.strategies import SearchResult
 
 SCHEMA = 1
@@ -66,3 +67,26 @@ def lines(result: SearchResult, objective: Objective) -> list[str]:
 
 def _f(value: float | None, digits: int) -> str:
     return "-" if value is None else f"{value:.{digits}f}"
+
+
+def markdown(doc: dict[str, Any]) -> str:
+    """The recipe document as a page for people: the choice, the table of trials, how it was measured."""
+    chosen = doc.get("chosen") or {}
+    out = ["# Quantization recipe, measured on this machine's NPU", "",
+           f"**Chosen: {chosen.get('label')}.** {chosen.get('why')}", "",
+           "Reproduce with llama-quantize: `--allow-requantize " + " ".join(chosen.get("quantize_args") or [])
+           + f" <Q8_0 source> <out> {chosen.get('base')}`", "",
+           "| Mix | Size MiB | PPL ratio | Decode tok/s | Prefill tok/s | Layers on the NPU |",
+           "|---|---:|---:|---:|---:|---|"]
+    trials = sorted(doc.get("trials") or [], key=lambda d: (d.get("ratio") is None, d.get("ratio") or 0.0))
+    for d in trials:
+        cand = Candidate(d["base"], tuple(sorted((d.get("overrides") or {}).items())))
+        mark = " **(chosen)**" if d.get("name") == chosen.get("name") else ""
+        out.append(f"| {cand.label}{mark} | {d.get('size_mib', 0):.0f} | {_f(d.get('ratio'), 3)} | "
+                   f"{_f(d.get('decode_tps'), 1)} | {_f(d.get('prefill_tps'), 0)} | "
+                   f"{d.get('layers') or ('failed: ' + str(d.get('error'))[:60] if d.get('error') else '')} |")
+    m = doc.get("measurement") or {}
+    out += ["", f"Perplexity: {m.get('perplexity')}.", "", f"Speed: {m.get('speed')}.", "",
+            f"Strategy: {doc.get('strategy')}; objective: {(doc.get('objective') or {}).get('rule')}.", "",
+            f"llama.cpp {doc.get('llama_cpp')}; created {doc.get('created')}."]
+    return "\n".join(out) + "\n"

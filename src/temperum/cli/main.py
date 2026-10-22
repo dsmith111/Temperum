@@ -635,7 +635,7 @@ def optimize_command(
                                 f"{payload.root} lacks the llama.cpp Hexagon runtime: {', '.join(missing)}")
         work = out_dir or source.parent / "optimize"
         heldout = calib.ensure_corpus(calib.HELDOUT, paths.data_dir()).path
-        objective = optimize.Objective(decode_cap=decode_cap)
+        objective = optimize.Objective(decode_cap=decode_cap, size_budget_mib=gguf.NPU_WINDOW_GB * 1024)
 
         def say(message: str) -> None:
             if not as_json:

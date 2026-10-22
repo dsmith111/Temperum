@@ -37,10 +37,11 @@ from textual.screen import Screen
 from textual.selection import Selection
 from textual.strip import Strip
 from textual.timer import Timer
-from textual.widgets import Button, Input, Label, OptionList, ProgressBar, RadioButton, RadioSet, RichLog, Static
+from textual.widgets import (Button, Checkbox, Input, Label, OptionList, ProgressBar, RadioButton, RadioSet, RichLog,
+                             Static)
 from textual.widgets.option_list import Option
 
-from temperum import __version__, flows, settings, templates, ui
+from temperum import __version__, flows, profiles, settings, templates, ui
 from temperum.core.errors import TemperumError
 from temperum.tui.monitor import Monitor, Sample
 from temperum.tui.widgets import ChoiceBar, Gauge, Question, ResourceGraph, StageList
@@ -49,8 +50,7 @@ _SCALE = 1000
 PROMPT_HINT = "Type a Hugging Face model id (for example Qwen/Qwen2.5-0.5B-Instruct), or /help"
 HISTORY_FILE = "tui-history.txt"
 HISTORY_KEEP = 200
-NPU_WINDOW_GB = 5.5  # the Hexagon backend maps the whole model into one buffer (6144 MiB by default):
-#                      a 7B model fits at Q4_0 (4.4 GB) and not at Q8_0 (7.6 GB)
+NPU_WINDOW_GB = profiles.NPU_WINDOW_GB  # the whole model must map into the backend's buffer at once
 QUANT_WORDS = {"Q4_0": "fastest and smallest", "Q8_0": "best quality",
                "Q4_K_M": "in between (Q4_0 is better supported)"}
 PASS_RATIO = 1.20  # verification's perplexity pass line
@@ -58,8 +58,10 @@ CONVERT_STAGES = ["prepare tools", "download", "convert", "assemble", "verify on
 TRACKER_ROWS = {"preparing": "prepare tools", "downloading": "download", "converting": "convert",
                 "assembling": "assemble", "verifying": "verify on the NPU", "installing": "install"}
 COMMANDS: tuple[tuple[str, str], ...] = (
-    ("MODEL  or  /convert MODEL [--quant Q4_0|Q8_0|Q4_K_M] [--context N] [--name TAG] [--verify LEVEL]",
-     "look a model up, choose a quantization, convert it, then install, validate, upload"),
+    ("MODEL  or  /convert MODEL [--quant Q4_0|Q8_0|Q4_K_M] [--recipe auto] [--context N] [--name TAG] "
+     "[--verify LEVEL]",
+     "look a model up, choose a quantization (or search the best mix on the NPU), convert it, then install, "
+     "validate, upload"),
     ("/install BUNDLE [--name TAG]", "install a converted bundle into the fork, then validate, upload"),
     ("/validate TAG", "load a model through the fork: where it runs, speed, CPU use"),
     ("/push TAG [--as NAME]", "upload an installed model to ollama.com through the fork"),
@@ -396,6 +398,9 @@ class ModelScreen(Screen[None]):
             yield Static("", id="quants-label")
             self.quants = RadioSet(classes="quants")
             yield self.quants
+            yield Checkbox("Search the quantization mix on the NPU (Q4_0 base; each candidate built, scored and "
+                           "timed; adds the minutes shown)", value=self.opts.get("--recipe") == "auto",
+                           id="recipe")
             yield Static("", id="warnings")
             with Horizontal(id="buttons"):
                 yield Button("Convert", id="convert", variant="primary", disabled=True)
@@ -443,8 +448,14 @@ class ModelScreen(Screen[None]):
         self.query_one("#g-npu", Gauge).set(gguf / NPU_WINDOW_GB, f"{gguf} GB of the NPU's {NPU_WINDOW_GB} GB window"
                                             + ("" if fits_npu(plan) else ": too big, would run split with the CPU"),
                                             "green" if fits_npu(plan) else "red")
-        self.query_one("#time", Static).update(f"[dim]{'Time':<18}[/dim] about {est['minutes']:.0f} min; "
-                                               f"{est['disk_gb']} GB of disk while converting")
+        from temperum import optimize
+
+        search = self.query_one("#recipe", Checkbox)
+        search.disabled = quant != "Q4_0"
+        extra = optimize.estimate_minutes(float(est["params_billions"])) if (search.value and quant == "Q4_0") else 0
+        self.query_one("#time", Static).update(f"[dim]{'Time':<18}[/dim] about {est['minutes'] + extra:.0f} min"
+                                               + (f" (of which {extra:.0f} searching mixes)" if extra else "")
+                                               + f"; {est['disk_gb']} GB of disk while converting")
         warnings = [str(w) for w in getattr(plan, "warnings", [])]
         if plan.destination.exists():
             warnings.append(f"converted before: {plan.destination} is rebuilt (finished steps are reused)")
@@ -456,6 +467,11 @@ class ModelScreen(Screen[None]):
         if quant in self.plans:
             self.chosen = quant
             self._fit(quant)
+
+    @on(Checkbox.Changed, "#recipe")
+    def _recipe_changed(self) -> None:
+        if self.chosen:
+            self._fit(self.chosen)
 
     @on(Button.Pressed, "#convert")
     def _convert_button(self) -> None:
@@ -469,6 +485,11 @@ class ModelScreen(Screen[None]):
         plan = self.plans.get(self.chosen or "")
         if plan is None or isinstance(plan, Exception):
             return
+        if self.query_one("#recipe", Checkbox).value and plan.quant == "Q4_0" and not plan.recipe:
+            from temperum import optimize
+
+            plan.recipe = "auto"  # the search runs between the Q8_0 conversion and assembly
+            plan.estimates["minutes"] += optimize.estimate_minutes(float(plan.estimates["params_billions"]))
         self.app.convert(plan, self.exe, self.opts)  # type: ignore[attr-defined]
 
     def action_back(self) -> None:
@@ -546,6 +567,7 @@ class DoneScreen(Screen[None]):
             yield Gauge("On the NPU", id="g-npu")
             yield Gauge("Quality loss", id="g-quality")
             yield Static("", id="speed")
+            yield Static("", id="recipe")
             yield Static("", id="install")
             yield Gauge("CPU during chat", id="g-cpu")
             yield Static("", id="use")
@@ -584,6 +606,11 @@ class DoneScreen(Screen[None]):
         if speed.get("median_tokens_per_s"):
             self.query_one("#speed", Static).update(f"[dim]{'Speed':<18}[/dim] {speed['median_tokens_per_s']:.0f} "
                                                     "tokens per second while verifying")
+        recipe = s.get("recipe") or {}
+        if recipe.get("label"):
+            self.query_one("#recipe", Static).update(f"[dim]{'Recipe':<18}[/dim] {escape(str(recipe['label']))} "
+                                                     f"after {recipe.get('trials')} trials on the NPU\n"
+                                                     f"[dim]{'':<18}[/dim] {escape(str(recipe.get('why')))}")
         install = s.get("install") or {}
         validation = s.get("validation") or {}
         lines = []
@@ -1024,7 +1051,7 @@ class TemperumApp(App[None]):
             try:
                 positional, opts = _options(args, {"--overwrite"},
                                             {"--quant", "--context", "--name", "--verify", "--out", "--target",
-                                             "--host"})
+                                             "--host", "--recipe"})
             except UsageError as exc:
                 self.notify(f"usage: {exc}", severity="warning", timeout=6)
                 return

@@ -22,7 +22,7 @@ from temperum.optimize.space import Candidate
 Progress = Callable[[str], None]
 PPL_CONTEXT = 512
 PROMPT_CHARS = 2200  # about 540 tokens of the held-out text
-DECODE_TOKENS = 128
+DECODE_TOKENS = 256  # measured repeatability over 8 candidates: decode within 1.5% on average, 3.6% at most
 DECODE_REQUESTS = 3
 LEADS = ("First.", "Second.", "Third.")  # llama-server caches identical prompts; the first token varies
 

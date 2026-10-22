@@ -30,7 +30,8 @@ from typing import Any, Callable, Sequence
 from temperum import __version__, paths
 from temperum.core.errors import TemperumError
 from temperum.host import HEXAGON_OPT_IN, HostInfo, hexagon_opted_in
-from temperum.profiles import (DEFAULT_LLAMA_RUNTIME, DEFAULT_RUNTIME, LLAMA_RUNTIMES, LlamaRuntimeProfile,
+from temperum.profiles import (DEFAULT_LLAMA_RUNTIME, DEFAULT_RUNTIME, LLAMA_RUNTIMES, NPU_WINDOW_GB,
+                               LlamaRuntimeProfile,
                                 TargetProfile, get_runtime)
 from temperum.repairs import prepare_source
 from temperum.sources import ResolvedModel, fetch
@@ -47,6 +48,7 @@ DEFAULT_CONTEXT = 4096
 CONTEXT_KEYS = ("max_position_embeddings", "n_positions", "n_ctx", "seq_length", "max_sequence_length")
 MANIFEST = "temperum_manifest.json"
 RECIPE = "temperum_recipe.json"  # the optimizer's trials and choice, when --recipe searched
+RECIPE_MD = "temperum_recipe.md"  # the same, as a table for people
 LICENSE_PREFIXES = ("license", "notice", "use_policy", "readme")
 HTP_LIBRARIES = ("libggml-htp-v73.so", "libggml-htp-v75.so", "libggml-htp-v79.so", "libggml-htp-v81.so",
                  "libggml-htp.cat")
@@ -490,14 +492,15 @@ def run(gguf_plan: GgufPlan, progress: Progress | None = None,
 
             say("searching quantization mixes on the NPU (each one built, scored and timed)")
             heldout = calib.ensure_corpus(calib.HELDOUT, paths.data_dir()).path
+            objective = optimize.Objective(size_budget_mib=NPU_WINDOW_GB * 1024)  # must sit whole on the NPU
             found = optimize.search(gguf_plan.payload, converted, job.dir / "optimize", heldout, say=say,
-                                    context=gguf_plan.context)
+                                    objective=objective, context=gguf_plan.context)
             recipe_doc = optimize.document(found, found.reference_ppl,
-                                           optimize.Objective(), chunks=optimize.PPL_CHUNKS,
+                                           objective, chunks=optimize.PPL_CHUNKS,
                                            host=gguf_plan.host.to_dict(), llama_cpp=gguf_plan.runtime.llama_cpp_commit,
                                            source={"repo": gguf_plan.model.ref.repo, "commit": gguf_plan.model.commit})
             quantized, precision = found.chosen.path, found.chosen.candidate.label
-            for line in optimize.lines(found, optimize.Objective()):
+            for line in optimize.lines(found, objective):
                 say(line)
             job.record("optimize", "done", chosen=found.chosen.candidate.name, trials=len(found.trials))
         elif gguf_plan.quant != "Q8_0" and not (job.done("quantize") and quantized.is_file()):
@@ -509,6 +512,7 @@ def run(gguf_plan: GgufPlan, progress: Progress | None = None,
         extra: dict[str, str] = {}
         if recipe_doc is not None:
             extra[RECIPE] = json.dumps(recipe_doc, indent=2, default=str)
+            extra[RECIPE_MD] = optimize.markdown(recipe_doc)
         bundle = assemble(quantized, snapshot, gguf_plan, {"converter_source": source.commit,
                                                            "converter_patches": sorted(source.patches),
                                                            "quantize": str(gguf_plan.payload.quantize),
