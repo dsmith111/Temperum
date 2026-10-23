@@ -145,6 +145,34 @@ Modelfile turns it off. Longer measurements of the same pair (256-token answers,
 the handoff's section 4: 1.76x on code, 1.10x on prose, 0.53x to 0.59x on short chat answers, the same
 acceptance against a Q8_0 target and on the CPU.
 
+**Installed through the fork** (2026-10-23; `temperum install --input <pair> --name qwen3-4b-pair:npu --execute`,
+then `temperum validate qwen3-4b-pair:npu`, against the package that ships `llama-imatrix`): `ollama create` took
+the Modelfile's `DRAFT` line, the fork launched llama-server with `--spec-type draft-dflash --spec-draft-n-max 16
+--spec-draft-model <the draft's blob>`, both models loaded on the NPU, and the validation passed (Paris, Berlin;
+8.3 tok/s with the draft on its 120-token prose probe). The same six prompts and three longer ones through the
+fork's API (`npu-quantmix\pair_fork.py`: greedy, thinking off, each prompt asked twice with the second kept; the
+plain arm sends `draft_num_predict 0`, which makes the fork reload the runner without the draft):
+
+| Prompt | Answer tokens | Plain tok/s | With the draft | Guesses accepted |
+|---|---:|---:|---:|---:|
+| Capital of France, one word | 3 | 24.2 | 5.5 (0.23x) | 0 of 30 |
+| 17 + 25, just the number | 3 | 24.3 | 5.6 (0.23x) | 0 of 30 |
+| Name the three primary colors | 32 | 16.5 | 10.1 (0.61x) | 19 of 131 |
+| Translate a greeting to Spanish | 12 | 17.2 | 8.6 (0.50x) | 6 of 75 |
+| A Python function (code) | 32 | 16.3 | 29.6 (1.82x) | 54 of 86 |
+| Why the sky looks blue, one sentence | 32 | 16.3 | 12.3 (0.76x) | 21 of 107 |
+| A quicksort in Python | 256 | 15.8 | 19.8 (1.25x) | 209 of 633 |
+| A hash map for a beginner, one paragraph | 92 | 15.8 | 7.7 (0.49x) | 48 of 645 |
+| A short email moving a meeting | 125 | 15.8 | 9.9 (0.63x) | 78 of 690 |
+
+Median 0.55x over the six, the same answer in every row, acceptance as in the verifier's table. The fork decodes
+the plain model faster than the verifier's own server (16.3 against 11 to 14 tok/s at 32 tokens), so each ratio
+lands a little lower than the verifier's; the draft's cost per call is the same. One fork-side flaw to know
+about: with the draft loaded, `ollama ps` (and so `temperum validate`'s placement size) reports 726 MiB, the
+draft's footprint alone, where the same model without the draft reports 2,937 MiB. The fork's runner keys
+llama-server's buffer-size lines by component, backend and kind, and the draft's lines replace the target's.
+Both models are on the NPU regardless, as the fork's server log shows.
+
 ## QNN bundles (8-bit)
 
 `temperum convert MODEL --target qnn-x-elite` (the default target until 2026-10-19; Olive

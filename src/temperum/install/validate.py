@@ -116,7 +116,8 @@ def validate(endpoint: str, tag: str, *, fork_dir: Path | None, say: Callable[[s
         reply = api(endpoint, "/api/chat", REQUEST_TIMEOUT, {
             "model": tag, "messages": [{"role": "user", "content": LONG_PROMPT}], "stream": False,
             "options": long_options})
-        text = str((reply.get("message") or {}).get("content", ""))
+        message = reply.get("message") or {}  # a thinking model may spend the whole budget before its answer
+        text = " ".join(part for part in (str(message.get("thinking", "")), str(message.get("content", ""))) if part)
     wall = time.monotonic() - started
     after = cpu(fork_dir)
     eval_count, eval_ns = int(reply.get("eval_count") or 0), int(reply.get("eval_duration") or 0)

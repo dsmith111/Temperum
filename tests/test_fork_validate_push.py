@@ -130,6 +130,17 @@ def test_validate_measures_through_the_fork() -> None:
     assert calls[-1] == ("/api/generate", {"model": "m:npu", "keep_alive": 0})
 
 
+def test_validate_counts_the_words_a_thinking_model_spends_before_its_answer() -> None:
+    def api(endpoint: str, path: str, timeout: float, body: dict[str, Any] | None = None) -> dict[str, Any]:
+        if path == "/api/chat":  # the fork keeps a thinking model's reasoning apart; 120 tokens of it, no answer yet
+            return {"message": {"role": "assistant", "content": "", "thinking": "Okay, the user asks why. " * 24},
+                    "eval_count": 120, "eval_duration": 6_000_000_000}
+        return {"models": []}
+
+    report = validate("http://127.0.0.1:1", "m", fork_dir=None, say=lambda _m: None, api=api, cpu=lambda _d: None)
+    assert report["speed"]["words"] == 120 and report["speed"]["distinct_words"] == 5
+
+
 def test_validate_says_why_cpu_use_was_not_measured() -> None:
     def api(endpoint: str, path: str, timeout: float, body: dict[str, Any] | None = None) -> dict[str, Any]:
         return {"message": {"content": "x"}, "models": []}

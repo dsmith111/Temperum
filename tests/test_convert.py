@@ -35,6 +35,7 @@ class FakeChains:
 @pytest.fixture(autouse=True)
 def _home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TEMPERUM_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr("temperum.convert.disk_free_gb", lambda _path: 500.0)  # this laptop's free disk is not under test
 
 
 def _plan(options: ConvertOptions, host: HostInfo = X_ELITE, model: ResolvedModel | None = None) -> Any:
