@@ -55,13 +55,22 @@ That command:
    llama.cpp's converter, pinned to the fork's llama.cpp;
 4. downloads the weights, converts them straight to Q8_0 with llama.cpp's converter (about
    300 architectures) and quantizes that with the fork's `llama-quantize` (`--quant Q4_0`,
-   the default and the fastest; `Q4_K_M` or `Q8_0` keep more quality);
+   the default and the fastest; `Q4_K_M` or `Q8_0` keep more quality). The quantization is
+   calibrated: `llama-imatrix` first computes an importance matrix on the CPU from wikitext-2
+   text, so the quantizer keeps the values in each block that matter. That lowers the
+   perplexity ratio (Qwen2.5-1.5B 1.15 to 1.12, Llama-3.2-3B 1.06 to 1.02) at no cost in
+   speed or size, because the block format is unchanged; `--no-calibrate` skips it, and a fork
+   package without `llama-imatrix` quantizes plain with a warning. `--recipe auto` goes
+   further: it measures a handful of quantization mixes and thread settings on this machine's
+   NPU and keeps the one that runs best, writing what it measured into the bundle
+   (`temperum_recipe.md`). There is no fixed answer across models (Qwen2.5-1.5B gains from
+   Q8_0 attention, Llama-3.2-3B does not), which is why it measures. About 40 minutes at 1.5B;
 5. writes the bundle: `model.gguf`, a Modelfile (with an Ollama chat template checked against
    the model's own when the format is recognized, so the fork does not swap in a built-in
    one), the licence files and a provenance manifest;
-6. verifies it on the NPU with the fork's `llama-server`: where the layers run, answers
-   and long-prompt retrieval against the source model, perplexity against the Q8_0
-   conversion, and the chat template;
+6. verifies it on the NPU with the fork's `llama-server`: where the layers run and which
+   operations fell back to the CPU, answers and long-prompt retrieval against the source
+   model, perplexity against the Q8_0 conversion, and the chat template;
 7. asks (or, with `--install`, proceeds) to install it into the fork with `ollama create`,
    loading it once to check where the fork really runs it; then to validate it through the
    fork (`--validate`: load time, a two-turn chat, decode and prompt speed, and the CPU cores
@@ -191,7 +200,8 @@ implemented but not yet tested.
 | Command | Purpose |
 |---|---|
 | `temperum` (no arguments) | The full-screen interface, also `temperum tui`: pick or type a model, choose a quantization, watch the stages and the machine's load, answer install, validate and upload with a key; `/install BUNDLE`, `/validate TAG`, `/push TAG`, `/doctor`, `/models` and `/config` typed in its box do the rest |
-| `temperum convert MODEL` | Plan, convert and verify; in a terminal, then asks to install, validate and upload. `--install`, `--validate`, `--push [--as NAME]` do that without asking; `--plan` stops after the plan; `--yes` skips every question; `--quant Q4_0\|Q4_K_M\|Q8_0`, `--context N`, `--verify quick\|standard\|full\|none`, `--out DIR`, `--target qnn-x-elite` (QNN only: `--quality`, `--device`, `--template FILE --stop S`) |
+| `temperum convert MODEL` | Plan, convert and verify; in a terminal, then asks to install, validate and upload. `--install`, `--validate`, `--push [--as NAME]` do that without asking; `--plan` stops after the plan; `--yes` skips every question; `--quant Q4_0\|Q4_K_M\|Q8_0`, `--no-calibrate` (skip the importance matrix), `--recipe auto` (measure quantization mixes and thread settings on the NPU, keep the best), `--context N`, `--verify quick\|standard\|full\|none`, `--out DIR`, `--target qnn-x-elite` (QNN only: `--quality`, `--device`, `--template FILE --stop S`) |
+| `temperum optimize SOURCE_Q8.gguf` | The recipe search alone, from a Q8_0 GGUF (a bundle converted with `--quant Q8_0`): measures the mixes and thread settings on this machine's NPU and writes the recipe and the chosen file to `--out`; `--json` prints the recipe document |
 | `temperum setup` | Create or check (`--check`) what conversions need; `--target qnn-x-elite` adds the QNN toolchains |
 | `temperum doctor` | Target, the fork's NPU runtime and switch, memory, disk, toolchain health |
 | `temperum config [KEY [VALUE]]` | Show or change what is remembered: `ollama-exe`, `target`, `host` (`--unset` forgets) |
@@ -214,8 +224,15 @@ where it stopped, and `jobs/<id>/job.json` records every stage.
 ## How it works
 
 - `gguf.py`, `gguf_verify.py`, `toolchains/llama_cpp.py`: the GGUF target (llama.cpp's
-  converter fetched at a pinned commit and checked file by file; the fork's `llama-quantize`,
-  `llama-server` and `llama-perplexity`).
+  converter fetched at a pinned commit and checked file by file; the fork's `llama-imatrix`
+  for the calibration, `llama-quantize`, `llama-server` and `llama-perplexity`).
+- `optimize/`: the recipe search behind `--recipe auto`: the space of per-tensor-class
+  quantization mixes (`space.py`), one candidate measured on the NPU (`evaluate.py`), what
+  "best" means with measurement noise treated as ties (`objective.py`), the screen-and-surrogate
+  search and the thread pass (`strategies.py`), and the recipe written for people and machines
+  (`report.py`).
+- `schedlog.py`: reads ggml's scheduler assignments back from `llama-server`'s debug log, so
+  verification can say which operations ran on the NPU and which fell back to the CPU.
 - `templates.py`: recognizes the model's chat format and writes an Ollama template that
   verification compares with the model's own rendering.
 - `install/`: local `ollama create` through a running fork, then a placement check.

@@ -31,11 +31,13 @@ TRIALS = 2 + len(CLASSES) + 2  # the base, the Q8_0 anchor, one trial per class,
 
 def search(payload: LlamaPayload, source: Path, work: Path, heldout: Path, *, say: Callable[[str], None],
            objective: Objective | None = None, strategy: str = "structured", context: int = SERVER_CONTEXT,
-           chunks: int = PPL_CHUNKS, candidates: list[Candidate] | None = None) -> SearchResult:
-    """Search the quantization mixes of the Q8_0 GGUF at `source` on the NPU; trials cache under `work`."""
+           chunks: int = PPL_CHUNKS, candidates: list[Candidate] | None = None,
+           imatrix: Path | None = None) -> SearchResult:
+    """Search the quantization mixes of the Q8_0 GGUF at `source` on the NPU; trials cache under `work`.
+    `imatrix`: an importance matrix every candidate is quantized with (gguf.compute_imatrix)."""
     objective = objective or Objective()
     evaluator = Evaluator(payload, source, work, heldout, context=min(context, SERVER_CONTEXT), chunks=chunks,
-                          say=say)
+                          say=say, imatrix=imatrix)
     if strategy == "structured":
         return structured(evaluator, objective, say)
     if strategy == "listed":

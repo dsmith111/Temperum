@@ -162,7 +162,8 @@ class PlainSession:
 # -- the GGUF conversion ------------------------------------------------------------------------------
 def plan_gguf(model: str, *, target_id: str, quant: str, context: Optional[int], out_dir: Optional[Path],
               verify_level: str, overwrite: bool, python: Optional[Path], machine: Any = None,
-              ollama_exe: Optional[Path] = None, recipe: Optional[str] = None) -> tuple[Any, Optional[Path]]:
+              ollama_exe: Optional[Path] = None, recipe: Optional[str] = None,
+              calibrate: bool = True) -> tuple[Any, Optional[Path]]:
     """Resolve the model and plan its GGUF conversion; also returns the fork executable in effect."""
     from temperum import gguf
     from temperum.host import detect_host
@@ -172,7 +173,7 @@ def plan_gguf(model: str, *, target_id: str, quant: str, context: Optional[int],
     exe, _source = settings.ollama_exe(ollama_exe)
     plan = gguf.plan(resolve(parse_ref(model)), machine or detect_host(), get_target(target_id), ollama_exe=exe,
                      quant=quant, context=context, out=out_dir, verify=verify_level, overwrite=overwrite,
-                     python=python, recipe=recipe)
+                     python=python, recipe=recipe, calibrate=calibrate)
     return plan, exe
 
 
@@ -188,6 +189,11 @@ def gguf_plan_table(plan: Any) -> Table:
     table.add_row("NPU libraries", escape(str(plan.payload.htp)))
     table.add_row("Format", escape(f"GGUF {plan.quant}, context {plan.context}"
                                    + (", recipe searched on the NPU" if plan.recipe else "")))
+    if getattr(plan, "calibrate", False):
+        from temperum import gguf
+
+        table.add_row("Calibration", escape(f"an importance matrix from {gguf.CALIBRATION_CHUNKS} chunks of "
+                                            f"wikitext-2 train rows, computed on the CPU before quantizing"))
     table.add_row("Chat", escape(templates.describe(plan.model.chat_template)))
     table.add_row("Verification", escape(plan.verify_level))
     table.add_row("Output", escape(str(plan.destination)))
@@ -231,6 +237,7 @@ def gguf_summary(result: Any, start: float) -> dict[str, Any]:
     if ppl:
         summary["perplexity_ratio"] = ppl.get("ratio")
     summary["base_model"] = report.get("template", {}).get("modelfile") == "raw"
+    summary["calibrated"] = bool(getattr(result, "calibration", None))
     recipe = getattr(result, "recipe", None)
     if recipe:
         chosen = recipe.get("chosen", {})
@@ -259,6 +266,8 @@ def ready_lines(summary: dict[str, Any]) -> list[str]:
             lines.append(f"  ops: {escape(schedlog.describe(placed['ops']))}")
     if "perplexity_ratio" in summary:
         lines.append(f"  perplexity vs the Q8_0 conversion on the CPU: {summary['perplexity_ratio']}x")
+    if summary.get("calibrated"):
+        lines.append("  quantization calibrated with an importance matrix (wikitext-2 train rows, on the CPU)")
     speed = summary.get("speed") or {}
     if speed.get("median_tokens_per_s"):
         prompt = (f"{speed['long_prompt_tokens_per_s']:.0f} tokens/s ({speed['long_prompt_tokens']}-token prompt)"

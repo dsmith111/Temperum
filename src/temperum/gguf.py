@@ -1,12 +1,13 @@
-"""GGUF output target (decision D7): a Hugging Face model as one GGUF file for the NPU.
+"""GGUF output target: a Hugging Face model as one GGUF file for the NPU.
 
 llama.cpp's Hexagon backend runs GGUF models on the Snapdragon NPU. The same file works on
 every HTP version and on the CPU, so nothing is compiled ahead of time:
 
   resolve -> plan -> fetch -> convert (llama.cpp's convert_hf_to_gguf.py, in the quantize
-  environment) -> quantize (the runtime's llama-quantize; Q4_0 by default, the type the
-  Hexagon backend supports best) -> assemble (model.gguf, Modelfile, licence, manifest) ->
-  verify (the runtime's llama-server on the NPU) -> install
+  environment) -> calibrate (the runtime's llama-imatrix on the CPU: an importance matrix over
+  calibration text, when the runtime ships the tool) -> quantize (the runtime's llama-quantize;
+  Q4_0 by default, the type the Hexagon backend supports best) -> assemble (model.gguf,
+  Modelfile, licence, manifest) -> verify (the runtime's llama-server on the NPU) -> install
 
 The runtime is the Ollama fork's llama.cpp payload (lib/ollama next to the fork executable).
 Using its llama-quantize and llama-server keeps the converter, the file and the runtime on
@@ -28,6 +29,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from temperum import __version__, paths
+from temperum.calib import Corpus
 from temperum.core.errors import TemperumError
 from temperum.host import HEXAGON_OPT_IN, HostInfo, hexagon_opted_in
 from temperum.profiles import (DEFAULT_LLAMA_RUNTIME, DEFAULT_RUNTIME, LLAMA_RUNTIMES, NPU_WINDOW_GB,
@@ -49,6 +51,15 @@ CONTEXT_KEYS = ("max_position_embeddings", "n_positions", "n_ctx", "seq_length",
 MANIFEST = "temperum_manifest.json"
 RECIPE = "temperum_recipe.json"  # the recipe search's trials and choice, when --recipe searched
 RECIPE_MD = "temperum_recipe.md"  # the same, as a table for people
+IMATRIX = "imatrix.gguf"  # the importance matrix a calibrated quantization was built with (in the job folder)
+# Calibration: llama-imatrix over the calibration corpus (wikitext-2 train rows; the held-out text is the test
+# rows), 512-token chunks on the CPU. Measured 2026-10-22/23 on the X1E78100: plain Q4_0's perplexity ratio
+# fell from 1.150 to 1.118 on Qwen2.5-1.5B and from 1.057 to 1.018 on Llama-3.2-3B, decode and size unchanged;
+# 100 chunks scored the same as 200 (1.119 and 1.018) in half the time: 4.1 min at 1.5B, 8.8 at 3B with the
+# fork package's own build of the tool, about 2.7 minutes per billion parameters.
+CALIBRATION_CHUNKS = 100
+CALIBRATION_CONTEXT = 512
+CALIBRATION_MINUTES_PER_BILLION = 2.7
 LICENSE_PREFIXES = ("license", "notice", "use_policy", "readme")
 HTP_LIBRARIES = ("libggml-htp-v73.so", "libggml-htp-v75.so", "libggml-htp-v79.so", "libggml-htp-v81.so",
                  "libggml-htp.cat")
@@ -86,6 +97,15 @@ class LlamaPayload:
     @property
     def hexagon(self) -> Path:
         return self.root / "hexagon"
+
+    @property
+    def imatrix(self) -> Path:
+        return self.root / _exe("llama-imatrix")
+
+    @property
+    def has_imatrix(self) -> bool:
+        """Packages before the imatrix target lack the tool; conversions then quantize without calibration."""
+        return self.imatrix.is_file()
 
     def problems(self) -> list[str]:
         missing = [p.name for p in (self.quantize, self.server) if not p.is_file()]
@@ -139,8 +159,9 @@ def supported_architectures(source_dir: Path) -> set[str]:
 
 
 def estimates(model: ResolvedModel, quant: str, *, cached: bool = False, verify: str = "standard",
-              reference: str | None = None) -> dict[str, float]:
-    """Time, disk and memory for a GGUF conversion; `reference` is the dtype the source model runs in, if it does."""
+              reference: str | None = None, calibrate: bool = False) -> dict[str, float]:
+    """Time, disk and memory for a GGUF conversion; `reference` is the dtype the source model runs in, if it does;
+    `calibrate` adds the importance matrix's time on the CPU."""
     width = 4 if "32" in str(model.config.get("torch_dtype") or model.config.get("dtype") or "") else 2
     params = (model.weight_bytes or 0) / width
     download = 0 if cached else (model.weight_bytes or 0)
@@ -159,7 +180,7 @@ def estimates(model: ResolvedModel, quant: str, *, cached: bool = False, verify:
             "gguf_gb": round(params * BYTES_PER_PARAM[quant] / 2**30, 1),
             "disk_gb": round(peak / 2**30 + 0.5, 1),
             "ram_gb": round(max(conversion, perplexity, source) / 2**30, 1),
-            "minutes": round(2 + 3 * params / 1e9)}
+            "minutes": round(2 + 3 * params / 1e9 + (CALIBRATION_MINUTES_PER_BILLION * params / 1e9 if calibrate else 0))}
 
 
 def trained_context(config: dict[str, Any]) -> int | None:
@@ -173,10 +194,12 @@ def trained_context(config: dict[str, Any]) -> int | None:
 
 
 def job_id(model: ResolvedModel, target: TargetProfile, runtime: LlamaRuntimeProfile, quant: str,
-           context: int | None) -> str:
-    identity = {"model": model.ref.repo or str(model.ref.path), "commit": model.commit, "target": target.id,
-                "runtime": runtime.id, "llama_cpp": runtime.llama_cpp_commit, "quant": quant,
-                "context": context, "converter": __version__, "pipeline": "q8_0-first"}
+           context: int | None, calibrate: bool = False) -> str:
+    identity: dict[str, Any] = {"model": model.ref.repo or str(model.ref.path), "commit": model.commit,
+                                "target": target.id, "runtime": runtime.id, "llama_cpp": runtime.llama_cpp_commit,
+                                "quant": quant, "context": context, "converter": __version__, "pipeline": "q8_0-first"}
+    if calibrate:  # a calibrated file is a different file; uncalibrated jobs keep their earlier ids
+        identity["calibration"] = CALIBRATION_CHUNKS
     return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:12]
 
 
@@ -197,6 +220,7 @@ class GgufPlan:
     python: Path | None = None  # base interpreter for the quantize toolchain
     overwrite: bool = False
     recipe: str | None = None  # "auto": search quantization mixes on the NPU (temperum.optimize)
+    calibrate: bool = False  # quantize with an importance matrix computed first (needs llama-imatrix)
 
     @property
     def job_dir(self) -> Path:
@@ -206,7 +230,7 @@ class GgufPlan:
         return {"model": self.model.to_dict(), "target": self.target.id, "runtime": self.runtime.id,
                 "llama_cpp": self.runtime.llama_cpp_commit, "payload": str(self.payload.root),
                 "htp": str(self.payload.htp) if self.payload.htp else None,
-                "quant": self.quant, "recipe": self.recipe, "context": self.context,
+                "quant": self.quant, "recipe": self.recipe, "calibrate": self.calibrate, "context": self.context,
                 "destination": str(self.destination),
                 "job": str(self.job_dir), "verify": self.verify_level, "estimates": self.estimates,
                 "warnings": self.warnings, "host": self.host.to_dict()}
@@ -216,7 +240,9 @@ def plan(model: ResolvedModel, host: HostInfo, target: TargetProfile, *, ollama_
          quant: str = DEFAULT_QUANT, context: int | None = None, out: Path | None = None, verify: str = "standard",
          overwrite: bool = False, python: Path | None = None, runtime_id: str = DEFAULT_LLAMA_RUNTIME,
          run: Runner = subprocess.run, chains_factory: Callable[..., Toolchains] = Toolchains,
-         recipe: str | None = None) -> GgufPlan:
+         recipe: str | None = None, calibrate: bool = True) -> GgufPlan:
+    """`calibrate`: quantize with an importance matrix when the runtime ships llama-imatrix (Q8_0 has nothing
+    to calibrate); off, or without the tool, the quantization is plain."""
     from temperum import optimize
 
     if target.format != "gguf":
@@ -265,6 +291,11 @@ def plan(model: ResolvedModel, host: HostInfo, target: TargetProfile, *, ollama_
         warnings.append(f"target {target.id} has not been verified on hardware yet")
     if not hexagon_opted_in():
         warnings.append(f"the fork uses the Hexagon NPU only when its server starts with {HEXAGON_OPT_IN}=1")
+    calibrated = calibrate and quant != "Q8_0"
+    if calibrated and not payload.has_imatrix:
+        warnings.append("the runtime has no llama-imatrix, so the quantization is not calibrated with an importance "
+                        "matrix (a fork package built with the imatrix target ships it)")
+        calibrated = False
     cached = model.ref.kind == "local" or (
         model.ref.repo is not None and model.commit is not None
         and (paths.sources_dir() / model.ref.repo.replace("/", "--") / model.commit / "_source.json").is_file())
@@ -275,18 +306,18 @@ def plan(model: ResolvedModel, host: HostInfo, target: TargetProfile, *, ollama_
     params = estimates(model, quant)["params_billions"] * 1e9
     reference = (reference_dtype(int(params), host.available_ram_gb, host.total_ram_gb)
                  if level in ("standard", "full") else None)
-    est = estimates(model, quant, cached=cached, verify=level, reference=reference)
+    est = estimates(model, quant, cached=cached, verify=level, reference=reference, calibrate=calibrated)
     status = chains_factory(host, get_runtime(DEFAULT_RUNTIME), "cpu", python=python).status("quantize")
     if status.state != "ready":
         warnings.append(f"first use: sets up the quantize toolchain (~{ENV_SIZE_GB['quantize']:.0f} GB, about 8 "
                         "minutes; torch comes from download.pytorch.org, everything else through your pip "
                         "configuration)")
     warnings += _resource_checks(est, host)
-    identity = job_id(model, target, runtime, quant, context)
+    identity = job_id(model, target, runtime, quant, context, calibrated)
     if recipe is not None:
         est["minutes"] = est["minutes"] + optimize.estimate_minutes(float(est["params_billions"]))
     return GgufPlan(model, host, target, runtime, payload, quant, ctx, destination, identity, est,
-                    verify if on_target else "none", warnings, python, overwrite, recipe)
+                    verify if on_target else "none", warnings, python, overwrite, recipe, calibrated)
 
 
 def _sha256(path: Path) -> str:
@@ -345,13 +376,58 @@ def convert(python: Path, source: ConverterSource, snapshot: Path, out: Path, lo
     return out
 
 
+def calibration_text(corpus: Path, out: Path) -> Path:
+    """The calibration corpus (JSONL rows, as calib caches it) as the plain text llama-imatrix reads."""
+    if out.is_file():
+        return out
+    rows = []
+    for line in corpus.read_text(encoding="utf-8").splitlines():
+        text = json.loads(line).get("text", "") if line.strip() else ""
+        if text.strip():
+            rows.append(text.rstrip("\n"))
+    out.write_text("\n".join(rows) + "\n", encoding="utf-8", newline="\n")
+    return out
+
+
+def compute_imatrix(payload: LlamaPayload, src: Path, text: Path, out: Path, log: Path, say: Progress,
+                    popen: Callable[..., Any] = subprocess.Popen, chunks: int = CALIBRATION_CHUNKS) -> Path:
+    """The importance matrix of the Q8_0 GGUF at `src` over `text`, computed on the CPU by the runtime's
+    llama-imatrix: which values in each block matter, so the quantizer keeps them. Calibration changes the
+    values chosen inside each Q4_0 block, not the block format, so the Hexagon kernel and the decode speed are
+    untouched. The token embedding gets no matrix (the tool's default), as the head is left to the quantizer."""
+    partial = out.with_name(out.stem + ".partial.gguf")  # the tool writes its GGUF format only to a .gguf name
+    partial.unlink(missing_ok=True)
+    env = {**os.environ, "PATH": f"{payload.root}{os.pathsep}{os.environ.get('PATH', '')}"}
+    env.pop("GGML_BACKEND_PATH", None)  # the CPU: the matrix is activation statistics, not a speed measurement
+    code, tail = _stream([str(payload.imatrix), "-m", str(src), "-f", str(text), "-o", str(partial),
+                          "-c", str(CALIBRATION_CONTEXT), "--chunks", str(chunks), "--no-ppl", "-ngl", "0"],
+                         env, log, say,
+                         lambda line: "seconds per pass" in line or line.startswith("save_imatrix"), popen)
+    if code != 0 or not partial.is_file():
+        raise TemperumError("convert", "GGUF_CALIBRATE_FAILED", f"llama-imatrix failed (exit {code}).",
+                            hint=f"Log: {log}\n{tail[-800:]}")
+    partial.replace(out)
+    return out
+
+
+def calibration_record(payload: LlamaPayload, corpus: Corpus, chunks: int = CALIBRATION_CHUNKS) -> dict[str, Any]:
+    """What the manifest and the recipe document record about a calibrated quantization."""
+    record = corpus.to_dict()
+    record.pop("path", None)
+    return {"tool": str(payload.imatrix), "chunks": chunks, "context": CALIBRATION_CONTEXT, "corpus": record}
+
+
 def quantize(payload: LlamaPayload, src: Path, out: Path, quant: str, log: Path, say: Progress,
-             popen: Callable[..., Any] = subprocess.Popen, overrides: Sequence[str] = ()) -> Path:
-    """`overrides`: llama-quantize's per-tensor flags (`--tensor-type attn_v=q8_0`), as a recipe lists them."""
+             popen: Callable[..., Any] = subprocess.Popen, overrides: Sequence[str] = (),
+             imatrix: Path | None = None) -> Path:
+    """`overrides`: llama-quantize's per-tensor flags (`--tensor-type attn_v=q8_0`), as a recipe lists them;
+    `imatrix`: the importance matrix from compute_imatrix, when the quantization is calibrated."""
     partial = out.with_name(out.name + ".partial")
     partial.unlink(missing_ok=True)
     env = {**os.environ, "PATH": f"{payload.root}{os.pathsep}{os.environ.get('PATH', '')}"}
-    code, tail = _stream([str(payload.quantize), "--allow-requantize", *overrides, str(src), str(partial), quant],
+    calibration = ["--imatrix", str(imatrix)] if imatrix is not None else []
+    code, tail = _stream([str(payload.quantize), "--allow-requantize", *calibration, *overrides, str(src), str(partial),
+                          quant],
                          env, log, say,
                          lambda line: line.startswith(("llama_model_quantize_impl: model size",
                                                        "llama_model_quantize_impl: quant size")), popen)
@@ -458,6 +534,7 @@ class GgufResult:
     job_dir: Path
     verification: dict[str, Any]
     recipe: dict[str, Any] | None = None  # the recipe search's document, when --recipe searched the mixes
+    calibration: dict[str, Any] | None = None  # calibration_record(), when the quantization was calibrated
 
 
 def run(gguf_plan: GgufPlan, progress: Progress | None = None,
@@ -491,6 +568,20 @@ def run(gguf_plan: GgufPlan, progress: Progress | None = None,
             say("converting to GGUF (Q8_0) with llama.cpp's converter")
             convert(chains.python_exe("quantize"), source, snapshot, converted, log, say)
             job.record("convert", "done", sha256=_sha256(converted))
+        imatrix: Path | None = None
+        calibration: dict[str, Any] | None = None
+        if gguf_plan.calibrate:
+            from temperum import calib
+
+            imatrix = job.dir / IMATRIX
+            corpus = calib.ensure_corpus(calib.CALIBRATION, paths.data_dir())
+            if not (job.done("calibrate") and imatrix.is_file()):
+                say(f"calibrating: an importance matrix from {CALIBRATION_CHUNKS} chunks of {corpus.spec.dataset} "
+                    f"({corpus.spec.split} rows) on the CPU")
+                text = calibration_text(corpus.path, job.dir / "calibration.txt")
+                compute_imatrix(gguf_plan.payload, converted, text, imatrix, log, say)
+                job.record("calibrate", "done", chunks=CALIBRATION_CHUNKS, sha256=_sha256(imatrix))
+            calibration = calibration_record(gguf_plan.payload, corpus)
         quantized = job.dir / f"model-{gguf_plan.quant}.gguf"
         recipe_doc: dict[str, Any] | None = None
         precision = gguf_plan.quant
@@ -502,7 +593,7 @@ def run(gguf_plan: GgufPlan, progress: Progress | None = None,
             heldout = calib.ensure_corpus(calib.HELDOUT, paths.data_dir()).path
             objective = optimize.Objective(size_budget_mib=NPU_WINDOW_GB * 1024)  # must sit whole on the NPU
             found = optimize.search(gguf_plan.payload, converted, job.dir / "optimize", heldout, say=say,
-                                    objective=objective, context=gguf_plan.context)
+                                    objective=objective, context=gguf_plan.context, imatrix=imatrix)
             quantized, precision = found.chosen.path, found.chosen.candidate.label
             runtime = optimize.runtime_search(gguf_plan.payload, quantized, job.dir / "optimize", heldout, say=say,
                                               context=gguf_plan.context)
@@ -510,16 +601,18 @@ def run(gguf_plan: GgufPlan, progress: Progress | None = None,
             recipe_doc = optimize.document(found, found.reference_ppl,
                                            objective, chunks=optimize.PPL_CHUNKS,
                                            host=gguf_plan.host.to_dict(), llama_cpp=gguf_plan.runtime.llama_cpp_commit,
-                                           source={"repo": gguf_plan.model.ref.repo, "commit": gguf_plan.model.commit},
+                                           source={"repo": gguf_plan.model.ref.repo, "commit": gguf_plan.model.commit,
+                                                   "calibration": calibration},
                                            runtime=runtime)
             for line in optimize.lines(found, objective, runtime):
                 say(line)
             job.record("optimize", "done", chosen=found.chosen.candidate.name, trials=len(found.trials),
                        runtime=params)
         elif gguf_plan.quant != "Q8_0" and not (job.done("quantize") and quantized.is_file()):
-            say(f"quantizing to {gguf_plan.quant} with the runtime's llama-quantize")
-            quantize(gguf_plan.payload, converted, quantized, gguf_plan.quant, log, say)
-            job.record("quantize", "done", sha256=_sha256(quantized))
+            say(f"quantizing to {gguf_plan.quant} with the runtime's llama-quantize"
+                + (", calibrated" if imatrix is not None else ""))
+            quantize(gguf_plan.payload, converted, quantized, gguf_plan.quant, log, say, imatrix=imatrix)
+            job.record("quantize", "done", sha256=_sha256(quantized), calibrated=imatrix is not None)
 
         say("assembling the bundle")
         extra: dict[str, str] = {}
@@ -530,6 +623,7 @@ def run(gguf_plan: GgufPlan, progress: Progress | None = None,
                                                            "converter_patches": sorted(source.patches),
                                                            "quantize": str(gguf_plan.payload.quantize),
                                                            "repairs": repairs,
+                                                           "calibration": calibration,
                                                            "recipe": (recipe_doc or {}).get("chosen", {}).get("name")},
                           extra_files=extra, precision=precision, params=params)
         job.record("assemble", "done", bundle=str(bundle))
@@ -553,6 +647,6 @@ def run(gguf_plan: GgufPlan, progress: Progress | None = None,
             converted.unlink(missing_ok=True)  # only needed to requantize and as the reference
         job.data["result"] = {"bundle": str(bundle), "verdict": report["verdict"]}
         job.save()
-        return GgufResult(bundle, job.dir, report, recipe_doc)
+        return GgufResult(bundle, job.dir, report, recipe_doc, calibration)
     finally:
         job.release()

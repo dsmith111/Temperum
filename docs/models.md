@@ -12,18 +12,21 @@ two chat turns; nothing was tuned per model.
 default): Q4_0, standard verification. The runtime is the fork's portable package
 (branch `npu/hexagon-spike`, llama.cpp b11644) with Qualcomm's signed HTP libraries from
 `ollama npu setup --provider hexagon`. Measured 2026-10-19; the Llama 3.2 rows on 2026-10-20, Llama-3.1-8B on 2026-10-21.
+Since 2026-10-23 the conversion calibrates the quantization with an importance matrix by default when the
+fork package ships `llama-imatrix`; the rows marked † were re-measured that day with calibration on, the
+others are plain Q4_0 from before.
 
 | Model | Params | Convert + verify | NPU layers | Perplexity | Greedy exact | Long prompts | Template the fork uses | Verdict |
 |---|---|---|---|---|---|---|---|---|
-| HuggingFaceTB/SmolLM2-360M-Instruct | 0.36B | 0.9 + 1.8 min | 33/33 | 1.13x | 2/6 | 884 ✓, 1784 ✓ | checked (chatml) | passed |
+| HuggingFaceTB/SmolLM2-360M-Instruct † | 0.36B | 1.7 + 1.9 min | 33/33 | 1.07x | 3/6 | 884 ✓, 1784 ✓ | checked (chatml) | passed |
 | Qwen/Qwen2.5-0.5B-Instruct | 0.49B | - + 1.9 min | 25/25 | 1.16x | 2/6 | 875 ✓, 1763 ✓ | GGUF | passed |
 | Qwen/Qwen3-0.6B | 0.75B | 0.5 + 3.0 min | 29/29 | 1.12x | 2/6 | 858 ✓, 1746 ✓ | GGUF | passed |
 | TinyLlama/TinyLlama-1.1B-Chat-v1.0 | 1.1B | 0.5 + 3.7 min | 23/23 | 1.03x | 2/6 | 871 ✓ | built-in (Zephyr) | passed |
 | meta-llama/Llama-3.2-1B-Instruct | 1.24B | 1.2 + 11.7 min | 17/17 | 1.13x | - | 869 ✓, 1749 ✓ | GGUF | passed |
-| Qwen/Qwen2.5-1.5B-Instruct | 1.54B | - + 7.6 min | 29/29 | 1.14x | 3/6 | 875 ✓, 1763 ✓ | GGUF | passed |
+| Qwen/Qwen2.5-1.5B-Instruct † | 1.54B | 4.7 + 7.2 min | 29/29 | 1.12x | 2/6 | 875 ✓, 1763 ✓ | GGUF | passed |
 | deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B | 1.78B | 0.8 + 8.3 min | 29/29 | 1.11x | 2/6 | 851 ✗, 1739 ✗ (source ✗ too) | GGUF | passed |
 | Qwen/Qwen3-1.7B | 2.03B | 1.0 + 8.4 min | 29/29 | 1.21x | 3/6 | 858 ✓, 1746 ✓ | GGUF | warning |
-| meta-llama/Llama-3.2-3B-Instruct | 3.21B | 2.9 + 2.1 min | 29/29 | 1.06x | - | 869 ✓, 1749 ✓ | GGUF | warning |
+| meta-llama/Llama-3.2-3B-Instruct † | 3.21B | 10.1 + 2.6 min | 29/29 | 1.02x | - | 869 ✓, 1749 ✓ | GGUF | warning |
 | microsoft/Phi-3.5-mini-instruct | 3.82B | 2.4 + 3.5 min | 33/33 | 1.10x | - | 858 ✓, 1758 ✓ | checked (phi3) | warning |
 | microsoft/Phi-4-mini-instruct | 3.84B | 2.8 + 3.0 min | 33/33 | 1.16x | - | 848 ✓, 1737 ✓ | GGUF | warning |
 | Qwen/Qwen2.5-7B-Instruct | 7.62B | 7.2 + 5.4 min | 29/29 | 1.08x | - | 875 ✓, 1763 ✓ | GGUF | warning |
@@ -57,6 +60,14 @@ How to read it:
   Qwen2.5-7B (the CPU perplexity reference). Llama-3.1-8B's 6.6 minutes include 2.9 of download;
   its converter peaked at 4.0 GB with 2 GB of RAM free at the time, so the perplexity stage paged
   (the 7.3 minutes of verification are an upper bound).
+- **Calibration (†):** the rows re-measured on 2026-10-23 quantized with an importance matrix that
+  `llama-imatrix` computed on the CPU from 100 chunks of 512 tokens of wikitext-2 train rows (the perplexity
+  column uses the test rows). Their convert time includes it: 0.7 minutes for SmolLM2-360M, 3.6 for
+  Qwen2.5-1.5B and 6.4 for Llama-3.2-3B, whose 10.1 also holds 1.2 of download. Against the same models'
+  plain Q4_0 rows the perplexity ratio fell from 1.13x to 1.07x, 1.14x to 1.12x and 1.06x to 1.02x, with
+  the file size within 0.3% and decode within measurement noise (the block format is unchanged, so the
+  speed table keeps its earlier rows). Greedy exact moved by one prompt either way, inside what six
+  prompts can tell apart.
 - **Verdict "warning" for the Phi models, Qwen2.5-7B and Llama-3.1-8B:** their source models need more
   memory than this laptop has free, so verification compares the source model's tokenizer
   and chat template but not its answers ("Greedy exact" is blank); perplexity, long prompts
@@ -69,7 +80,15 @@ How to read it:
   `--quant Q4_K_M` or `Q8_0` keep more quality.
 - **Greedy exact:** of six prompts, how many gave the same first 32 tokens as the source
   model in transformers. With 4-bit weights, answers usually agree in substance and drift
-  in wording.
+  in wording. The column also measures the NPU's arithmetic, not only the quantization:
+  measured 2026-10-23 with the same Q4_0 file served plain on the NPU and on the CPU (six
+  prompts, five identical greedy requests each, 128 tokens), Qwen2.5-1.5B left the CPU's
+  greedy path within the first few tokens on every prompt, Qwen3-4B and SmolLM2-360M part way
+  through most, and Llama-3.2-3B stayed on it for five of six. Both devices repeat their own
+  answer exactly, with one exception in 24 prompt-and-model pairs (Qwen3-4B's email prompt
+  varied once in five on the NPU). Perplexity, which averages over many tokens, moves far less
+  (Q8_0 on the NPU scores 1.035x its CPU perplexity on Qwen2.5-1.5B and 0.999x on
+  Llama-3.2-3B).
 - **Long prompts:** a fact placed at the start of a prompt of about 900 and 1,800 tokens
   (TinyLlama's 2,048-token context fits only the first). "Source ✗" means the source model
   missed it too: DeepSeek-R1 spends its 16 answer tokens thinking.

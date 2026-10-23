@@ -111,9 +111,10 @@ class Evaluator:
     """Builds and measures candidates from one Q8_0 source; caches by candidate name."""
 
     def __init__(self, payload: LlamaPayload, source: Path, work: Path, heldout: Path, *, context: int,
-                 chunks: int, say: Progress) -> None:
+                 chunks: int, say: Progress, imatrix: Path | None = None) -> None:
         self.payload, self.source, self.work, self.say = payload, source, work, say
         self.context, self.chunks = context, chunks
+        self.imatrix = imatrix  # every candidate is quantized with it when the conversion is calibrated
         self.work.mkdir(parents=True, exist_ok=True)
         self.text = _heldout_text(heldout, self.work / "heldout.txt")
         self.prompt = self.text.read_text(encoding="utf-8")[:PROMPT_CHARS]
@@ -185,7 +186,7 @@ class Evaluator:
             return out
         self.say(f"{candidate.label}: quantizing")
         gguf.quantize(self.payload, self.source, out, candidate.base, self.work / f"{candidate.name}.quantize.log",
-                      self.say, overrides=candidate.quantize_args())
+                      self.say, overrides=candidate.quantize_args(), imatrix=self.imatrix)
         return out
 
     def measure_runtime(self, model: Path, threads: int | None) -> RuntimeTrial:

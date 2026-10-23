@@ -79,10 +79,15 @@ def _f(value: float | None, digits: int) -> str:
 def markdown(doc: dict[str, Any]) -> str:
     """The recipe document as a page for people: the choice, the table of trials, how it was measured."""
     chosen = doc.get("chosen") or {}
+    calibration = (doc.get("source") or {}).get("calibration") or {}
+    flags = (["--imatrix imatrix.gguf"] if calibration else []) + list(chosen.get("quantize_args") or [])
     out = ["# Quantization recipe, measured on this machine's NPU", "",
            f"**Chosen: {chosen.get('label')}.** {chosen.get('why')}", "",
-           "Reproduce with llama-quantize: `--allow-requantize " + " ".join(chosen.get("quantize_args") or [])
-           + f" <Q8_0 source> <out> {chosen.get('base')}`", "",
+           "Reproduce with llama-quantize: `--allow-requantize " + " ".join(flags)
+           + f" <Q8_0 source> <out> {chosen.get('base')}`"
+           + (f" (imatrix.gguf: llama-imatrix over {calibration.get('chunks')} chunks of "
+              f"{(calibration.get('corpus') or {}).get('dataset')} {(calibration.get('corpus') or {}).get('split')} rows)"
+              if calibration else ""), "",
            "| Mix | Size MiB | PPL ratio | Decode tok/s | Prefill tok/s | Layers on the NPU |",
            "|---|---:|---:|---:|---:|---|"]
     trials = sorted(doc.get("trials") or [], key=lambda d: (d.get("ratio") is None, d.get("ratio") or 0.0))

@@ -133,6 +133,9 @@ def convert_command(
     quant: str = typer.Option("Q4_0", "--quant", help="GGUF type for --target gguf-hexagon: Q4_0 | Q8_0 | Q4_K_M"),
     recipe: Optional[str] = typer.Option(None, "--recipe", help="auto: search per-tensor quantization mixes on "
                                                                 "the NPU and keep the best by the rule (GGUF)"),
+    calibrate: bool = typer.Option(True, "--calibrate/--no-calibrate",
+                                   help="GGUF: quantize with an importance matrix computed first on the CPU (on by "
+                                        "default when the fork's runtime ships llama-imatrix)"),
 ) -> None:
     """Convert a model for this machine's NPU (resolve, convert, quantize, verify, optionally install)."""
     from temperum import convert
@@ -161,7 +164,7 @@ def convert_command(
             _convert_gguf(model, target, quant=quant, context=context, out_dir=out_dir, verify_level=verify_level,
                           overwrite=overwrite, python=python, plan_only=plan_only, yes=yes, as_json=as_json,
                           install=install, name=name, ollama_exe=ollama_exe, host=host, start=start, machine=machine,
-                          validate=validate, push=push, push_as=push_as, recipe=recipe)
+                          validate=validate, push=push, push_as=push_as, recipe=recipe, calibrate=calibrate)
             return
         options = convert.ConvertOptions(model=model, target=target, quality=quality, device=device,
                                          context=context, out=out_dir, verify=verify_level, overwrite=overwrite,
@@ -235,11 +238,11 @@ def _convert_gguf(model: str, target_id: str, *, quant: str, context: Optional[i
                   as_json: bool, install: bool, name: Optional[str], ollama_exe: Optional[Path],
                   host: Optional[str], start: float, machine: Optional[HostInfo] = None,
                   validate: bool = False, push: bool = False, push_as: Optional[str] = None,
-                  recipe: Optional[str] = None) -> None:
+                  recipe: Optional[str] = None, calibrate: bool = True) -> None:
     """The GGUF target: llama.cpp's converter, the fork's llama-quantize, verified on the NPU."""
     plan, exe = flows.plan_gguf(model, target_id=target_id, quant=quant, context=context, out_dir=out_dir,
                                 verify_level=verify_level, overwrite=overwrite, python=python, machine=machine,
-                                ollama_exe=ollama_exe, recipe=recipe)
+                                ollama_exe=ollama_exe, recipe=recipe, calibrate=calibrate)
     if as_json:
         typer.echo(json.dumps({"event": "plan", "plan": plan.to_dict()}, default=str), err=True)
     else:
@@ -615,6 +618,9 @@ def optimize_command(
                                                                          "quantizes and measures"),
     runtime: bool = typer.Option(True, "--runtime/--no-runtime", help="After the mix: measure llama-server's CPU "
                                                                      "threads beside the NPU for the chosen file"),
+    calibrate: bool = typer.Option(True, "--calibrate/--no-calibrate",
+                                   help="Quantize every candidate with an importance matrix computed first on the "
+                                        "CPU (needs llama-imatrix in the fork's runtime)"),
     as_json: bool = typer.Option(False, "--json", help="Print the recipe document on stdout"),
 ) -> None:
     """Search per-tensor quantization mixes of a Q8_0 GGUF on this machine's NPU; keep the best by the rule."""
@@ -643,11 +649,25 @@ def optimize_command(
             if not as_json:
                 err.print(escape(message))
 
-        found = optimize.search(payload, source, work, heldout, say=say, objective=objective)
+        imatrix: Optional[Path] = None
+        calibration: Optional[dict[str, Any]] = None
+        if calibrate and payload.has_imatrix:
+            work.mkdir(parents=True, exist_ok=True)
+            corpus = calib.ensure_corpus(calib.CALIBRATION, paths.data_dir())
+            imatrix = work / gguf.IMATRIX
+            if not imatrix.is_file():
+                say(f"calibrating: an importance matrix from {gguf.CALIBRATION_CHUNKS} chunks of {corpus.spec.dataset} "
+                    f"({corpus.spec.split} rows) on the CPU")
+                gguf.compute_imatrix(payload, source, gguf.calibration_text(corpus.path, work / "calibration.txt"),
+                                     imatrix, work / "calibrate.log", say)
+            calibration = gguf.calibration_record(payload, corpus)
+        elif calibrate:
+            say("the runtime has no llama-imatrix: the candidates are quantized without calibration")
+        found = optimize.search(payload, source, work, heldout, say=say, objective=objective, imatrix=imatrix)
         rt = optimize.runtime_search(payload, found.chosen.path, work, heldout, say=say) if runtime else None
         doc = optimize.document(found, found.reference_ppl, objective, chunks=optimize.PPL_CHUNKS,
                                 host=detect_host().to_dict(), llama_cpp=payload.version(),
-                                source={"path": str(source)}, runtime=rt)
+                                source={"path": str(source), "calibration": calibration}, runtime=rt)
         recipe_path = work / gguf.RECIPE
         recipe_path.write_text(json.dumps(doc, indent=2, default=str), encoding="utf-8")
         (work / gguf.RECIPE_MD).write_text(optimize.markdown(doc), encoding="utf-8")

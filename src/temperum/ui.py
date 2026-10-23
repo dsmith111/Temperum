@@ -25,7 +25,7 @@ from rich.table import Table
 STAGES: tuple[tuple[str, tuple[str, ...], float], ...] = (
     ("preparing", ("creating ", "setting up", "installing python", "checking ", "first use"), 0.06),
     ("downloading", ("fetching ", "downloading"), 0.18),
-    ("converting", ("converting", "quantizing", "pass ", "running olive", "compiling", "exporting",
+    ("converting", ("converting", "calibrating", "quantizing", "pass ", "running olive", "compiling", "exporting",
                     "searching", "search:", "trial ", "reference:", "recipe:"), 0.26),
     ("assembling", ("assembling",), 0.02),
     ("verifying", ("reading the source", "loading the bundle", "prompt ", "long prompt", "measuring",
