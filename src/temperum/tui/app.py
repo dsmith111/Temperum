@@ -58,8 +58,8 @@ CONVERT_STAGES = ["prepare tools", "download", "convert", "assemble", "verify on
 TRACKER_ROWS = {"preparing": "prepare tools", "downloading": "download", "converting": "convert",
                 "assembling": "assemble", "verifying": "verify on the NPU", "installing": "install"}
 COMMANDS: tuple[tuple[str, str], ...] = (
-    ("MODEL  or  /convert MODEL [--quant Q4_0|Q8_0|Q4_K_M] [--recipe auto] [--context N] [--name TAG] "
-     "[--verify LEVEL]",
+    ("MODEL  or  /convert MODEL [--quant Q4_0|Q8_0|Q4_K_M] [--recipe auto] [--draft REPO] [--context N] "
+     "[--name TAG] [--verify LEVEL]",
      "look a model up, choose a quantization (or search the best mix on the NPU), convert it, then install, "
      "validate, upload"),
     ("/install BUNDLE [--name TAG]", "install a converted bundle into the fork, then validate, upload"),
@@ -207,6 +207,11 @@ def model_card(model: Any, plan: Any, machine: Any) -> Table:
     grid.add_row("What it is", escape(f"{model.architecture or 'unknown architecture'}, "
                                       f"{est['params_billions']} billion parameters"))
     grid.add_row("Chat", escape(templates.describe(getattr(model, "chat_template", None))))
+    draft = getattr(plan, "draft", None)
+    if draft is not None:
+        grid.add_row("Draft", escape(f"{draft.ref.display}: a speculative decoder paired with this model "
+                                     f"({getattr(plan, 'draft_block', 0)} tokens proposed per step); it speeds up "
+                                     "answers where its guesses are accepted, and the result screen shows by how much"))
     grid.add_row("Licence", escape(model.license or "unknown") + (" (gated: accepted on Hugging Face)"
                                                                   if getattr(model, "gated", False) else ""))
     trained = trained_context(model.config)
@@ -941,13 +946,25 @@ class TemperumApp(App[None]):
                                                         f"temperum convert {model} --target {target_id}")
             exe, _source = settings.ollama_exe(None)
             resolved = resolve(parse_ref(model))
+            draft_model = None
+            if resolved.draft_reason:  # a draft alone cannot answer: pair it with the target its card names
+                target_repo = opts.get("--target-model") or resolved.draft_target
+                if not target_repo:
+                    raise TemperumError("plan", "DRAFT_NEEDS_TARGET",
+                                        f"{model} is a speculative-decoding draft ({resolved.draft_reason}): it only "
+                                        "runs paired with its target model, and its card does not name one.",
+                                        hint=f"type: /convert <target model> --draft {model}")
+                draft_model, resolved = resolved, resolve(parse_ref(target_repo))
+            elif opts.get("--draft"):
+                draft_model = resolve(parse_ref(opts["--draft"]))
             context = int(opts["--context"]) if "--context" in opts else None
             plans: dict[str, Any] = {}
             for quant in gguf.QUANT_TYPES:
                 try:
                     plans[quant] = gguf.plan(resolved, machine, target, ollama_exe=exe, quant=quant, context=context,
                                              out=Path(opts["--out"]) if "--out" in opts else None,
-                                             verify=opts.get("--verify", "standard"), overwrite=True, python=None)
+                                             verify=opts.get("--verify", "standard"), overwrite=True, python=None,
+                                             draft=draft_model)
                 except TemperumError as exc:
                     plans[quant] = exc
             if all(isinstance(plan, Exception) for plan in plans.values()):
@@ -1062,7 +1079,7 @@ class TemperumApp(App[None]):
             try:
                 positional, opts = _options(args, {"--overwrite"},
                                             {"--quant", "--context", "--name", "--verify", "--out", "--target",
-                                             "--host", "--recipe"})
+                                             "--host", "--recipe", "--draft", "--target-model"})
             except UsageError as exc:
                 self.notify(f"usage: {exc}", severity="warning", timeout=6)
                 return

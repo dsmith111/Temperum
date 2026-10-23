@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from temperum import calib, paths, schedlog
-from temperum.gguf import GgufPlan, LlamaPayload, _exe, last_error_line
+from temperum.gguf import DRAFT_FILE, GgufPlan, LlamaPayload, _exe, last_error_line
 from temperum.templates import ChatTemplate
 from temperum.verify import (CONVERSATIONS, NEEDLE, PPL_PASS, PROMPTS, SETTINGS, reference_dtype, run_script,
                               template_check, verdict)
@@ -181,6 +181,61 @@ def _degenerate(tokens: list[int]) -> bool:
     return len(tokens) >= 16 and max(tokens.count(t) for t in set(tokens)) > len(tokens) // 2
 
 
+def paired_check(plan: GgufPlan, bundle: Path, draft: Path, prompts: list[tuple[str, list[int] | str, Any]],
+                 plain_rows: list[dict[str, Any]], max_new: int, work: Path, say: Progress) -> dict[str, Any]:
+    """The bundle's draft beside the target on the NPU, the way the fork runs the pair: the same prompts again
+    with speculative decoding, each against its plain decode speed, with the draft's own count of proposed and
+    accepted tokens. The draft pays only where its guesses are accepted, and the numbers say where."""
+    block = int(getattr(plan, "draft_block", 0) or 16)
+    result: dict[str, Any] = {"block_size": block, "file": draft.name}
+    say("loading the pair: the draft beside the target on the NPU")
+    try:
+        server = LlamaServer(plan.payload, bundle / "model.gguf", plan.context, work / "llama-server-draft.log")
+        server.extra_args = ["--spec-type", "draft-dflash", "--spec-draft-model", str(draft),
+                             "--spec-draft-n-max", str(block)]
+        with server:
+            result["loaded"] = True
+            result["placement"] = placement(server.text())
+            paired: list[dict[str, Any]] = []
+            for index, (question, prompt, _ref) in enumerate(prompts, 1):
+                say(f"prompt {index}/{len(prompts)} with the draft")
+                out = server.complete(prompt, max_new)
+                timings = out.get("timings") or {}
+                plain = plain_rows[index - 1] if index - 1 < len(plain_rows) else {}
+                speed, base = timings.get("predicted_per_second"), plain.get("decode_tokens_per_s")
+                drafted, accepted = timings.get("draft_n"), timings.get("draft_n_accepted")
+                paired.append({"prompt": question, "tokens": len(out.get("tokens") or []),
+                               "decode_tokens_per_s": speed, "plain_tokens_per_s": base,
+                               "speedup": round(float(speed) / float(base), 2) if speed and base else None,
+                               "drafted": drafted, "accepted": accepted,
+                               "acceptance": (round(float(accepted) / float(drafted), 3)
+                                              if drafted and accepted is not None else None),
+                               "same_answer": out.get("content") == plain.get("output")})
+            result["prompts"] = paired
+            speedups = [float(p["speedup"]) for p in paired if p["speedup"]]
+            rates = [float(p["acceptance"]) for p in paired if p["acceptance"] is not None]
+            result["median_speedup"] = _median(speedups)
+            result["speedup_range"] = [min(speedups), max(speedups)] if speedups else None
+            result["acceptance_range"] = [min(rates), max(rates)] if rates else None
+    except (OSError, RuntimeError, ValueError, http.client.HTTPException) as exc:
+        result["loaded"] = False
+        result["error"] = f"{type(exc).__name__}: {exc}"[:1500]
+    return result
+
+
+def draft_line(paired: dict[str, Any]) -> str:
+    """One line on what the paired draft did: for the verdict's reasons and the ready panel."""
+    where = paired.get("placement") or {}
+    on_npu = where.get("status") == "weights-on-npu"
+    span = paired.get("speedup_range")
+    rates = paired.get("acceptance_range")
+    speed = (f"decode {span[0]:.2f}x to {span[1]:.2f}x of plain across the prompts (median "
+             f"{paired.get('median_speedup') or 0:.2f}x)" if span else "decode speed not measured")
+    accept = f"; {rates[0]:.0%} to {rates[1]:.0%} of its guesses accepted" if rates else ""
+    return (f"draft {'on the NPU beside the target' if on_npu else 'loaded (placement not established)'}: "
+            f"{speed}{accept}; it pays where its guesses are accepted, and PARAMETER draft_num_predict 0 turns it off")
+
+
 def _median(values: list[float]) -> float | None:
     return sorted(values)[len(values) // 2] if values else None
 
@@ -262,12 +317,12 @@ def verify_gguf(bundle: Path, snapshot: Path, plan: GgufPlan, chains: Any, work:
     rows: list[dict[str, Any]] = []
     prompt_rates: list[float] = []
     decode_rates: list[float] = []
+    prompts: list[tuple[str, list[int] | str, dict[str, Any] | None]] = []
     try:
         with LlamaServer(plan.payload, bundle / "model.gguf", plan.context, work / "llama-server.log") as server:
             report["load"] = {"ok": True}
             report["npu_placement"] = placement(server.text())
             say(placement_line(report["npu_placement"]))
-            prompts: list[tuple[str, list[int] | str, dict[str, Any] | None]]
             if reference:
                 prompts = [(p["prompt"], p["input_ids"], p) for p in reference["prompts"]]
             else:  # no source-model answers (quick, or the reference was skipped): the bundle's own chat format
@@ -284,6 +339,7 @@ def verify_gguf(bundle: Path, snapshot: Path, plan: GgufPlan, chains: Any, work:
                     decode_rates.append(float(timings["predicted_per_second"]))
                 row = {"prompt": question, "output": result.get("content", ""), "tokens": len(tokens),
                        "degenerate": _degenerate(tokens), "prompt_ms": timings.get("prompt_ms"),
+                       "decode_tokens_per_s": timings.get("predicted_per_second"),
                        "stop": result.get("stop_type")}  # eos | word | limit: how the answer ended
                 if ref is not None and "output_ids" in ref:  # tokenizer-only references have no answers
                     want = ref["output_ids"]
@@ -327,6 +383,9 @@ def verify_gguf(bundle: Path, snapshot: Path, plan: GgufPlan, chains: Any, work:
         if ops:
             report["npu_placement"]["ops"] = ops
             say("ops: " + schedlog.describe(ops))
+    draft_file = bundle / DRAFT_FILE
+    if report["load"].get("ok") and getattr(plan, "draft", None) is not None and draft_file.is_file():
+        report["draft"] = paired_check(plan, bundle, draft_file, prompts, rows, settings.max_new, work, say)
     report["prompts"] = rows
     report["speed"] = {"median_prompt_tokens_per_s": _median(prompt_rates),
                        "median_tokens_per_s": _median(decode_rates)}
@@ -363,6 +422,14 @@ def verify_gguf(bundle: Path, snapshot: Path, plan: GgufPlan, chains: Any, work:
     if report["verdict"] != "failed" and report["npu_placement"].get("status") != "weights-on-npu":
         report["verdict"] = "failed"
         report["reasons"] = ["the model did not run on the NPU (no layers on an HTP device)"] + report["reasons"]
+    paired = report.get("draft")
+    if paired is not None:
+        if not paired.get("loaded"):
+            report["verdict"] = "failed"
+            report["reasons"] = [f"the draft did not load beside the target: {paired.get('error', 'unknown error')}"
+                                 ] + report["reasons"]
+        else:
+            report["reasons"].append(draft_line(paired))
     if report["verdict"] != "failed" and rows and all(r.get("stop") == "limit" for r in rows):
         if chat is not None and chat.family == "raw":  # expected of a base model: it continues text
             report["reasons"].append(f"a base model with no chat template: every answer ran to the "

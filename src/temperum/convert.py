@@ -30,7 +30,7 @@ from temperum.olive_run import output_complete, run_olive
 from temperum.profiles import DEFAULT_RUNTIME, RuntimeProfile, TargetProfile, get_runtime
 from temperum.recipes import RecipeChoice, RenderOptions, choose, precision_label, render, resolve_quality
 from temperum.repairs import prepare_source
-from temperum.sources import ResolvedModel, fetch, parse_ref, resolve
+from temperum.sources import ResolvedModel, fetch, parse_ref, refuse_draft, resolve
 from temperum.templates import ChatTemplate, custom, from_jinja, load_jinja, own
 from temperum.toolchains import ENV_SIZE_GB, PYTHON_SIZE_GB, EnvStatus, Toolchains
 from temperum.verify import verify
@@ -150,6 +150,7 @@ def plan(options: ConvertOptions, host: HostInfo | None = None, *, resolver: Cal
                             hint="GGUF targets are converted by temperum.gguf (the CLI routes them there).")
     runtime = get_runtime(options.runtime)
     model = resolver(parse_ref(options.model))
+    refuse_draft(model, "QNN")  # a draft pairs with its target on the GGUF route only
     recipe = choose(model.ref.repo, model.model_type, model.architecture)
     device = _device(options.device, host)
     quality = resolve_quality(options.quality, device)

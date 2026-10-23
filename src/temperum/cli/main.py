@@ -136,6 +136,12 @@ def convert_command(
     calibrate: bool = typer.Option(True, "--calibrate/--no-calibrate",
                                    help="GGUF: quantize with an importance matrix computed first on the CPU (on by "
                                         "default when the fork's runtime ships llama-imatrix)"),
+    draft: Optional[str] = typer.Option(None, "--draft", help="GGUF: a speculative-decoding draft (DFlash) to pair "
+                                                             "with the model: converted with its metadata, bundled "
+                                                             "and named in the Modelfile"),
+    target_model: Optional[str] = typer.Option(None, "--target-model",
+                                               help="GGUF, when MODEL is a draft: the target model it pairs with "
+                                                    "(asked for otherwise)"),
 ) -> None:
     """Convert a model for this machine's NPU (resolve, convert, quantize, verify, optionally install)."""
     from temperum import convert
@@ -164,8 +170,12 @@ def convert_command(
             _convert_gguf(model, target, quant=quant, context=context, out_dir=out_dir, verify_level=verify_level,
                           overwrite=overwrite, python=python, plan_only=plan_only, yes=yes, as_json=as_json,
                           install=install, name=name, ollama_exe=ollama_exe, host=host, start=start, machine=machine,
-                          validate=validate, push=push, push_as=push_as, recipe=recipe, calibrate=calibrate)
+                          validate=validate, push=push, push_as=push_as, recipe=recipe, calibrate=calibrate,
+                          draft=draft, target_model=target_model)
             return
+        if draft or target_model:
+            err.print("[yellow]![/yellow] --draft and --target-model pair a draft on the GGUF route only; ignored "
+                      "for a QNN bundle")
         options = convert.ConvertOptions(model=model, target=target, quality=quality, device=device,
                                          context=context, out=out_dir, verify=verify_level, overwrite=overwrite,
                                          template=template, stops=list(stop), num_splits=num_splits,
@@ -238,11 +248,15 @@ def _convert_gguf(model: str, target_id: str, *, quant: str, context: Optional[i
                   as_json: bool, install: bool, name: Optional[str], ollama_exe: Optional[Path],
                   host: Optional[str], start: float, machine: Optional[HostInfo] = None,
                   validate: bool = False, push: bool = False, push_as: Optional[str] = None,
-                  recipe: Optional[str] = None, calibrate: bool = True) -> None:
+                  recipe: Optional[str] = None, calibrate: bool = True, draft: Optional[str] = None,
+                  target_model: Optional[str] = None) -> None:
     """The GGUF target: llama.cpp's converter, the fork's llama-quantize, verified on the NPU."""
+    ask = None if yes or as_json else (lambda question, default: str(typer.prompt(question, default=default,
+                                                                                   show_default=bool(default), err=True)))
     plan, exe = flows.plan_gguf(model, target_id=target_id, quant=quant, context=context, out_dir=out_dir,
                                 verify_level=verify_level, overwrite=overwrite, python=python, machine=machine,
-                                ollama_exe=ollama_exe, recipe=recipe, calibrate=calibrate)
+                                ollama_exe=ollama_exe, recipe=recipe, calibrate=calibrate, draft=draft,
+                                target_model=target_model, ask=ask)
     if as_json:
         typer.echo(json.dumps({"event": "plan", "plan": plan.to_dict()}, default=str), err=True)
     else:

@@ -120,6 +120,31 @@ the CPU decodes two to three times as fast when nothing else needs it (Qwen2.5-7
 with the editor busy). (These CPU figures are the package's CPU backend with dotprod and
 i8mm kernels; the earlier generic ARMv8 build prefilled 3 to 7 times slower.)
 
+## Paired drafts (DFlash)
+
+`temperum convert Qwen/Qwen3-4B --draft z-lab/Qwen3-4B-DFlash-b16 --verify standard`, 2026-10-23, 16.1
+minutes with the fork package that ships `llama-imatrix`: the target as calibrated Q4_0 (37/37 layers,
+2,260 MiB, perplexity 1.04x), the draft converted with the target's tokenizer and metadata to Q8_0
+(545 MiB, 6 layers), both on the NPU (2,825 MiB of weights), the same greedy answers with and without the
+draft. The verdict's draft line for this pair: decode 0.23x to 2.18x of plain across the six prompts, median
+0.71x; 0% to 63% of its guesses accepted.
+
+| Prompt | Answer tokens | Plain tok/s | With the draft | Guesses accepted |
+|---|---:|---:|---:|---:|
+| Capital of France, one word | 3 | 12.8 | 3.0 (0.23x) | 0 of 30 |
+| 17 + 25, just the number | 3 | 12.2 | 3.5 (0.29x) | 0 of 30 |
+| Name the three primary colors | 32 | 13.1 | 9.3 (0.71x) | 19 of 131 |
+| Translate a greeting to Spanish | 12 | 14.2 | 7.5 (0.53x) | 6 of 75 |
+| A Python function (code) | 32 | 11.6 | 25.3 (2.18x) | 27 of 43 |
+| Why the sky looks blue, one sentence | 32 | 11.0 | 9.8 (0.89x) | 20 of 122 |
+
+A draft call costs about 1.5 plain decode steps on the NPU, so a step pays from about three accepted tokens:
+code gets there, short factual answers do not, and a three-token answer pays for two whole blocks of guesses.
+The draft stays on in the bundle because the user asked for the pair; `PARAMETER draft_num_predict 0` in the
+Modelfile turns it off. Longer measurements of the same pair (256-token answers, four prompt kinds) are in
+the handoff's section 4: 1.76x on code, 1.10x on prose, 0.53x to 0.59x on short chat answers, the same
+acceptance against a Q8_0 target and on the CPU.
+
 ## QNN bundles (8-bit)
 
 `temperum convert MODEL --target qnn-x-elite` (the default target until 2026-10-19; Olive

@@ -51,6 +51,8 @@ class ResolvedModel:
     weight_bytes: int | None
     files: list[str] = field(default_factory=list)
     chat_template: str | None = None  # the model's own Jinja template; None: a base model with no chat format
+    draft_reason: str | None = None  # set when this is a speculative-decoding draft: why (draft_model_reason)
+    draft_target: str | None = None  # the target repo a draft's card names, when it does
 
     @property
     def name(self) -> str:
@@ -73,7 +75,8 @@ class ResolvedModel:
                 "path": str(self.ref.path) if self.ref.path else None, "commit": self.commit,
                 "gated": self.gated, "license": self.license, "architecture": self.architecture,
                 "model_type": self.model_type, "weight_bytes": self.weight_bytes,
-                "has_chat_template": self.chat_template is not None}
+                "has_chat_template": self.chat_template is not None,
+                "draft": self.draft_reason, "draft_target": self.draft_target}
 
 
 def draft_model_reason(config: dict[str, Any], tags: list[str] | None = None) -> str | None:
@@ -97,17 +100,37 @@ def base_model_tag(tags: list[str] | None) -> str | None:
     return None
 
 
-def _refuse_draft(ref: ModelRef, config: dict[str, Any], tags: list[str] | None) -> None:
-    reason = draft_model_reason(config, tags)
-    if reason is None:
+_TARGET_IN_CARD = re.compile(r"target model[^`\n]{0,60}`([A-Za-z0-9][\w.-]*/[\w.-]+)`", re.IGNORECASE)
+
+
+def target_in_card(text: str) -> str | None:
+    """The target repo a draft's model card names, as the DFlash cards do: "the target model `Qwen/Qwen3-4B`"."""
+    match = _TARGET_IN_CARD.search(text)
+    return match.group(1) if match else None
+
+
+def draft_block_size(config: dict[str, Any]) -> int | None:
+    """How many tokens a DFlash draft proposes per step (its trained block), from its config."""
+    value = config.get("block_size") or (config.get("dflash_config") or {}).get("block_size")
+    return int(value) if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def pairable_draft(config: dict[str, Any]) -> bool:
+    """Drafts Ollama's runner can run beside a target: DFlash. The runner tells a GGUF draft's kind by its
+    architecture (`dflash`) and launches any other as an MTP draft, so EAGLE and Medusa heads are not paired."""
+    return any("dflash" in str(a).lower() for a in config.get("architectures") or [])
+
+
+def refuse_draft(model: ResolvedModel, route: str) -> None:
+    """Routes that cannot pair a draft with its target (QNN) say so with the pairing command."""
+    if model.draft_reason is None:
         return
-    base = base_model_tag(tags)
     raise TemperumError("source", "DRAFT_MODEL",
-                        f"{ref.display} is a speculative-decoding draft model ({reason}): a helper that proposes "
-                        "tokens for a larger target model and cannot answer on its own.",
-                        hint=(f"Convert the target model instead: {base}" if base else
-                              "Convert the target model it was trained for instead")
-                        + " (check its size against this machine first: `temperum convert MODEL --plan`).")
+                        f"{model.ref.display} is a speculative-decoding draft model ({model.draft_reason}): a helper "
+                        f"that proposes tokens for a larger target model and cannot answer on its own; the {route} "
+                        "route does not pair drafts.",
+                        hint=f"Convert the pair on the GGUF route: temperum convert "
+                             f"{model.draft_target or '<target model>'} --draft {model.ref.display}")
 
 
 def parse_ref(text: str) -> ModelRef:
@@ -164,9 +187,13 @@ def resolve(ref: ModelRef, api: Any = None, download: Callable[..., str] | None 
         config = json.loads((ref.path / "config.json").read_text(encoding="utf-8"))
         files = sorted(p.name for p in ref.path.iterdir() if p.is_file())
         weights = sum(p.stat().st_size for p in ref.path.glob("*.safetensors"))
-        _refuse_draft(ref, config, None)
+        reason = draft_model_reason(config, None)
+        readme = ref.path / "README.md"
+        target = (target_in_card(readme.read_text(encoding="utf-8", errors="replace"))
+                  if reason and readme.is_file() else None)
         return ResolvedModel(ref, commit=None, gated=False, license=None, config=config,
-                             weight_bytes=weights or None, files=files, chat_template=templates.load_jinja(ref.path))
+                             weight_bytes=weights or None, files=files, chat_template=templates.load_jinja(ref.path),
+                             draft_reason=reason, draft_target=target)
     from huggingface_hub import HfApi, hf_hub_download
 
     api = api or HfApi()
@@ -185,14 +212,20 @@ def resolve(ref: ModelRef, api: Any = None, download: Callable[..., str] | None 
         raise TemperumError("source", "NO_SAFETENSORS", f"{ref.repo} has no .safetensors weights.",
                             hint="Only safetensors checkpoints are converted (pickled weights are never loaded).")
     config = json.loads(Path(config_path).read_text(encoding="utf-8"))
-    _refuse_draft(ref, config, [str(t) for t in (getattr(info, "tags", None) or [])])
+    tags = [str(t) for t in (getattr(info, "tags", None) or [])]
+    reason = draft_model_reason(config, tags)
+    target = base_model_tag(tags) if reason else None
     try:
         jinja = _hub_chat_template(str(ref.repo), info.sha, files, download)
+        if reason and target is None and "README.md" in files:  # the DFlash cards name the target in prose
+            target = target_in_card(Path(download(ref.repo, "README.md", revision=info.sha))
+                                    .read_text(encoding="utf-8", errors="replace"))
     except Exception as exc:  # noqa: BLE001
         raise _hf_error(exc, ref) from exc
     return ResolvedModel(ref, commit=info.sha, gated=bool(getattr(info, "gated", False)),
                          license=str(license_id) if license_id else None, config=config,
-                         weight_bytes=weights or None, files=files, chat_template=jinja)
+                         weight_bytes=weights or None, files=files, chat_template=jinja,
+                         draft_reason=reason, draft_target=target)
 
 
 def fetch(model: ResolvedModel, root: Path, snapshot: Callable[..., str] | None = None) -> Path:

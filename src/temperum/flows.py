@@ -163,17 +163,39 @@ class PlainSession:
 def plan_gguf(model: str, *, target_id: str, quant: str, context: Optional[int], out_dir: Optional[Path],
               verify_level: str, overwrite: bool, python: Optional[Path], machine: Any = None,
               ollama_exe: Optional[Path] = None, recipe: Optional[str] = None,
-              calibrate: bool = True) -> tuple[Any, Optional[Path]]:
-    """Resolve the model and plan its GGUF conversion; also returns the fork executable in effect."""
+              calibrate: bool = True, draft: Optional[str] = None, target_model: Optional[str] = None,
+              ask: Optional[Callable[[str, str], str]] = None) -> tuple[Any, Optional[Path]]:
+    """Resolve the model and plan its GGUF conversion; also returns the fork executable in effect.
+
+    `draft`: a speculative-decoding draft to pair with the model. When `model` is itself a draft, the target
+    is `target_model`, else what `ask(question, default)` answers (the default is the target its card names;
+    an empty answer backs out), else the plan stops with the pairing command."""
     from temperum import gguf
     from temperum.host import detect_host
     from temperum.profiles import get_target
     from temperum.sources import parse_ref, resolve
 
     exe, _source = settings.ollama_exe(ollama_exe)
-    plan = gguf.plan(resolve(parse_ref(model)), machine or detect_host(), get_target(target_id), ollama_exe=exe,
+    resolved = resolve(parse_ref(model))
+    paired = None
+    if resolved.draft_reason:
+        target = target_model
+        if not target and ask is not None:
+            target = ask(f"{resolved.ref.display} is a speculative-decoding draft ({resolved.draft_reason}): it only "
+                         "runs paired with its target model. Which target model does it pair with? (leave empty to "
+                         "stop)", resolved.draft_target or "").strip()
+        if not target:
+            raise TemperumError("plan", "DRAFT_NEEDS_TARGET",
+                                f"{resolved.ref.display} is a speculative-decoding draft ({resolved.draft_reason}): it "
+                                "only runs paired with its target model.",
+                                hint=f"temperum convert {resolved.draft_target or '<target model>'} --draft "
+                                     f"{resolved.ref.display}, or answer the target when asked")
+        paired, resolved = resolved, resolve(parse_ref(target))
+    elif draft:
+        paired = resolve(parse_ref(draft))
+    plan = gguf.plan(resolved, machine or detect_host(), get_target(target_id), ollama_exe=exe,
                      quant=quant, context=context, out=out_dir, verify=verify_level, overwrite=overwrite,
-                     python=python, recipe=recipe, calibrate=calibrate)
+                     python=python, recipe=recipe, calibrate=calibrate, draft=paired)
     return plan, exe
 
 
@@ -194,6 +216,11 @@ def gguf_plan_table(plan: Any) -> Table:
 
         table.add_row("Calibration", escape(f"an importance matrix from {gguf.CALIBRATION_CHUNKS} chunks of "
                                             f"wikitext-2 train rows, computed on the CPU before quantizing"))
+    draft = getattr(plan, "draft", None)
+    if draft is not None:
+        table.add_row("Draft", escape(f"{draft.ref.display} ({draft.architecture}, {getattr(plan, 'draft_block', 0)} "
+                                      f"tokens per step): converted with the model's metadata, bundled as "
+                                      f"draft.gguf and paired in the Modelfile for speculative decoding"))
     table.add_row("Chat", escape(templates.describe(plan.model.chat_template)))
     table.add_row("Verification", escape(plan.verify_level))
     table.add_row("Output", escape(str(plan.destination)))
@@ -238,6 +265,8 @@ def gguf_summary(result: Any, start: float) -> dict[str, Any]:
         summary["perplexity_ratio"] = ppl.get("ratio")
     summary["base_model"] = report.get("template", {}).get("modelfile") == "raw"
     summary["calibrated"] = bool(getattr(result, "calibration", None))
+    if getattr(result, "draft", None):
+        summary["draft"] = {**result.draft, "check": report.get("draft")}
     recipe = getattr(result, "recipe", None)
     if recipe:
         chosen = recipe.get("chosen", {})
@@ -268,6 +297,17 @@ def ready_lines(summary: dict[str, Any]) -> list[str]:
         lines.append(f"  perplexity vs the Q8_0 conversion on the CPU: {summary['perplexity_ratio']}x")
     if summary.get("calibrated"):
         lines.append("  quantization calibrated with an importance matrix (wikitext-2 train rows, on the CPU)")
+    draft = summary.get("draft")
+    if draft:
+        check = draft.get("check") or {}
+        if check.get("loaded"):
+            from temperum.gguf_verify import draft_line
+
+            lines.append(f"  {escape(draft_line(check))}")
+        elif check:
+            lines.append(f"  draft: did not load beside the target: {escape(str(check.get('error')))}")
+        else:
+            lines.append(f"  draft: {escape(str(draft.get('repo')))} bundled as draft.gguf (not verified at this level)")
     speed = summary.get("speed") or {}
     if speed.get("median_tokens_per_s"):
         prompt = (f"{speed['long_prompt_tokens_per_s']:.0f} tokens/s ({speed['long_prompt_tokens']}-token prompt)"

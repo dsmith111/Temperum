@@ -157,9 +157,18 @@ the sign-in link when the server is not linked to an account yet.
   the environment pins 4.57) convert and verify on the NPU. The source model is not run for the
   answer comparison, but its tokenizer still supplies identical inputs and the chat-template check,
   and the verdict says so in those words.
-- **Not convertible: speculative-decoding draft models** (DFlash, EAGLE, Medusa heads, anything
-  tagged `draft-model`). They propose tokens for a larger target model and cannot answer on
-  their own, so `temperum` refuses them at the plan and names the target model to convert.
+- **Speculative-decoding drafts (DFlash) convert paired with their target.** A draft proposes
+  tokens for a larger model and cannot answer on its own, so `temperum convert DRAFT` says so
+  and asks which target it pairs with (the default is the one its model card names; an empty
+  answer backs out), or `temperum convert TARGET --draft DRAFT` names both. The draft is
+  converted with the target's tokenizer and metadata, bundled beside it as `draft.gguf`, and
+  the Modelfile pairs them (`DRAFT`, `draft_num_predict` at the draft's block size), which the
+  fork runs as speculative decoding. Verification loads the pair on the NPU and reports, per
+  prompt, the decode speed against plain decoding and how many of the draft's guesses were
+  accepted: measured on Qwen3-4B with `z-lab/Qwen3-4B-DFlash-b16`, 1.8x faster on code, 1.1x
+  on prose, 0.55x on short chat answers. The draft stays on; `PARAMETER draft_num_predict 0` in
+  the Modelfile turns it off. EAGLE and Medusa heads are still refused: Ollama's runner runs
+  DFlash drafts only.
 
 ## QNN bundles (`--target qnn-x-elite`)
 
@@ -200,7 +209,7 @@ implemented but not yet tested.
 | Command | Purpose |
 |---|---|
 | `temperum` (no arguments) | The full-screen interface, also `temperum tui`: pick or type a model, choose a quantization, watch the stages and the machine's load, answer install, validate and upload with a key; `/install BUNDLE`, `/validate TAG`, `/push TAG`, `/doctor`, `/models` and `/config` typed in its box do the rest |
-| `temperum convert MODEL` | Plan, convert and verify; in a terminal, then asks to install, validate and upload. `--install`, `--validate`, `--push [--as NAME]` do that without asking; `--plan` stops after the plan; `--yes` skips every question; `--quant Q4_0\|Q4_K_M\|Q8_0`, `--no-calibrate` (skip the importance matrix), `--recipe auto` (measure quantization mixes and thread settings on the NPU, keep the best), `--context N`, `--verify quick\|standard\|full\|none`, `--out DIR`, `--target qnn-x-elite` (QNN only: `--quality`, `--device`, `--template FILE --stop S`) |
+| `temperum convert MODEL` | Plan, convert and verify; in a terminal, then asks to install, validate and upload. `--install`, `--validate`, `--push [--as NAME]` do that without asking; `--plan` stops after the plan; `--yes` skips every question; `--quant Q4_0\|Q4_K_M\|Q8_0`, `--no-calibrate` (skip the importance matrix), `--recipe auto` (measure quantization mixes and thread settings on the NPU, keep the best), `--draft REPO` (pair a DFlash draft; `--target-model REPO` when MODEL is the draft), `--context N`, `--verify quick\|standard\|full\|none`, `--out DIR`, `--target qnn-x-elite` (QNN only: `--quality`, `--device`, `--template FILE --stop S`) |
 | `temperum optimize SOURCE_Q8.gguf` | The recipe search alone, from a Q8_0 GGUF (a bundle converted with `--quant Q8_0`): measures the mixes and thread settings on this machine's NPU and writes the recipe and the chosen file to `--out`; `--json` prints the recipe document |
 | `temperum setup` | Create or check (`--check`) what conversions need; `--target qnn-x-elite` adds the QNN toolchains |
 | `temperum doctor` | Target, the fork's NPU runtime and switch, memory, disk, toolchain health |
