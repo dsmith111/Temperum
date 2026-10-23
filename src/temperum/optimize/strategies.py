@@ -1,6 +1,6 @@
 """How the space is searched.
 
-`structured` is the strategy experiment 1 validated: measure the plain base and each tensor class alone
+`structured` is the strategy the 2026-10-22 measurements validated: measure the plain base and each tensor class alone
 at Q8_0 (one trial per class), fit an additive surrogate (log-perplexity deltas add; decode falls with the
 bytes moved off the base, linearly), enumerate every composition on the surrogate under the objective's
 decode cap, measure the predicted best, and let the objective choose among what was measured. On

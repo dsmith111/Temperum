@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 # the projection classes of a transformer block, as llama.cpp names its tensors
 CLASSES: tuple[str, ...] = ("attn_q", "attn_k", "attn_v", "attn_output", "ffn_gate", "ffn_up", "ffn_down")
 # types the Hexagon backend runs on the HTP; the first space upgrades classes from the base to Q8_0 only,
-# because every other type measured a kernel penalty on decode beyond its bytes (experiment 1)
+# because every other type measured a kernel penalty on decode beyond its bytes (measured 2026-10-22)
 BASE_TYPE = "Q4_0"
 UPGRADE_TYPE = "q8_0"
 

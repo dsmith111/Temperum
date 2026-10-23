@@ -1,6 +1,6 @@
 """What "best" means: constraints first, then quality, with measurement noise treated as ties.
 
-The default is the rule experiment 1 was decided by: a candidate must sit whole on the NPU and decode at
+The default is the rule the quantization-mix measurements of 2026-10-22 were decided by: a candidate must sit whole on the NPU and decode at
 no less than 90% of the plain base; among those the lowest perplexity ratio wins, and ratios within the
 noise of the measurement are ties that go to the smaller file, then the faster decode.
 """

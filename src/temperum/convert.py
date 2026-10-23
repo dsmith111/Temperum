@@ -180,7 +180,7 @@ def plan(options: ConvertOptions, host: HostInfo | None = None, *, resolver: Cal
         warnings.append(f"this machine is not a {target.id} device: the bundle is compiled but cannot be verified "
                         "here, and no compatibility declaration is written")
     if device == "cuda":
-        warnings.append("the CUDA quantization path has not been tested yet (decision D8)")
+        warnings.append("the CUDA quantization path has not been tested yet")
     est = estimates(model)
     resumed = _finished_stages(paths.jobs_dir() / job_id)
     if "olive" not in resumed:  # once quantize/compile is done, the rest needs little memory or disk
